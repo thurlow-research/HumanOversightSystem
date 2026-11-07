@@ -18,12 +18,20 @@ from scripts.automation.lib.merge_authority import (
     BounceLockUnavailable,
     RepairReadError,
     _bounce_lock,
+    _bounce_marker,
     bounce_count,
     bounce_events,
     record_pr_bounce,
     repair_bounce_finalize,
 )
 from tests.automation.test_bounce_gate import HEAD, MA, OWNER, REPO, _f, _gh_stub, _post
+
+
+@pytest.fixture(autouse=True)
+def _no_live_comment_read(monkeypatch):
+    """Default the already-posted-comment read to `[]` so no test reaches GitHub
+    when HOS_BOT_LOGIN is set; tests that need comments patch it explicitly."""
+    monkeypatch.setattr(f"{MA}._github.list_issue_comments", lambda *a, **k: [])
 
 
 def _call(tmp_path, findings, results, **kw):
@@ -482,3 +490,377 @@ def test_findings_with_failures_or_without_head_are_rejected(tmp_path):
     with pytest.raises(ValueError):
         record_pr_bounce(OWNER, REPO, 1, **{**kw, "reason_category": "BOGUS"})
     assert not (tmp_path / ".claudetmp" / "locks").exists()
+
+
+# --- #2263 residual 1: lock errno classification ---------------------------------
+
+
+def _unavailable(code):
+    exc = BounceLockUnavailable("x")
+    exc.__cause__ = OSError(code, os.strerror(code)) if code is not None else None
+    return exc
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        errno.EINTR,
+        errno.EAGAIN,
+        errno.ENOLCK,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    ],
+)
+def test_lock_unavailable_transient_errnos(code):
+    assert _unavailable(code).classification == "transient"
+    assert _unavailable(code).errno == code
+
+
+@pytest.mark.parametrize("code", [errno.EACCES, errno.EROFS, errno.ENOTDIR, errno.EPERM])
+def test_lock_unavailable_persistent_errnos_are_deterministic(code):
+    assert _unavailable(code).classification == "deterministic"
+
+
+def test_lock_unavailable_without_a_cause_or_errno_is_deterministic():
+    assert BounceLockUnavailable("x").classification == "deterministic"
+    assert BounceLockUnavailable("x").errno is None
+    assert _unavailable(None).classification == "deterministic"
+    exc = BounceLockUnavailable("x")
+    exc.__cause__ = OSError("no errno")
+    assert exc.classification == "deterministic"
+
+
+# --- #2263 residual 3: retry after an audit-write failure -------------------------
+
+BOT = "hos-overseer[bot]"
+
+
+def _comment(cid_id, body, login=BOT):
+    return {
+        "id": cid_id,
+        "body": body,
+        "user": {"login": login},
+        "html_url": f"https://example/pr/123#comment-{cid_id}",
+        "created_at": "2026-10-31T02:00:00Z",
+    }
+
+
+def _audit_failing_once():
+    from scripts.automation.lib import merge_authority as ma
+
+    real = ma._AUDIT_LOG.write_event
+    state = {"n": 0}
+
+    def fake(event, **k):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError("disk full")
+        return real(event, **k)
+
+    return fake
+
+
+def test_retry_after_audit_write_failure_adopts_the_posted_comment(tmp_path, monkeypatch):
+    from scripts.automation.lib.merge_authority import BounceAuditWriteError
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    bodies: list = []
+    posted: list = []
+
+    def post(owner, repo, number, body, **k):
+        posted.append(_comment(900 + len(posted), body))
+        return _post(bodies)(owner, repo, number, body, **k) | {"id": 900 + len(posted) - 1}
+
+    with (
+        patch(f"{MA}.post_comment", side_effect=post),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", side_effect=lambda *a, **k: list(posted)),
+        patch(f"{MA}._AUDIT_LOG.write_event", side_effect=_audit_failing_once()),
+    ):
+        first: list = []
+        _call(tmp_path, [_f()], first)
+        assert isinstance(first[0], BounceAuditWriteError)
+        assert bounce_events("cid-1", repo_root=str(tmp_path)) == []
+        second: list = []
+        _call(tmp_path, [_f()], second)
+    assert len(posted) == 1
+    result = second[0]
+    assert not isinstance(result, Exception), result
+    assert result.comment_url == "https://example/pr/123#comment-900"
+    events = bounce_events("cid-1", repo_root=str(tmp_path))
+    assert len(events) == 1 and events[0]["comment_id"] == 900
+    assert events[0]["bounce_number"] == 1
+    assert events[0]["adopted"] is True
+    assert result.adopted is True
+
+
+def test_comment_read_failure_raises_before_posting(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._github.list_issue_comments", side_effect=GitHubError("boom")),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+    assert isinstance(results[0], GitHubError)
+    assert bodies == []
+    assert bounce_events("cid-1", repo_root=str(tmp_path)) == []
+
+
+def test_marker_for_different_keys_does_not_suppress_posting(tmp_path, monkeypatch):
+    from scripts.automation.lib.merge_authority import _bounce_marker
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    other = _comment(7, "x\n" + _bounce_marker("cid-1", HEAD, ["MERITS:other"], 1) + "\n")
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", return_value=[other]),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+    assert len(bodies) == 1 and not isinstance(results[0], Exception)
+
+
+def test_marker_from_another_author_or_without_bot_login_is_not_adopted(tmp_path, monkeypatch):
+    from scripts.automation.lib.merge_authority import _bounce_marker
+
+    marker = _bounce_marker("cid-1", HEAD, [_f().key], 1)
+    forged = _comment(7, marker + "\n", login="someone-else")
+    bodies: list = []
+    for login in (BOT, None):
+        if login:
+            monkeypatch.setenv("HOS_BOT_LOGIN", login)
+        else:
+            monkeypatch.delenv("HOS_BOT_LOGIN", raising=False)
+        with (
+            patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+            patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+            patch(f"{MA}._convert_pr_to_draft"),
+            patch(f"{MA}._github.list_issue_comments", return_value=[forged]),
+        ):
+            _call(tmp_path / (login or "none"), [_f()], [])
+    assert len(bodies) == 2
+
+
+def test_marker_is_in_both_body_forms_and_is_injection_safe():
+    from scripts.automation.lib.merge_authority import (
+        _bounce_comment_body,
+        _bounce_comment_body_findings,
+        _bounce_marker,
+    )
+
+    marker = _bounce_marker("cid --> <x>", HEAD, ["b", "a"], 1)
+    assert marker == _bounce_marker("cid --> <x>", HEAD, ["a", "b"], 1)
+    assert marker != _bounce_marker("cid --> <x>", HEAD, ["a"], 1)
+    assert marker != _bounce_marker("cid --> <x>", HEAD, ["a", "b"], 2)
+    assert marker.count("-->") == 1 and "cid" not in marker
+    legacy = _bounce_comment_body(["register-missing"], "REGISTER_GAP", "s", 1, marker=marker)
+    findings = _bounce_comment_body_findings(
+        [("F1", _f())], "MERITS_FINDING", "s", 1, cid="cid-1", head_sha=HEAD, marker=marker
+    )
+    assert marker in legacy.splitlines() and marker in findings.splitlines()
+
+
+def _run_with_comments(tmp_path, comments, findings_list):
+    """Bounce each findings list in turn; the fake PR thread accumulates real posts."""
+    thread = list(comments)
+    posted: list = []
+
+    def post(owner, repo, number, body, **k):
+        c = _comment(500 + len(posted), body)
+        posted.append(c)
+        thread.append(c)
+        return c
+
+    results: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=post),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", side_effect=lambda *a, **k: list(thread)),
+    ):
+        for findings in findings_list:
+            _call(tmp_path, findings, results)
+    return posted, results
+
+
+def test_recorded_comment_with_same_key_but_new_identity_is_not_adopted(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    first = _f(key="MERITS:k", path="a.py")
+    second = _f(key="MERITS:k", path="b.py")  # same key, different identity: fresh
+    posted, results = _run_with_comments(tmp_path, [], [[first], [second]])
+    assert not any(isinstance(r, Exception) for r in results), results
+    assert len(posted) == 2
+    events = sorted(
+        bounce_events("cid-1", repo_root=str(tmp_path)), key=lambda e: e["bounce_number"]
+    )
+    assert [e["comment_id"] for e in events] == [500, 501]
+    assert [e["bounce_number"] for e in events] == [1, 2]
+
+
+def test_adoption_with_a_prior_recorded_bounce_records_bounce_number_two(tmp_path, monkeypatch):
+    from scripts.automation.lib.merge_authority import BounceAuditWriteError
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    posted: list = []
+
+    def post(owner, repo, number, body, **k):
+        c = _comment(600 + len(posted), body)
+        posted.append(c)
+        return c
+
+    with (
+        patch(f"{MA}.post_comment", side_effect=post),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", side_effect=lambda *a, **k: list(posted)),
+    ):
+        results: list = []
+        _call(tmp_path, [_f(key="MERITS:z", path="z.py")], results)
+        assert not isinstance(results[0], Exception)
+        with patch(f"{MA}._AUDIT_LOG.write_event", side_effect=OSError("disk full")):
+            failed: list = []
+            _call(tmp_path, [_f()], failed)
+        assert isinstance(failed[0], BounceAuditWriteError)
+        retry: list = []
+        _call(tmp_path, [_f()], retry)
+    assert len(posted) == 2
+    events = sorted(
+        bounce_events("cid-1", repo_root=str(tmp_path)), key=lambda e: e["bounce_number"]
+    )
+    assert [e["bounce_number"] for e in events] == [1, 2]
+    assert events[1]["comment_id"] == 601
+
+
+def test_marker_depends_on_cid_and_head():
+    from scripts.automation.lib.merge_authority import _bounce_marker
+
+    base = _bounce_marker("cid-1", HEAD, ["a"], 1)
+    assert base != _bounce_marker("cid-2", HEAD, ["a"], 1)
+    assert base != _bounce_marker("cid-1", "f" * 40, ["a"], 1)
+    # one full 128-bit digest, never a truncation to a short prefix
+    digest = base.removeprefix("<!-- hos-bounce v=1 id=").removesuffix(" -->")
+    assert len(digest) == 32 and int(digest, 16) >= 0
+
+
+def test_find_posted_bounce_matches_whole_line_only(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    embedded = _comment(1, f"quoted: {marker} trailing\n")
+    exact = _comment(2, f"text\n{marker}\n")
+    with patch(f"{MA}._github.list_issue_comments", return_value=[embedded]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is None
+    with patch(f"{MA}._github.list_issue_comments", return_value=[embedded, exact]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is exact
+
+
+def test_find_posted_bounce_excludes_recorded_ids_and_picks_oldest_orphan(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    recorded = _comment(5, marker + "\n")
+    first = _comment(6, marker + "\n")
+    second = _comment(7, marker + "\n")
+    with patch(f"{MA}._github.list_issue_comments", return_value=[recorded, first, second]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, {"5"}) is first
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, {"5", "6", "7"}) is None
+
+
+def test_find_posted_bounce_without_login_reads_nothing_even_for_userless_comment(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.delenv("HOS_BOT_LOGIN", raising=False)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    userless = {"id": 3, "body": marker + "\n", "user": None}
+    with patch(f"{MA}._github.list_issue_comments", return_value=[userless]) as read:
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is None
+    read.assert_not_called()
+
+
+def test_find_posted_bounce_reads_with_the_bounded_page_cap(monkeypatch):
+    from scripts.automation.lib import merge_authority as ma
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    with patch(f"{MA}._github.list_issue_comments", return_value=[]) as read:
+        ma._find_posted_bounce(OWNER, REPO, 9, "m", set())
+    assert ma._BOUNCE_COMMENTS_MAX_PAGES == 10
+    assert read.call_args.kwargs == {"max_pages": 10}
+    assert read.call_args.args == (OWNER, REPO, 9)
+
+
+def test_legacy_failures_path_also_posts_the_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", return_value=[]),
+    ):
+        record_pr_bounce(
+            OWNER,
+            REPO,
+            123,
+            cid="cid-1",
+            reason_category="MERITS_FINDING",
+            summary="s",
+            failures=["register-missing"],
+            repo_root=str(tmp_path),
+            head_sha=HEAD,
+        )
+    assert len(bodies) == 1
+    lines = bodies[0].splitlines()
+    assert any(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines)
+    assert sum(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines) == 1
+
+
+def test_posted_bounce_is_not_marked_adopted(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+    assert results[0].adopted is False
+    assert "adopted" not in bounce_events("cid-1", repo_root=str(tmp_path))[0]
+
+
+def test_unset_bot_login_warns_that_adoption_is_skipped(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("HOS_BOT_LOGIN", raising=False)
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post([])),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        caplog.at_level("WARNING", logger=MA),
+    ):
+        _call(tmp_path, [_f()], [])
+    assert any("HOS_BOT_LOGIN unset" in r.getMessage() for r in caplog.records)
+
+
+def test_adoption_logs_at_info(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = _bounce_marker("cid-1", HEAD, [_f().key], 1)
+    orphan = _comment(77, "body\n" + marker + "\n")
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post([])) as post,
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", return_value=[orphan]),
+        caplog.at_level("INFO", logger=MA),
+    ):
+        _call(tmp_path, [_f()], [])
+    post.assert_not_called()
+    assert any("adopted already-posted bounce comment 77" in r.getMessage() for r in caplog.records)

@@ -15,6 +15,7 @@ import pytest
 from scripts.automation.lib import github as github_module
 from scripts.automation.lib.github import (
     GitHubError,
+    ListTruncatedError,
     RateLimitError,
     _run_gh,
     get_branch,
@@ -179,6 +180,45 @@ class TestListIssueComments:
         with _patch_run([_make_result(404)]):
             result = list_issue_comments("o", "r", 1)
         assert result == []
+
+
+class TestListIssueCommentsBounded:
+    @staticmethod
+    def _run(pages):
+        it = iter(pages)
+        return patch("scripts.automation.lib.github._run_gh", side_effect=lambda *a, **k: next(it))
+
+    def test_exact_boundary_with_empty_next_page_passes(self):
+        full = [{"id": i} for i in range(100)]
+        with self._run([full, []]):
+            assert list_issue_comments("o", "r", 1, max_pages=1) == full
+
+    def test_non_empty_page_beyond_max_pages_raises(self):
+        full = [{"id": i} for i in range(100)]
+        with self._run([full, [{"id": 1}]]):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=1)
+
+    def test_empty_list_is_a_normal_empty_thread(self):
+        with self._run([[]]):
+            assert list_issue_comments("o", "r", 1, max_pages=1) == []
+
+    @pytest.mark.parametrize("page", [1, 2])
+    def test_none_page_raises_when_bounded(self, page):
+        full = [{"id": i} for i in range(100)]
+        pages = [None] if page == 1 else [full, None]
+        with self._run(pages):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=3)
+
+    def test_none_page_is_still_end_of_list_when_unbounded(self):
+        with self._run([None]):
+            assert list_issue_comments("o", "r", 1) == []
+
+    def test_non_list_payload_raises(self):
+        with self._run([{"message": "x"}]):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=1)
 
 
 class TestListCheckRunsForRef:
@@ -761,3 +801,10 @@ def test_list_issue_events_empty_later_page_is_end_of_list():
     full = [{"id": i} for i in range(100)]
     with patch.object(github_module, "_run_gh", side_effect=[full, None]):
         assert len(github_module.list_issue_events("o", "r", 7)) == 100
+
+
+class TestListIssueCommentsUnbounded:
+    def test_non_list_payload_without_max_pages_is_not_rejected(self):
+        # unbounded callers are not subject to the #2263 payload check
+        with patch("scripts.automation.lib.github._run_gh", side_effect=[{"message": "x"}]):
+            assert list_issue_comments("o", "r", 1) == ["message"]
