@@ -73,6 +73,7 @@ def test_lib_stdlib_only():
         "sys",
         "time",
         "typing",
+        "unicodedata",
     }
     found = set()
     for node in ast.walk(ast.parse(LIB.read_text())):
