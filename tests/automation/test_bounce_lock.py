@@ -27,6 +27,13 @@ from scripts.automation.lib.merge_authority import (
 from tests.automation.test_bounce_gate import HEAD, MA, OWNER, REPO, _f, _gh_stub, _post
 
 
+@pytest.fixture(autouse=True)
+def _no_live_comment_read(monkeypatch):
+    """Default the already-posted-comment read to `[]` so no test reaches GitHub
+    when HOS_BOT_LOGIN is set; tests that need comments patch it explicitly."""
+    monkeypatch.setattr(f"{MA}._github.list_issue_comments", lambda *a, **k: [])
+
+
 def _call(tmp_path, findings, results, **kw):
     try:
         results.append(
