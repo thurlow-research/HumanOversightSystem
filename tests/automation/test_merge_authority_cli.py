@@ -1973,3 +1973,11 @@ def test_t_cli_2263_lock_unavailable_without_cause_has_null_errno():
     fail = cli._lock_unavailable_fail(merge_authority.BounceLockUnavailable("x"))
     assert fail.klass == "deterministic"
     assert fail.extra == {"comment_posted": False, "errno": None}
+
+
+@pytest.mark.parametrize("adopted", [True, False])
+def test_t_cli_2263_bounce_payload_surfaces_adopted(adopted):
+    result = merge_authority.BounceResult(
+        comment_url="u", audit_relpath="a", bounce_number=1, adopted=adopted
+    )
+    assert cli._bounce_payload(result)["adopted"] is adopted
