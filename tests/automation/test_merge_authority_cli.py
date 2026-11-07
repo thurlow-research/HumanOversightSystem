@@ -1959,3 +1959,17 @@ def test_t_cli_2263_lock_unavailable_classified_by_errno(code, klass, name):
     fail = cli._lock_unavailable_fail(exc)
     assert (fail.code, fail.klass) == ("bounce_lock_unavailable", klass)
     assert fail.extra == {"comment_posted": False, "errno": code, "errno_name": name}
+
+
+def test_t_cli_2263_lock_unavailable_unknown_errno_omits_name():
+    exc = merge_authority.BounceLockUnavailable("x")
+    exc.__cause__ = OSError(99999, "boom")
+    fail = cli._lock_unavailable_fail(exc)
+    assert fail.klass == "deterministic"
+    assert fail.extra == {"comment_posted": False, "errno": 99999}
+
+
+def test_t_cli_2263_lock_unavailable_without_cause_has_null_errno():
+    fail = cli._lock_unavailable_fail(merge_authority.BounceLockUnavailable("x"))
+    assert fail.klass == "deterministic"
+    assert fail.extra == {"comment_posted": False, "errno": None}
