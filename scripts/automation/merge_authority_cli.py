@@ -1100,9 +1100,11 @@ def _lock_timeout_fail(exc: merge_authority.BounceLockTimeout) -> _Fail:
 
 
 def _lock_unavailable_fail(exc: merge_authority.BounceLockUnavailable) -> _Fail:
-    extra: dict = {"comment_posted": False, "errno": exc.errno}
-    if exc.errno in errno.errorcode:
-        extra["errno_name"] = errno.errorcode[exc.errno]
+    code = exc.errno
+    extra: dict = {"comment_posted": False, "errno": code}
+    name = errno.errorcode.get(code) if code is not None else None
+    if name:
+        extra["errno_name"] = name
     return _Fail("bounce_lock_unavailable", str(exc), exc.classification, extra)
 
 
