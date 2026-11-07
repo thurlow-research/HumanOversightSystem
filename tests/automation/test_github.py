@@ -15,6 +15,7 @@ import pytest
 from scripts.automation.lib import github as github_module
 from scripts.automation.lib.github import (
     GitHubError,
+    ListTruncatedError,
     RateLimitError,
     _run_gh,
     get_branch,
@@ -179,6 +180,29 @@ class TestListIssueComments:
         with _patch_run([_make_result(404)]):
             result = list_issue_comments("o", "r", 1)
         assert result == []
+
+
+class TestListIssueCommentsBounded:
+    @staticmethod
+    def _run(pages):
+        it = iter(pages)
+        return patch("scripts.automation.lib.github._run_gh", side_effect=lambda *a, **k: next(it))
+
+    def test_exact_boundary_with_empty_next_page_passes(self):
+        full = [{"id": i} for i in range(100)]
+        with self._run([full, []]):
+            assert list_issue_comments("o", "r", 1, max_pages=1) == full
+
+    def test_non_empty_page_beyond_max_pages_raises(self):
+        full = [{"id": i} for i in range(100)]
+        with self._run([full, [{"id": 1}]]):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=1)
+
+    def test_non_list_payload_raises(self):
+        with self._run([{"message": "x"}]):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=1)
 
 
 class TestListCheckRunsForRef:

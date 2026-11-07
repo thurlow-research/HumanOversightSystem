@@ -595,7 +595,7 @@ def test_marker_for_different_keys_does_not_suppress_posting(tmp_path, monkeypat
     from scripts.automation.lib.merge_authority import _bounce_marker
 
     monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
-    other = _comment(7, "x\n" + _bounce_marker("cid-1", HEAD, ["MERITS:other"]) + "\n")
+    other = _comment(7, "x\n" + _bounce_marker("cid-1", HEAD, ["MERITS:other"], 1) + "\n")
     bodies: list = []
     with (
         patch(f"{MA}.post_comment", side_effect=_post(bodies)),
@@ -611,7 +611,7 @@ def test_marker_for_different_keys_does_not_suppress_posting(tmp_path, monkeypat
 def test_marker_from_another_author_or_without_bot_login_is_not_adopted(tmp_path, monkeypatch):
     from scripts.automation.lib.merge_authority import _bounce_marker
 
-    marker = _bounce_marker("cid-1", HEAD, [_f().key])
+    marker = _bounce_marker("cid-1", HEAD, [_f().key], 1)
     forged = _comment(7, marker + "\n", login="someone-else")
     bodies: list = []
     for login in (BOT, None):
@@ -636,12 +636,84 @@ def test_marker_is_in_both_body_forms_and_is_injection_safe():
         _bounce_marker,
     )
 
-    marker = _bounce_marker("cid --> <x>", HEAD, ["b", "a"])
-    assert marker == _bounce_marker("cid --> <x>", HEAD, ["a", "b"])
-    assert marker != _bounce_marker("cid --> <x>", HEAD, ["a"])
+    marker = _bounce_marker("cid --> <x>", HEAD, ["b", "a"], 1)
+    assert marker == _bounce_marker("cid --> <x>", HEAD, ["a", "b"], 1)
+    assert marker != _bounce_marker("cid --> <x>", HEAD, ["a"], 1)
+    assert marker != _bounce_marker("cid --> <x>", HEAD, ["a", "b"], 2)
     assert marker.count("-->") == 1 and "cid" not in marker
     legacy = _bounce_comment_body(["register-missing"], "REGISTER_GAP", "s", 1, marker=marker)
     findings = _bounce_comment_body_findings(
         [("F1", _f())], "MERITS_FINDING", "s", 1, cid="cid-1", head_sha=HEAD, marker=marker
     )
     assert marker in legacy.splitlines() and marker in findings.splitlines()
+
+
+def _run_with_comments(tmp_path, comments, findings_list):
+    """Bounce each findings list in turn; the fake PR thread accumulates real posts."""
+    thread = list(comments)
+    posted: list = []
+
+    def post(owner, repo, number, body, **k):
+        c = _comment(500 + len(posted), body)
+        posted.append(c)
+        thread.append(c)
+        return c
+
+    results: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=post),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", side_effect=lambda *a, **k: list(thread)),
+    ):
+        for findings in findings_list:
+            _call(tmp_path, findings, results)
+    return posted, results
+
+
+def test_recorded_comment_with_same_key_but_new_identity_is_not_adopted(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    first = _f(key="MERITS:k", path="a.py")
+    second = _f(key="MERITS:k", path="b.py")  # same key, different identity: fresh
+    posted, results = _run_with_comments(tmp_path, [], [[first], [second]])
+    assert not any(isinstance(r, Exception) for r in results), results
+    assert len(posted) == 2
+    events = sorted(
+        bounce_events("cid-1", repo_root=str(tmp_path)), key=lambda e: e["bounce_number"]
+    )
+    assert [e["comment_id"] for e in events] == [500, 501]
+    assert [e["bounce_number"] for e in events] == [1, 2]
+
+
+def test_adoption_with_a_prior_recorded_bounce_records_bounce_number_two(tmp_path, monkeypatch):
+    from scripts.automation.lib.merge_authority import BounceAuditWriteError
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    posted: list = []
+
+    def post(owner, repo, number, body, **k):
+        c = _comment(600 + len(posted), body)
+        posted.append(c)
+        return c
+
+    with (
+        patch(f"{MA}.post_comment", side_effect=post),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", side_effect=lambda *a, **k: list(posted)),
+    ):
+        results: list = []
+        _call(tmp_path, [_f(key="MERITS:z", path="z.py")], results)
+        assert not isinstance(results[0], Exception)
+        with patch(f"{MA}._AUDIT_LOG.write_event", side_effect=OSError("disk full")):
+            failed: list = []
+            _call(tmp_path, [_f()], failed)
+        assert isinstance(failed[0], BounceAuditWriteError)
+        retry: list = []
+        _call(tmp_path, [_f()], retry)
+    assert len(posted) == 2
+    events = sorted(
+        bounce_events("cid-1", repo_root=str(tmp_path)), key=lambda e: e["bounce_number"]
+    )
+    assert [e["bounce_number"] for e in events] == [1, 2]
+    assert events[1]["comment_id"] == 601

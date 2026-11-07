@@ -347,16 +347,12 @@ def list_issue_comments(
     Returns a list of comment objects ordered oldest-first.
     Paginates automatically — uses REST-by-id, never Search.
 
-    With ``max_pages``, a non-list page or more than ``max_pages`` full pages
+    With ``max_pages``, a non-list page or a non-empty page beyond ``max_pages``
     raises ListTruncatedError rather than returning a partial list (#2263).
     """
     comments: list[dict[str, Any]] = []
     page = 1
     while True:
-        if max_pages is not None and page > max_pages:
-            raise ListTruncatedError(
-                f"comments for {owner}/{repo}#{issue_number} exceeded {max_pages} pages"
-            )
         batch = _run_gh(
             [f"/repos/{owner}/{repo}/issues/{issue_number}/comments" f"?per_page=100&page={page}"]
         )
@@ -367,6 +363,10 @@ def list_issue_comments(
             )
         if not batch:
             break
+        if max_pages is not None and page > max_pages:
+            raise ListTruncatedError(
+                f"comments for {owner}/{repo}#{issue_number} exceeded {max_pages} pages"
+            )
         comments.extend(batch)
         if len(batch) < 100:
             break

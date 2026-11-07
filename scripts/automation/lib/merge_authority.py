@@ -2084,21 +2084,24 @@ _BOUNCE_MARKER_PREFIX = "<!-- hos-bounce v=1 id="
 _BOUNCE_COMMENTS_MAX_PAGES = 10
 
 
-def _bounce_marker(cid: str, head_sha: str, new_keys: Sequence[str]) -> str:
+def _bounce_marker(cid: str, head_sha: str, new_keys: Sequence[str], bounce_number: int) -> str:
     """The hidden, deterministic line that identifies one bounce comment (#2263).
 
-    One digest over (cid, head, sorted keys) keeps caller-supplied text out of
+    One digest over (cid, head, bounce number, sorted keys) keeps caller-supplied text out of
     the comment, so no cid or key can close the HTML comment early.
     """
-    material = "\0".join([cid, head_sha, *sorted(new_keys)])
+    material = "\0".join([cid, head_sha, str(bounce_number), *sorted(new_keys)])
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
     return f"{_BOUNCE_MARKER_PREFIX}{digest} -->"
 
 
 def _find_posted_bounce(
-    owner: str, repo: str, pr_number: int, marker: str
+    owner: str, repo: str, pr_number: int, marker: str, recorded_ids: Collection[str]
 ) -> Optional[dict[str, Any]]:
-    """A comment by the current bot carrying exactly `marker` (oldest first), else None.
+    """An orphan comment by the current bot carrying exactly `marker` (oldest first), else None.
+
+    A comment whose id a recorded `pr-bounced` event already references is never
+    an orphan: only a comment posted but not recorded may be adopted.
 
     Reads every comment page, bounded; a failed or truncated read raises
     GitHubError so the caller halts before posting on an unknown state. Without
@@ -2114,6 +2117,7 @@ def _find_posted_bounce(
     for comment in comments:
         if (
             isinstance(comment, dict)
+            and str(comment.get("id")) not in recorded_ids
             and (comment.get("user") or {}).get("login") == login
             and marker in str(comment.get("body") or "").splitlines()
         ):
@@ -2624,7 +2628,7 @@ def record_pr_bounce(
                 at_cap=True,
             )
         bounce_number = prior_count + 1
-        marker = _bounce_marker(cid, head_sha, new_keys)
+        marker = _bounce_marker(cid, head_sha, new_keys, bounce_number)
         finding_ids: list[str] = []
         if findings is not None:
             start = next_finding_index(prior)
@@ -2651,7 +2655,12 @@ def record_pr_bounce(
         # A prior attempt may have posted and then failed its audit write. No event
         # exists, so prior_count is unchanged and that comment's bounce number equals
         # this one's: adopt it rather than post (and count) a second time.
-        comment = _find_posted_bounce(owner, repo, pr_number, marker)
+        recorded_ids = {
+            str(e.get("comment_id"))
+            for e in bounce_events(cid, repo_root=repo_root)
+            if e.get("comment_id") is not None
+        }
+        comment = _find_posted_bounce(owner, repo, pr_number, marker, recorded_ids)
         if comment is None:
             comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
 
