@@ -2110,6 +2110,11 @@ def _find_posted_bounce(
     """
     login = os.environ.get("HOS_BOT_LOGIN")
     if not login:
+        logger.warning(
+            "record_pr_bounce: HOS_BOT_LOGIN unset; not looking for an already-posted "
+            "bounce comment on PR #%s (a retry after an audit-write failure may re-post)",
+            pr_number,
+        )
         return None
     comments = _github.list_issue_comments(
         owner, repo, pr_number, max_pages=_BOUNCE_COMMENTS_MAX_PAGES
@@ -2295,6 +2300,7 @@ class BounceResult:
     finalize_repaired: list[str] = field(default_factory=list)
     at_cap: bool = False
     finding_keys: list[str] = field(default_factory=list)
+    adopted: bool = False
 
 
 def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
@@ -2660,8 +2666,17 @@ def record_pr_bounce(
             for e in bounce_events(cid, repo_root=repo_root)
             if e.get("comment_id") is not None
         }
-        comment = _find_posted_bounce(owner, repo, pr_number, marker, recorded_ids)
-        if comment is None:
+        orphan = _find_posted_bounce(owner, repo, pr_number, marker, recorded_ids)
+        adopted = orphan is not None
+        if orphan is not None:
+            comment = orphan
+            logger.info(
+                "record_pr_bounce: adopted already-posted bounce comment %s on PR #%s "
+                "(an earlier attempt's audit write failed)",
+                comment.get("id"),
+                pr_number,
+            )
+        else:
             comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
 
         event = {
@@ -2681,6 +2696,8 @@ def record_pr_bounce(
             "comment_created_at": comment.get("created_at"),
             "actor": os.environ.get("HOS_BOT_LOGIN") or None,
         }
+        if adopted:
+            event["adopted"] = True
         if findings is not None:
             event["findings"] = [
                 {"id": fid, "class": f.cls, "key": f.key, "origin": f.origin, "path": f.path}
@@ -2717,6 +2734,7 @@ def record_pr_bounce(
         finalize_errors=finalize_errors,
         finding_ids=finding_ids,
         finding_keys=[f.key for f in fresh],
+        adopted=adopted,
     )
 
 

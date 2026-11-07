@@ -18,6 +18,7 @@ from scripts.automation.lib.merge_authority import (
     BounceLockUnavailable,
     RepairReadError,
     _bounce_lock,
+    _bounce_marker,
     bounce_count,
     bounce_events,
     record_pr_bounce,
@@ -585,6 +586,8 @@ def test_retry_after_audit_write_failure_adopts_the_posted_comment(tmp_path, mon
     events = bounce_events("cid-1", repo_root=str(tmp_path))
     assert len(events) == 1 and events[0]["comment_id"] == 900
     assert events[0]["bounce_number"] == 1
+    assert events[0]["adopted"] is True
+    assert result.adopted is True
 
 
 def test_comment_read_failure_raises_before_posting(tmp_path, monkeypatch):
@@ -813,3 +816,44 @@ def test_legacy_failures_path_also_posts_the_marker(tmp_path, monkeypatch):
     lines = bodies[0].splitlines()
     assert any(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines)
     assert sum(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines) == 1
+
+
+def test_posted_bounce_is_not_marked_adopted(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+    assert results[0].adopted is False
+    assert "adopted" not in bounce_events("cid-1", repo_root=str(tmp_path))[0]
+
+
+def test_unset_bot_login_warns_that_adoption_is_skipped(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("HOS_BOT_LOGIN", raising=False)
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post([])),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        caplog.at_level("WARNING", logger=MA),
+    ):
+        _call(tmp_path, [_f()], [])
+    assert any("HOS_BOT_LOGIN unset" in r.getMessage() for r in caplog.records)
+
+
+def test_adoption_logs_at_info(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = _bounce_marker("cid-1", HEAD, [_f().key], 1)
+    orphan = _comment(77, "body\n" + marker + "\n")
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post([])) as post,
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", return_value=[orphan]),
+        caplog.at_level("INFO", logger=MA),
+    ):
+        _call(tmp_path, [_f()], [])
+    post.assert_not_called()
+    assert any("adopted already-posted bounce comment 77" in r.getMessage() for r in caplog.records)

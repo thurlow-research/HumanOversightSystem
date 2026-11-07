@@ -1084,6 +1084,7 @@ def _bounce_payload(result: merge_authority.BounceResult) -> dict:
         "finding_keys": list(result.finding_keys),
         "skipped": result.skipped,
         "at_cap": result.at_cap,
+        "adopted": result.adopted,
         "finalize_errors": list(result.finalize_errors),
         "finalize_repaired": list(result.finalize_repaired),
     }

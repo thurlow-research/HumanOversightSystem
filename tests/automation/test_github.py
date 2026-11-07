@@ -199,6 +199,22 @@ class TestListIssueCommentsBounded:
             with pytest.raises(ListTruncatedError):
                 list_issue_comments("o", "r", 1, max_pages=1)
 
+    def test_empty_list_is_a_normal_empty_thread(self):
+        with self._run([[]]):
+            assert list_issue_comments("o", "r", 1, max_pages=1) == []
+
+    @pytest.mark.parametrize("page", [1, 2])
+    def test_none_page_raises_when_bounded(self, page):
+        full = [{"id": i} for i in range(100)]
+        pages = [None] if page == 1 else [full, None]
+        with self._run(pages):
+            with pytest.raises(ListTruncatedError):
+                list_issue_comments("o", "r", 1, max_pages=3)
+
+    def test_none_page_is_still_end_of_list_when_unbounded(self):
+        with self._run([None]):
+            assert list_issue_comments("o", "r", 1) == []
+
     def test_non_list_payload_raises(self):
         with self._run([{"message": "x"}]):
             with pytest.raises(ListTruncatedError):
