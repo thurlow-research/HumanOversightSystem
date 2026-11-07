@@ -449,8 +449,9 @@ record_pr_bounce(owner, repo, pr_number, *, cid, reason_category, summary,
                  head_sha: Optional[str] = None,                # new
                  findings: Optional[Sequence[Finding]] = None,  # new
                  epoch_since: Optional[str] = None,             # new
+                 cap: Optional[int] = <BOUNCE_CAP>,             # #2272: default read at call time; None = opt-out
                  ) -> BounceResult
-BounceResult += skipped: bool = False; finding_ids: list[str] = []; finalize_repaired: list[str] = []
+BounceResult += skipped: bool = False; finding_ids: list[str] = []; finalize_repaired: list[str] = []; at_cap: bool = False
 ```
 - `bounced_on_head` reads every `pr-bounced` event with `cid == cid` and `head_sha == head_sha`. It
   returns each `findings[]` entry. A legacy event (no `findings`) has each `failures` token mapped by
@@ -480,7 +481,8 @@ BounceResult += skipped: bool = False; finding_ids: list[str] = []; finalize_rep
      `BounceResult(comment_url=None, audit_relpath="", bounce_number=<count>, skipped=True, finalize_repaired=[...])`.
      A label or draft write failure is appended to `finalize_errors` and does not raise. A failed or
      truncated **read** (the PR or the issue events) raises [codex second review].
-  4. `bounce_number = bounce_count(cid, since=epoch_since) + 1`.
+  4. `bounce_number = bounce_count(cid, since=epoch_since) + 1`. Before that, unless `cap is None`, a
+     count `>= cap` posts and writes nothing and returns `skipped=True, at_cap=True` (#2272).
   5. Assign ids. When `findings` is given:
      `"<head_sha[:12]>-F<k>"` for `k = next_finding_index(prior), next_finding_index(prior)+1, …`, in
      input order.
