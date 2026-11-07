@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"9c3092b8974439cdc896592d4b1a94c44d99ff76","pr":2271,"reason":"Verdict (DECIDE), §8.2 thread, needs-human label and CODEOWNER request already posted at this head at 2026-11-07T11:00Z; no new commits, reviews, or comments since","timestamp":"2026-11-07T11:11:17Z"}
