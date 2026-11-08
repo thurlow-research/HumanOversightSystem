@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"869e556a26553ac947575475dce8ce9dc395fc24","pr":2279,"reason":"No new information on head 869e556a since the 09:28Z verdict: no new commits, reviews or comments; awaiting designated human approval (ScottThurlow already requested).","timestamp":"2026-11-08T09:42:57Z"}
