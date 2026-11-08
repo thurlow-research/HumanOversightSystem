@@ -19,6 +19,7 @@ role_mappings:
   test-unit:      unit-test
   test-system:    system-test
   process:        pm-agent
+  architecture:   architect           # required on ADR / ADR-amendment steps (#2276)
   # infra:        infra-reviewer      # uncomment if you have an infra reviewer
   # ui:           ui-reviewer         # uncomment if you have a UI reviewer
   # a11y:         a11y-reviewer       # uncomment if you have an a11y reviewer

@@ -15,11 +15,14 @@ Each test copies only the script's own dependencies into an isolated tmp_path
 layout (mirrors tests/framework/test_codeowners_current.py) so it never
 touches the real repo tree.
 """
+
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.framework._role_writability_scaffold import add_role_writability_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "scripts" / "framework" / "check_agents_static.sh"
@@ -34,8 +37,9 @@ def _scaffold(tmp_path: Path) -> Path:
     (tmp_path / "scripts" / "oversight").mkdir(parents=True)
     shutil.copy(LOGIC, tmp_path / "scripts" / "oversight" / LOGIC.name)
 
+    add_role_writability_fixture(tmp_path)
     agents_dir = tmp_path / ".claude" / "agents"
-    agents_dir.mkdir(parents=True)
+    agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / "fake-agent.md").write_text(
         "---\nname: fake-agent\ndescription: test fixture\nmodel: sonnet\n---\n\n"
         "You are a test fixture agent.\n"
@@ -99,7 +103,7 @@ def test_dated_id_in_bin_fails(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "hos-thing").write_text(
-        '#!/usr/bin/env bash\n# uses claude-opus-4-8 for review\n'
+        "#!/usr/bin/env bash\n# uses claude-opus-4-8 for review\n"
     )
     result = _run(tmp_path)
     assert result.returncode == 1
@@ -109,9 +113,7 @@ def test_dated_id_in_bin_fails(tmp_path):
 def test_dated_id_in_current_docs_fails(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "AGENTS.md").write_text(
-        "# Agents\n\n**Model:** `claude-sonnet-4-6`\n"
-    )
+    (tmp_path / "docs" / "AGENTS.md").write_text("# Agents\n\n**Model:** `claude-sonnet-4-6`\n")
     result = _run(tmp_path)
     assert result.returncode == 1
     assert "dated model generation ID" in result.stdout
@@ -125,8 +127,7 @@ def test_current_alias_model_id_does_not_false_positive(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "NOTES.md").write_text(
-        "The AI-Model trailer should read `claude-sonnet-5`, the actual "
-        "running model ID.\n"
+        "The AI-Model trailer should read `claude-sonnet-5`, the actual " "running model ID.\n"
     )
     result = _run(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr

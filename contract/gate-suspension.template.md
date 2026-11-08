@@ -69,7 +69,7 @@ reason_category: [EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER]
 <!-- One line per suspended gate/reviewer. Remove a line to re-enable that gate. -->
 <!-- Gate names match the role keys in contract/step-manifest.yaml role_mappings. -->
 <!-- Script gate names: lint, secrets, security, types, template-refs, portability, django -->
-<!-- Sign-off role names: code-review, security, privacy, ui, a11y, infra, ops, reliability, test-unit, test-system, process -->
+<!-- Sign-off role names: code-review, security, privacy, ui, a11y, infra, ops, reliability, test-unit, test-system, process, architecture -->
 <!--
   Optional per-line flags:
     SUSPENDED: lint review-by: 2026-07-01   ← validator warns once this date passes

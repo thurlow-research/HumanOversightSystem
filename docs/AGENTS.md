@@ -327,6 +327,8 @@ When `technical-design` or a reviewer escalates a spec-gap that cannot be resolv
 
 **Startup-gap recovery:** For every reactive ADR revision or post-initial-review architecture decision, the architect first asks whether it should have been settled in the initial architecture review. If so: open or annotate a `startup-artifact-gap` issue, update the ADR, and perform an **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review — design and code approved against the *superseded* ADR are orphaned approvals until re-checked against the revision. (Mirrors the recovery step `ux-designer` and `ops-designer` already run.)
 
+**Sign-off register:** Writes a per-step register entry (role key `architecture`, `Agent: architect`) only when the step's required reviewers include `architecture`. The risk-assessor adds that role on any step that adds or changes an ADR or ADR amendment. The entry records review of the architecture artifact, not approval of code. On every other step the architect writes no register entry (#2276).
+
 **Escalation out:** Human (unresolvable after architect, or product/policy decisions, including the product-boundary checkpoint above); `pm-agent` via `spec-gap` issue (product/requirements decisions that cannot be resolved architecturally).
 **Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`, `ops-designer`, `ops-reviewer` (spec gap unresolved after 2 cycles), `reliability-reviewer` (structural reliability issue), `unit-test` (coder refuses a testability refactor).
 
