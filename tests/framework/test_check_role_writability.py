@@ -265,3 +265,38 @@ def test_static_section_fails_when_contract_missing_but_checker_present(tmp_path
     (tmp_path / "contract" / "OVERSIGHT-CONTRACT.md").unlink()
     result = _static_run(tmp_path)
     assert result.returncode == 1, result.stdout
+
+
+def test_template_without_role_mappings_block_exits_2(tmp_path, capsys):
+    rc, out = _run(_tree(tmp_path, template="# nothing\n"), capsys)
+    assert rc == 2
+    assert "step-manifest.template.yaml" in out.err
+    assert "no role_mappings block" in out.err
+
+
+def test_risk_assessor_without_phase6_roles_exits_2(tmp_path, capsys):
+    rc, out = _run(_tree(tmp_path, risk="# Risk assessor\n"), capsys)
+    assert rc == 2
+    assert "no roles found" in out.err
+
+
+def test_quiet_suppresses_ok_line_on_clean_tree(tmp_path, capsys):
+    rc = crw.main(["--repo-root", str(_tree(tmp_path)), "--quiet"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_entrypoint_exit_codes_on_clean_and_broken_tree(tmp_path):
+    script = ROOT / "scripts" / "framework" / "check_role_writability.py"
+    clean = _tree(tmp_path / "a") if (tmp_path / "a").mkdir() is None else None
+    ok = subprocess.run(
+        ["python3", str(script), "--repo-root", str(clean)], capture_output=True, text=True
+    )
+    assert ok.returncode == 0
+    assert ok.stdout.startswith("OK:")
+    bad = subprocess.run(
+        ["python3", str(script), "--repo-root", str(tmp_path / "missing")],
+        capture_output=True,
+        text=True,
+    )
+    assert bad.returncode == 2
