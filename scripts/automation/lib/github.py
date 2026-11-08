@@ -57,6 +57,15 @@ _EXPORT_RE = re.compile(r"^export (GH_TOKEN|HOS_BOT_LOGIN)='([^']*)'$")
 _REMINT_COOLDOWN_SECONDS = 300
 _last_remint_failure: Optional[float] = None  # time.monotonic() of last failed mint
 
+# Number of `_run_gh` invocations made by this process (one per logical call,
+# not per retry). Callers read deltas via `gh_call_count()` to report API cost.
+_gh_call_count = 0
+
+
+def gh_call_count() -> int:
+    """Logical `gh api` calls made so far by this process (monotonic)."""
+    return _gh_call_count
+
 
 def _remint_token() -> bool:
     """
@@ -165,6 +174,8 @@ def _run_gh(
     GitHubError(status_code=401) — a 401 is never backed off, parsed as
     data, or returned as None.
     """
+    global _gh_call_count
+    _gh_call_count += 1
     stdin_input: Optional[str] = None
     reminted = False
     base_cmd = ["gh", "api", "--include"]
@@ -332,6 +343,85 @@ def list_pulls(
     if isinstance(result, list):
         return result
     return [result]
+
+
+def list_all_pulls(
+    owner: str,
+    repo: str,
+    *,
+    state: str = "all",
+    max_pages: int = 40,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/pulls (all pages, oldest first).
+
+    Never returns a partial list: a non-list page (a None on page 1 is a 404),
+    more than ``max_pages`` full pages, or an empty ``state="all"`` listing
+    (this repo always has PRs, so empty means a bad read) raises. Ascending
+    creation order means a PR opened during pagination is appended after the
+    existing ones and can never shift an item off a page (#2286).
+    """
+    pulls: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        batch = _run_gh(
+            [
+                f"/repos/{owner}/{repo}/pulls?state={state}&sort=created&direction=asc"
+                f"&per_page=100&page={page}"
+            ]
+        )
+        if batch is None and page == 1:
+            raise GitHubError(f"pulls for {owner}/{repo} not found", status_code=404)
+        if not isinstance(batch, list):
+            raise ListTruncatedError(
+                f"unexpected pulls payload for {owner}/{repo}: expected list, "
+                f"got {type(batch).__name__}"
+            )
+        pulls.extend(batch)
+        if len(batch) < 100:
+            if state == "all" and not pulls:
+                raise ListTruncatedError(f"empty pull-request listing for {owner}/{repo}")
+            return pulls
+    raise ListTruncatedError(f"pulls for {owner}/{repo} exceeded {max_pages} pages")
+
+
+def list_all_issue_states(
+    owner: str,
+    repo: str,
+    *,
+    max_pages: int = 60,
+) -> dict[int, str]:
+    """
+    GET /repos/{owner}/{repo}/issues?state=all (all pages, oldest first) as
+    ``{number: "open" | "closed"}``. Includes PR numbers (harmless: keyed by number).
+
+    Same fail-closed contract as ``list_all_pulls``. Issues can be deleted or
+    transferred mid-pagination, which can skip one item, so a caller must treat
+    a number absent from the map as unknown, never as closed (#2286).
+    """
+    states: dict[int, str] = {}
+    for page in range(1, max_pages + 1):
+        batch = _run_gh(
+            [
+                f"/repos/{owner}/{repo}/issues?state=all&sort=created&direction=asc"
+                f"&per_page=100&page={page}"
+            ]
+        )
+        if batch is None and page == 1:
+            raise GitHubError(f"issues for {owner}/{repo} not found", status_code=404)
+        if not isinstance(batch, list):
+            raise ListTruncatedError(
+                f"unexpected issues payload for {owner}/{repo}: expected list, "
+                f"got {type(batch).__name__}"
+            )
+        for item in batch:
+            number = item.get("number") if isinstance(item, dict) else None
+            state = item.get("state") if isinstance(item, dict) else None
+            if not isinstance(number, int) or state not in ("open", "closed"):
+                raise ListTruncatedError(f"malformed issue entry in {owner}/{repo} listing")
+            states[number] = state
+        if len(batch) < 100:
+            return states
+    raise ListTruncatedError(f"issues for {owner}/{repo} exceeded {max_pages} pages")
 
 
 def list_issue_comments(

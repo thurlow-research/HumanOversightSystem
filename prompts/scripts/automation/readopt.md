@@ -99,6 +99,51 @@ coder as follow-up messages, each driven by a recorded finding (see the step reg
 Pasting only the brief into a fresh session reproduces v1, not the final code; the follow-ups
 above are needed as well.
 
+## #2286 reap-orphans (slice 1)
+
+Date 2026-11-08, model claude-opus-5-5, risk HIGH. The `coder` subagent was dispatched by the
+worker with this brief (condensed):
+
+```
+Implement slice 1 of issue #2286 exactly as specified by the APPROVED technical design
+docs/v0.7.0/TECHNICAL-DESIGN-2286-reap-orphans.md, including its binding section 10 architect
+edits A1-A11 (they override earlier sections). Files: scripts/automation/readopt.py,
+scripts/automation/lib/github.py, tests/automation/test_readopt.py (+ test_github.py for the
+helpers), and this artifact. Do not edit .claude/agents/worker.md or bin/hos-cron (slice 2).
+Hard rules: never run reap-orphans / prune-attempts without --dry-run against the real repo;
+tests use temp repos with a local bare origin and fake github.py; the GitHub token never
+appears in argv, URLs, printed output or exception text.
+```
+
+Intent: a `readopt.py reap-orphans` subcommand deleting orphaned local branches and remote
+`worker-*` heads by PR / issue / content state after a 7-day grace, fail-closed on any failed
+listing, never touching open-PR heads or unlanded work on open issues; `prune-attempts` also
+deletes the remote head of each attempt it deletes (compare-and-swap, WARN-only on failure).
+Remote deletes are one batched, per-ref-leased `git push` whose auth travels only in the
+subprocess environment.
+
+Design-contract deviations found while building (the TD has the contract, the code is right):
+the branch-reflog timestamp is read with `git log -g -1 --date=unix --format=%gd` (parsed from
+`<branch>@{<epoch>}`), because `%ct` under `-g` is the commit's date, not the reflog entry's;
+`github.gh_call_count()` was added so the SUMMARY `api_calls=` is a measured number;
+`_one_line` now redacts the token before collapsing whitespace; a young (grace) branch with an
+open PR is relabelled `open-pr` (N5 outranks G1 in the table; both are KEEP); the remote runner
+keeps its redacted last stderr on `run.last_stderr` for the ls-remote WARN; the injection seams
+have these shapes: `pulls(state)` returns PR dicts, `issue_states(needed)` is the hybrid of
+A9 (per-issue reads at or below 20 numbers, else one list), `remote_heads(pattern)` returns
+`[(branch, sha)]`; and `--dry-run` skips the pre-delete open-PR re-check.
+
+Fix round 1 (reviewer SHOULD_FIX/NIT items): a push timeout (rc 124) reports
+`reason=push-timeout` with a WARN that the next run's ls-remote is the truth, and the batched
+remote delete is chunked at 50 refs per push, each with its own timeout; SUMMARY gains the
+appended fields `remote_skipped=<0|1>` (remote phase could not run; exit stays 0) and
+`recheck=<done|none|skipped>` (`skipped` on dry-run, so a WOULD-REAP can become KEEP open-pr in
+the real run); the push auth env is built at call time from the current GH_TOKEN and `_redact`
+scrubs both the creation-time and the current token; `GIT_ASKPASS` and `SSH_ASKPASS` are
+stripped from the child git env; every exit-2 path (store dir, base tree, for-each-ref, slug)
+prints a final `SUMMARY ... aborted=1` line; the remote-head grace uses the tip commit date
+(accepted and documented, TD section 10 post-review note, behaviour unchanged).
+
 ## Human Review Notes
 
 <!-- pending -->

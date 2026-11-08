@@ -13,7 +13,12 @@ review-path    D-7: after merging origin/main into the adopted branch, is the
 reap-landed    D-8: delete local branches (that have an ownership record) whose
                work has landed on origin/main, plus their records.
 prune-attempts D-8: delete duplicate / superseded / closed-issue attempts for
-               one issue, keeping the newest (or an explicitly named) branch.
+               one issue, keeping the newest (or an explicitly named) branch,
+               and the remote head of each deleted attempt (#2286).
+reap-orphans   #2286: delete orphaned local branches (recorded or not) and
+               remote ``worker-*`` heads by PR, issue and content state, after
+               a grace period. Never touches open-PR heads or unlanded work on
+               open issues.
 
 Usage
 -----
@@ -22,31 +27,45 @@ Usage
   python3 -m scripts.automation.readopt reap-landed [--dry-run] [--grace-secs 300]
   python3 -m scripts.automation.readopt prune-attempts --issue <N> \\
       [--keep <branch>] [--issue-closed] [--dry-run]
+  python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7] \\
+      [--local-only | --remote-only] [--max-deletions N]
 
 Exit codes
 ----------
   0 — success (``reap-landed`` exits 0 even when it skipped branches; skips
       are printed as WARN lines)
   2 — git / usage error. For ``review-path`` a caller MUST treat exit 2 as
-      ``full`` (fail closed: never skip review on uncertainty).
+      ``full`` (fail closed: never skip review on uncertainty). For
+      ``reap-orphans`` a failed listing also exits 2, having deleted nothing.
 
 Safety
 ------
 Only branches that have an ownership record are ever considered by
-``reap-landed``; unrecorded leftover branches need a separate, human-authorized
-cleanup and are never touched here. The checked-out branch is never deleted.
-A branch is never deleted on uncertainty (git or GitHub failure -> skip).
+``reap-landed``; unrecorded leftover branches are never touched there (that is
+``reap-orphans``' job, human-authorized by #2286). The checked-out branch is
+never deleted. ``reap-orphans --dry-run`` skips the pre-delete open-PR re-check, so a
+WOULD-REAP can become ``KEEP open-pr`` in the real run (SUMMARY ``recheck=skipped``
+vs ``done``/``none``); SUMMARY also carries ``remote_skipped=1`` when the remote phase
+could not run. The remote-head grace uses the tip COMMIT date (not the push time,
+which git does not expose): a recently pushed old commit is judged old. Accepted
+and documented (TD §10 post-review note). A branch is never deleted on uncertainty (git or GitHub failure
+-> skip). The GitHub token reaches git only through the subprocess environment,
+never argv, a URL, or printed text.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import os
 import random
 import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+from urllib.parse import quote
 
 from scripts.automation.lib import github
 from scripts.automation.pre_pr_stale_check import parse_remote_url
@@ -77,8 +96,9 @@ MAX_CONSECUTIVE_LOOKUP_FAILURES = 2
 
 def _one_line(exc: object) -> str:
     """Collapse exception text to one bounded line so it cannot forge a
-    REAPED/REAP-FAILED line in the output the cron hook parses (CWE-117)."""
-    return " ".join(str(exc).split())[:300]
+    REAPED/REAP-FAILED line in the output the cron hook parses (CWE-117). Also
+    redacts the GitHub token (CWE-532), so no printed text can carry it."""
+    return " ".join(_redact(exc).split())[:300]
 
 
 class GitError(RuntimeError):
@@ -449,13 +469,21 @@ def prune_attempts(
     issue_closed: bool = False,
     dry_run: bool = False,
     issue_state: Optional[IssueStateLookup] = None,
+    remote_heads: Optional[RemoteHeads] = None,
+    remote_delete: Optional[RemoteDelete] = None,
+    slug: "Optional[tuple[str, str]]" = None,
+    open_pr: Optional[Callable[[str], bool]] = None,
 ) -> "list[str]":
     """Delete local ``worker-<issue>-*`` attempts. Closed issue: delete all,
     but only after the issue's state is verified ``closed`` server-side (an
     open issue or a failed lookup raises GitError and deletes nothing).
     Otherwise keep ``keep`` (must exist) or the newest tip, delete the rest.
     The checked-out branch is never deleted. Raises GitError on git failure or
-    an unknown ``keep``."""
+    an unknown ``keep``.
+
+    After each successful local delete of attempt B at tip T, B's remote head is
+    deleted too (#2286) iff it is still at T and has no open PR; any remote
+    problem is a WARN that never fails or undoes the local delete."""
     git = git or make_git(repo)
     if issue_closed:
         try:
@@ -500,6 +528,7 @@ def prune_attempts(
     store = store_dir(git, repo)
     records = read_records(store)
     deleted: "list[str]" = []
+    remote = _PruneRemote(git, repo, issue, remote_heads, remote_delete, slug, open_pr)
     for branch in sorted(doomed):
         if branch == current:
             print(f"WARN: '{branch}' is checked out — not deleting")
@@ -508,17 +537,714 @@ def prune_attempts(
         if dry_run:
             print(f"WOULD-DELETE branch={branch}")
             deleted.append(branch)
+            remote.step(branch, tips[branch], dry_run=True)
         elif _delete_branch(git, branch, recs, tips[branch]):
             print(f"DELETED branch={branch}")
             deleted.append(branch)
+            remote.step(branch, tips[branch], dry_run=False)
         else:
             print(f"WARN: could not delete '{branch}'")
     return deleted
 
 
+class _PruneRemote:
+    """Lazy remote-head cleanup for ``prune_attempts`` (one ls-remote per run,
+    made on first use). Every failure is a WARN; nothing here can raise."""
+
+    def __init__(self, git, repo, issue, remote_heads, remote_delete, slug, open_pr):
+        self.git, self.repo, self.issue = git, repo, issue
+        self.heads_fn, self.delete_fn = remote_heads, remote_delete
+        self.slug, self.open_pr = slug, open_pr
+        self.heads: "Optional[dict[str, str]]" = None
+        self.dead = False
+
+    def _load(self) -> None:
+        try:
+            if self.heads_fn is None or self.delete_fn is None:
+                ops = _remote_ops(self.git, self.repo)
+                if ops is None:
+                    self.dead = True
+                    return
+                url, run = ops
+                self.heads_fn = self.heads_fn or (lambda pat: _ls_remote(run, url, pat))
+                self.delete_fn = self.delete_fn or (lambda items: _push_delete(run, url, items))
+            self.heads = dict(self.heads_fn(f"refs/heads/worker-{self.issue}-*"))
+        except Exception as exc:
+            print(f"WARN: remote head lookup failed — remote heads kept: {_one_line(exc)}")
+            self.dead = True
+
+    def _has_open_pr(self, branch: str) -> bool:
+        if self.open_pr is not None:
+            return self.open_pr(branch)
+        owner, repo = self.slug or _slug_from_origin(self.git)
+        return bool(github.list_pulls(owner, repo, head=f"{owner}:{branch}", state="open"))
+
+    def step(self, branch: str, tip: str, *, dry_run: bool) -> None:
+        if self.dead:
+            return
+        if self.heads is None:
+            self._load()
+            if self.dead or self.heads is None:
+                return
+        sha = self.heads.get(branch)
+        if sha is None:
+            return
+        if sha != tip:
+            print(f"WARN: remote head moved for '{branch}' — remote head kept")
+            return
+        if dry_run:
+            print(f"WOULD-DELETE branch={branch} where=remote")
+            return
+        try:
+            if self._has_open_pr(branch):
+                print(f"WARN: remote head '{branch}' has an open PR — remote head kept")
+                return
+            got = self.delete_fn([(branch, sha)]).get(branch) if self.delete_fn else False
+        except Exception as exc:
+            print(f"WARN: remote delete of '{branch}' failed — remote head kept: {_one_line(exc)}")
+            return
+        if got is True:
+            print(f"DELETED branch={branch} where=remote")
+        elif got == PUSH_TIMEOUT:
+            print(
+                f"WARN: remote delete of '{branch}' timed out — outcome unknown,"
+                " remote head kept; the next run's ls-remote is the truth"
+            )
+        else:
+            print(f"WARN: remote delete of '{branch}' was rejected — remote head kept")
+
+
+# ---------------------------------------------------------------------------
+# #2286 remote helpers (ls-remote / batched compare-and-swap delete)
+# ---------------------------------------------------------------------------
+
+# (args after "git", timeout seconds) -> (returncode, stdout). Same shape as
+# GitRunner plus a per-call timeout; a timeout is reported as rc 124.
+RemoteRunner = Callable[..., "tuple[int, str]"]
+# pattern -> [(branch, sha)] for matching remote heads. Raises on failure.
+RemoteHeads = Callable[[str], "list[tuple[str, str]]"]
+# [(branch, sha)] -> {branch: True | False | PUSH_TIMEOUT}. Never raises for a per-ref failure.
+RemoteDelete = Callable[["list[tuple[str, str]]"], "dict[str, object]"]
+
+LS_REMOTE_TIMEOUT_SECS = 60
+PUSH_TIMEOUT_SECS = 120
+_RC_TIMEOUT = 124
+_SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _redact(text: object, *extra_tokens: str) -> str:
+    """Replace the current GH_TOKEN (and any ``extra_tokens``, e.g. the one a
+    runner was created with) and its basic-auth header form with ``***`` so no
+    token can reach a log line or exception text (CWE-532)."""
+    out = str(text)
+    for token in (os.environ.get("GH_TOKEN", ""), *extra_tokens):
+        if token:
+            header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            for secret in (header, token):
+                out = out.replace(secret, "***")
+    return out
+
+
+def _remote_env(token: str) -> "dict[str, str]":
+    """Auth for a github.com remote through the git subprocess ENVIRONMENT only
+    -- never argv or the URL. The empty credential.helper resets the helper
+    list so an expired token cannot fall back to another identity's helper."""
+    header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {header}",
+        "GIT_CONFIG_KEY_1": "credential.helper",
+        "GIT_CONFIG_VALUE_1": "",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def make_git_remote(repo: Path, env_fn: "Callable[[], dict[str, str]]") -> RemoteRunner:
+    """Runner for git calls that talk to the remote. ``env_fn`` is called on
+    EVERY git call so auth is built from the token current at that moment (a
+    token rotated mid-run is picked up). The child environment has every trace
+    variable and any askpass helper removed (they could log or leak the auth
+    header, or prompt as another identity). ``stderr`` of the last call is kept
+    redacted on ``run.last_stderr`` for diagnostics."""
+    created_token = os.environ.get("GH_TOKEN", "")
+
+    def run(args: Sequence[str], timeout: float = LS_REMOTE_TIMEOUT_SECS) -> "tuple[int, str]":
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("GIT_TRACE")
+            and k not in ("GIT_CURL_VERBOSE", "GIT_ASKPASS", "SSH_ASKPASS")
+        }
+        env.update(env_fn())
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            run.last_stderr = "timed out"  # type: ignore[attr-defined]
+            return _RC_TIMEOUT, ""
+        run.last_stderr = " ".join(_redact(proc.stderr, created_token).split())[:300]  # type: ignore[attr-defined]
+        return proc.returncode, proc.stdout
+
+    run.last_stderr = ""  # type: ignore[attr-defined]
+    return run
+
+
+def _origin_kind(url: str) -> Optional[str]:
+    """``github`` (https://github.com/...), ``local`` (absolute path or file://),
+    else None. ssh/other-host forms are refused: they would push with whatever
+    ambient key the host has, possibly a human's identity."""
+    if url.startswith("https://github.com/"):
+        return "github"
+    if url.startswith("file://") or (os.path.isabs(url) and not url.startswith("-")):
+        return "local"
+    return None
+
+
+def _remote_ops(git: GitRunner, repo: Path) -> "Optional[tuple[str, RemoteRunner]]":
+    """(origin url, authenticated runner), or None (after a WARN) when the remote
+    phase must be skipped."""
+    rc, url = git(["remote", "get-url", "origin"])
+    if rc != 0 or not url:
+        print("WARN: remote phase skipped — no origin remote")
+        return None
+    kind = _origin_kind(url)
+    if kind is None:
+        print("WARN: remote phase skipped — unsupported origin URL scheme")
+        return None
+    if kind == "github":
+        token = os.environ.get("GH_TOKEN", "")
+        if not token:
+            print("WARN: GH_TOKEN unset — remote phase skipped")
+            return None
+        # Re-read at call time; fall back to the creation-time token only if
+        # the variable was cleared mid-run.
+        return url, make_git_remote(repo, lambda: _remote_env(os.environ.get("GH_TOKEN") or token))
+    return url, make_git_remote(repo, dict)
+
+
+def _ls_remote(run: RemoteRunner, url: str, pattern: str) -> "list[tuple[str, str]]":
+    rc, out = run(["ls-remote", "--refs", url, pattern], LS_REMOTE_TIMEOUT_SECS)
+    if rc != 0:
+        detail = _one_line(getattr(run, "last_stderr", ""))
+        raise GitError(f"git ls-remote failed (rc={rc}) {detail}".strip())
+    heads: "list[tuple[str, str]]" = []
+    for line in out.splitlines():
+        sha, _, ref = line.partition("\t")
+        if _SHA_RE.fullmatch(sha) and ref.startswith("refs/heads/"):
+            heads.append((ref[len("refs/heads/") :], sha))
+    return heads
+
+
+PUSH_TIMEOUT = "timeout"  # per-ref outcome when its push chunk timed out (result unknown)
+PUSH_CHUNK = 50  # refs per push: bounds argv size and the blast radius of one timeout
+
+
+def _push_delete(
+    run: RemoteRunner, url: str, items: "list[tuple[str, str]]"
+) -> "dict[str, object]":
+    """Non-atomic pushes (at most ``PUSH_CHUNK`` refs each, each with its own
+    timeout) deleting every (branch, sha), each ref guarded by its own
+    ``--force-with-lease=<ref>:<sha>`` (a server-side compare-and-swap). The
+    porcelain output is parsed per ref: only a ``-`` (deleted) line for
+    ``:refs/heads/<branch>`` counts (``True``); a non-zero rc never overrides it
+    and a zero rc never stands in for a missing line. A chunk that timed out
+    reports ``PUSH_TIMEOUT`` for its refs (the delete may or may not have landed;
+    the next run's ls-remote is the truth); everything else unproven is ``False``."""
+    result: "dict[str, object]" = {b: False for b, _ in items}
+    for start in range(0, len(items), PUSH_CHUNK):
+        chunk = items[start : start + PUSH_CHUNK]
+        args = ["push", "--porcelain", "--no-verify"]
+        args += [f"--force-with-lease=refs/heads/{b}:{sha}" for b, sha in chunk]
+        args += [url]
+        args += [f":refs/heads/{b}" for b, _ in chunk]
+        rc, out = run(args, PUSH_TIMEOUT_SECS)
+        if rc == _RC_TIMEOUT:
+            for b, _ in chunk:
+                result[b] = PUSH_TIMEOUT
+            continue
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[0] == "-" and parts[1].startswith(":refs/heads/"):
+                name = parts[1][len(":refs/heads/") :]
+                if name in result:
+                    result[name] = True
+    return result
+
+
+def _slug_from_origin(git: GitRunner) -> "tuple[str, str]":
+    try:
+        return parse_remote_url(_git_ok(git, "remote", "get-url", "origin"))
+    except ValueError as exc:
+        raise GitError(f"cannot resolve GitHub owner/repo: {_one_line(exc)}") from exc
+
+
+# ---------------------------------------------------------------------------
+# #2286 reap-orphans
+# ---------------------------------------------------------------------------
+
+DEFAULT_GRACE_DAYS = 7
+PER_ISSUE_READ_LIMIT = 20  # at or below this many issue numbers, read them one by one
+
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._/@+-]+")
+_WORKER_RE = re.compile(r"worker-(\d+)-")
+_ISSUE_REF_RE = re.compile(r"#(\d+)")
+
+# (state) -> PR objects. Raises on failure (the run then deletes nothing).
+PullsLookup = Callable[[str], "list[dict]"]
+# issue numbers needed -> {number: "open"|"closed"}; absent number == unknown.
+IssueStatesLookup = Callable[["set[int]"], "dict[int, str]"]
+
+
+@dataclass
+class _Ref:
+    name: str
+    where: str  # "local" | "remote"
+    tip: str
+
+
+@dataclass
+class _Decision:
+    ref: _Ref
+    reap: bool
+    reason: str
+    pr: str = "-"
+
+
+class _Abort(Exception):
+    """A listing failed: print WARN + SUMMARY aborted=1 and delete nothing."""
+
+
+def _printable_name(name: str) -> str:
+    return name if _SAFE_NAME_RE.fullmatch(name) else quote(name, safe="")
+
+
+def _fmt(kind: str, d: _Decision, *, reason: Optional[str] = None, with_pr: bool = False) -> str:
+    line = f"{kind} branch={_printable_name(d.ref.name)} reason={reason or d.reason}"
+    line += f" where={d.ref.where}"
+    if with_pr:
+        line += f" pr={d.pr}"
+    return f"{line} tip={d.ref.tip}"
+
+
+def _github_pulls(slug: "tuple[str, str]") -> PullsLookup:
+    return lambda state: github.list_all_pulls(slug[0], slug[1], state=state)
+
+
+def _github_issue_states(slug: "tuple[str, str]") -> IssueStatesLookup:
+    owner, repo = slug
+
+    def lookup(needed: "set[int]") -> "dict[int, str]":
+        if len(needed) > PER_ISSUE_READ_LIMIT:
+            return github.list_all_issue_states(owner, repo)
+        out: "dict[int, str]" = {}
+        for number in sorted(needed):
+            data = github.get_issue(owner, repo, number)
+            if isinstance(data, dict) and data.get("state") in ("open", "closed"):
+                out[number] = str(data["state"])
+        return out
+
+    return lookup
+
+
+def _index_pulls(pulls: "list[dict]", slug: "tuple[str, str]") -> "dict[str, list[dict]]":
+    """Same-repo PRs by head.ref; fork PRs never match a local/remote branch."""
+    full = f"{slug[0]}/{slug[1]}".lower()
+    index: "dict[str, list[dict]]" = {}
+    for pr in pulls:
+        head = pr.get("head") or {}
+        head_repo = head.get("repo") or {}
+        ref = head.get("ref")
+        if isinstance(ref, str) and str(head_repo.get("full_name", "")).lower() == full:
+            index.setdefault(ref, []).append(pr)
+    return index
+
+
+def _covers(git: GitRunner, pr: dict, tip: str) -> bool:
+    """The PR head holds every commit of ``tip``: equal, or tip is an ancestor of
+    the (locally present) PR head. A tip with commits beyond the PR never matches."""
+    sha = (pr.get("head") or {}).get("sha")
+    if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+        return False
+    if sha == tip:
+        return True
+    rc, _ = git(["cat-file", "-e", f"{sha}^{{commit}}"])
+    if rc != 0:
+        return False
+    rc, _ = git(["merge-base", "--is-ancestor", tip, sha])
+    return rc == 0
+
+
+def _commit_issue_refs(git: GitRunner, base: str, tip: str) -> "Optional[set[int]]":
+    """Every ``#<n>`` in the messages of ``base..tip`` (a batched branch carries
+    more than its name's issue). None on git failure."""
+    rc, out = git(["log", "--format=%B", f"{base}..{tip}"])
+    if rc != 0:
+        return None
+    return {int(n) for n in _ISSUE_REF_RE.findall(out)}
+
+
+def reap_orphans(
+    repo: Path,
+    *,
+    git: Optional[GitRunner] = None,
+    pulls: Optional[PullsLookup] = None,
+    issue_states: Optional[IssueStatesLookup] = None,
+    remote_heads: Optional[RemoteHeads] = None,
+    remote_delete: Optional[RemoteDelete] = None,
+    now: Optional[float] = None,
+    slug: "Optional[tuple[str, str]]" = None,
+    grace_days: int = DEFAULT_GRACE_DAYS,
+    dry_run: bool = False,
+    do_local: bool = True,
+    do_remote: bool = True,
+    max_deletions: int = 0,
+    base: str = "origin/main",
+) -> int:
+    """#2286: delete orphaned local branches and remote ``worker-*`` heads by PR,
+    issue and content state. Every decision is built before anything is deleted;
+    any failed listing aborts the whole run with zero deletions (exit 2). Returns
+    the process exit code. See TECHNICAL-DESIGN-2286 for the decision table.
+
+    ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
+    so a WOULD-REAP can still become KEEP open-pr in the real run."""
+    git = git or make_git(repo)
+    now = time.time() if now is None else now
+    calls_before = github.gh_call_count()
+    grace_secs = grace_days * 86400
+    decisions: "list[_Decision]" = []
+    counts = {"reaped_local": 0, "reaped_remote": 0, "kept": 0, "failed": 0, "deferred": 0}
+    remote_skipped = 0  # 1 when the remote phase could not run (WARN printed)
+    recheck = "skipped" if dry_run else "none"  # "done" once the open-PR re-check ran
+
+    def summary(aborted: int) -> None:
+        # New fields are APPENDED: consumers match the leading fields by name.
+        print(
+            f"SUMMARY reaped_local={counts['reaped_local']} reaped_remote={counts['reaped_remote']}"
+            f" kept={counts['kept']} failed={counts['failed']} deferred={counts['deferred']}"
+            f" api_calls={github.gh_call_count() - calls_before} aborted={aborted}"
+            f" remote_skipped={remote_skipped} recheck={recheck}"
+        )
+
+    try:
+        store = store_dir(git, repo)
+        current = _current_branch(git)
+        base_tree = _git_ok(git, "rev-parse", f"{base}^{{tree}}")
+    except GitError as exc:
+        print(f"readopt: {_one_line(exc)}", file=sys.stderr)
+        summary(1)
+        return 2
+    recs_by_branch: "dict[str, list[Path]]" = {}
+    for branch, rec in read_records(store):
+        recs_by_branch.setdefault(branch, []).append(rec)
+
+    def keep(ref: _Ref, reason: str) -> None:
+        decisions.append(_Decision(ref, False, reason))
+
+    # ---- remote head listing (one authoritative read; failure skips only the remote phase)
+    remote_refs: "list[_Ref]" = []
+    if do_remote:
+        if remote_heads is None or remote_delete is None:
+            ops = _remote_ops(git, repo)
+            if ops is not None:
+                url, run = ops
+                remote_heads = remote_heads or (lambda pat: _ls_remote(run, url, pat))
+                remote_delete = remote_delete or (lambda items: _push_delete(run, url, items))
+            else:
+                remote_heads = None
+                remote_skipped = 1
+        if remote_heads is not None:
+            try:
+                for name, sha in sorted(remote_heads("refs/heads/worker-*")):
+                    if name.startswith("worker-"):
+                        remote_refs.append(_Ref(name, "remote", sha))
+            except Exception as exc:  # the local phase still runs
+                remote_skipped = 1
+                print(f"WARN: remote head listing failed — remote phase skipped: {_one_line(exc)}")
+
+    local_refs: "list[_Ref]" = []
+    local_committed: "dict[str, int]" = {}
+    if do_local:
+        try:
+            out = _git_ok(
+                git,
+                "for-each-ref",
+                "--format=%(refname)%09%(objectname)%09%(committerdate:unix)",
+                "refs/heads/",
+            )
+        except GitError as exc:
+            print(f"WARN: listing failed — nothing deleted: {_one_line(exc)}")
+            summary(1)
+            return 2
+        for line in _lines(out):
+            refname, sha, stamp = line.split("\t")
+            name = refname[len("refs/heads/") :]
+            local_refs.append(_Ref(name, "local", sha))
+            local_committed[name] = int(stamp) if stamp.isdigit() else -1
+
+    # ---- phase A: purely local rules N1-N4 and G1 (no GitHub)
+    pending: "list[_Ref]" = []
+    young: "list[_Ref]" = []  # grace-KEEP; relabelled open-pr if a listing shows one
+    for ref in sorted(local_refs, key=lambda r: r.name) + sorted(remote_refs, key=lambda r: r.name):
+        name = ref.name
+        if not _SAFE_NAME_RE.fullmatch(name) or name.startswith("-"):
+            keep(ref, "unsafe-name")
+            continue
+        if name in ("main", "audit-log") or name.startswith(("release/", "audit/")):
+            keep(ref, "protected-name")
+            continue
+        if ref.where == "local":
+            if name == current:
+                keep(ref, "current-branch")
+                continue
+            if _checked_out_in_worktree(git, name):
+                keep(ref, "worktree")
+                continue
+            stamps = [local_committed.get(name, -1)]
+            # %gd with --date=unix renders "<branch>@{<epoch>}" (there is no
+            # reflog-timestamp placeholder; %ct would be the commit's date).
+            rc, out = git(["log", "-g", "-1", "--date=unix", "--format=%gd", f"refs/heads/{name}"])
+            reflog_at = re.search(r"@\{(\d+)\}$", out) if rc == 0 else None
+            if reflog_at:
+                stamps.append(int(reflog_at.group(1)))
+            for rec in recs_by_branch.get(name, []):
+                try:
+                    stamps.append(int(rec.stat().st_mtime))
+                except OSError:
+                    pass
+        else:
+            rc, _ = git(["cat-file", "-e", f"{ref.tip}^{{commit}}"])
+            if rc != 0:
+                keep(ref, "remote-tip-not-local")
+                continue
+            rc, out = git(["log", "-1", "--format=%ct", ref.tip])
+            stamps = [int(out)] if rc == 0 and out.isdigit() else [-1]
+        newest = max(stamps)
+        if newest < 0:
+            keep(ref, "git-error")
+            continue
+        if now - newest < grace_secs:
+            keep(ref, "grace")
+            young.append(ref)
+            continue
+        pending.append(ref)
+
+    # ---- phase B: decisions that need GitHub (skipped entirely when none remain)
+    open_heads: "set[str]" = set()
+    owner_repo = slug
+    try:
+        if pending:
+            owner_repo = slug or _slug_from_origin(git)
+            pulls = pulls or _github_pulls(owner_repo)
+            issue_states = issue_states or _github_issue_states(owner_repo)
+            try:
+                all_pulls = pulls("all")
+            except Exception as exc:
+                raise _Abort(exc) from exc
+            if not all_pulls:
+                raise _Abort("empty pull-request listing")
+            index = _index_pulls(all_pulls, owner_repo)
+            open_heads = {
+                name for name, prs in index.items() if any(p.get("state") == "open" for p in prs)
+            }
+            young_ids = {id(r) for r in young}
+            for d in decisions:
+                if id(d.ref) in young_ids and d.ref.name in open_heads:
+                    d.reason = "open-pr"  # N5 outranks G1 in the table; both are KEEP
+
+            # pass 1: N5, D1, and the issue numbers D1'/D2 will need
+            plans: "dict[int, dict]" = {}
+            needed: "set[int]" = set()
+            for ref in pending:
+                prs = index.get(ref.name, [])
+                if ref.name in open_heads:
+                    keep(ref, "open-pr")
+                    continue
+                covering = [p for p in prs if _covers(git, p, ref.tip)]
+                merged = [
+                    p
+                    for p in covering
+                    if p.get("merged_at") and (p.get("base") or {}).get("ref") == "main"
+                ]
+                if merged:
+                    decisions.append(
+                        _Decision(ref, True, "pr-merged", f"#{merged[0].get('number')}")
+                    )
+                    continue
+                m = _WORKER_RE.match(ref.name)
+                plan: dict = {
+                    "prs": prs,
+                    "covering": covering,
+                    "issue": int(m.group(1)) if m else None,
+                    "refs": None,
+                }
+                if plan["issue"] is not None:
+                    plan["refs"] = _commit_issue_refs(git, base, ref.tip)
+                    needed.add(plan["issue"])
+                    needed |= plan["refs"] or set()
+                plans[id(ref)] = plan
+
+            states: "dict[int, str]" = {}
+            if needed:
+                try:
+                    states = issue_states(needed)
+                except Exception as exc:
+                    raise _Abort(exc) from exc
+
+            # pass 2: D1', D2, D3, then the KEEP reasons
+            for ref in pending:
+                found = plans.get(id(ref))
+                if found is not None:
+                    decisions.append(_decide_rest(git, ref, found, states, base, base_tree))
+
+        # ---- open-PR re-check right before the deletion phase
+        if not dry_run and any(d.reap for d in decisions):
+            try:
+                fresh = pulls("open") if pulls else []
+            except Exception as exc:
+                raise _Abort(exc) from exc
+            fresh_heads = set(_index_pulls(fresh, owner_repo))  # type: ignore[arg-type]
+            for d in decisions:
+                if d.reap and d.ref.name in fresh_heads:
+                    d.reap, d.reason, d.pr = False, "open-pr", "-"
+            recheck = "done"
+    except (_Abort, GitError) as exc:
+        print(f"WARN: listing failed — nothing deleted: {_one_line(exc)}")
+        summary(1)
+        return 2
+
+    # ---- phase C: report / delete. Local before remote.
+    ordered = [d for d in decisions if d.ref.where == "local"] + [
+        d for d in decisions if d.ref.where == "remote"
+    ]
+    counts["kept"] = sum(1 for d in ordered if not d.reap)
+    budget = max_deletions if max_deletions > 0 else None
+
+    if dry_run:
+        for d in ordered:
+            if d.reap:
+                print(_fmt("WOULD-REAP", d, with_pr=True))
+                counts["reaped_" + d.ref.where] += 1
+            else:
+                print(_fmt("KEEP", d))
+        summary(0)
+        return 0
+
+    attempted = 0
+    remote_batch: "list[_Decision]" = []
+    for d in ordered:
+        if not d.reap:
+            continue
+        if budget is not None and attempted >= budget:
+            print(_fmt("DEFERRED", d))
+            counts["deferred"] += 1
+            continue
+        attempted += 1
+        if d.ref.where == "remote":
+            remote_batch.append(d)
+            continue
+        if _delete_branch(git, d.ref.name, recs_by_branch.get(d.ref.name, []), d.ref.tip):
+            print(_fmt("REAPED", d, with_pr=True))
+            counts["reaped_local"] += 1
+        else:
+            print(_fmt("REAP-FAILED", d, reason="delete-failed"))
+            counts["failed"] += 1
+    if remote_batch and remote_delete is not None:
+        try:
+            outcome = remote_delete([(d.ref.name, d.ref.tip) for d in remote_batch])
+        except Exception as exc:
+            print(f"WARN: remote delete failed: {_one_line(exc)}")
+            outcome = {}
+        if PUSH_TIMEOUT in outcome.values():
+            print(
+                "WARN: remote push timed out — outcome unknown for the timed-out refs;"
+                " the next run's ls-remote is the truth"
+            )
+        for d in remote_batch:
+            got = outcome.get(d.ref.name)
+            if got is True:
+                print(_fmt("REAPED", d, with_pr=True))
+                counts["reaped_remote"] += 1
+            else:
+                why = "push-timeout" if got == PUSH_TIMEOUT else "cas-or-push-failed"
+                print(_fmt("REAP-FAILED", d, reason=why))
+                counts["failed"] += 1
+    summary(0)
+    return 0
+
+
+def _decide_rest(
+    git: GitRunner, ref: _Ref, plan: dict, states: "dict[int, str]", base: str, base_tree: str
+) -> _Decision:
+    """Rules D1' through the KEEP table for one non-open-PR, non-D1 ref."""
+    issue: Optional[int] = plan["issue"]
+    state = states.get(issue) if issue is not None else None
+    covering: "list[dict]" = plan["covering"]
+    closed_cover = [p for p in covering if not p.get("merged_at") and p.get("state") == "closed"]
+    protected_by_issue = False
+    if closed_cover:
+        if ref.where == "local" and issue is not None and state != "closed":
+            protected_by_issue = True  # A1: never delete open-issue work on a closed PR
+        else:
+            return _Decision(ref, True, "pr-closed", f"#{closed_cover[0].get('number')}")
+
+    d2_blocked = d2_git_error = False
+    if issue is not None and state == "closed":
+        refs = plan["refs"]
+        if refs is None:
+            d2_git_error = True
+        elif all(states.get(n) == "closed" for n in refs):
+            return _Decision(ref, True, "issue-closed")
+        else:
+            d2_blocked = True
+
+    rc, _ = git(["merge-base", "--is-ancestor", ref.tip, base])
+    if rc == 0:
+        return _Decision(ref, True, "landed-ancestor")
+    if rc != 1:
+        return _Decision(ref, False, "git-error")
+    rc, out = git(["merge-tree", "--write-tree", base, ref.tip])
+    if rc == 0 and out.splitlines()[:1] == [base_tree]:
+        return _Decision(ref, True, "landed-content")
+    if rc not in (0, 1):
+        return _Decision(ref, False, "git-error")
+
+    if protected_by_issue:
+        reason = "closed-pr-open-issue"
+    elif plan["prs"] and not covering:
+        reason = "unlanded-pr-sha-mismatch"
+    elif d2_git_error:
+        reason = "git-error"
+    elif d2_blocked:
+        reason = "issue-closed-batch-open"
+    elif issue is not None and state is None:
+        reason = "issue-unknown"
+    elif issue is not None and state == "open":
+        reason = "unlanded-open-issue"
+    else:
+        reason = "unlanded-no-pr"
+    return _Decision(ref, False, reason)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -544,6 +1270,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pa.add_argument("--issue-closed", action="store_true")
     pa.add_argument("--dry-run", action="store_true")
 
+    ro = sub.add_parser("reap-orphans", help="#2286: delete orphaned local branches + remote heads")
+    ro.add_argument("--dry-run", action="store_true")
+    ro.add_argument("--grace-days", type=_non_negative_int, default=DEFAULT_GRACE_DAYS)
+    ro.add_argument("--max-deletions", type=_non_negative_int, default=0)
+    only = ro.add_mutually_exclusive_group()
+    only.add_argument("--local-only", action="store_true")
+    only.add_argument("--remote-only", action="store_true")
+
     args = ap.parse_args(argv)
     repo = Path(args.repo).resolve()
     git = make_git(repo)
@@ -567,6 +1301,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 max_lookups=args.max_lookups,
             )
             return 0
+        if args.cmd == "reap-orphans":
+            return reap_orphans(
+                repo,
+                git=git,
+                grace_days=args.grace_days,
+                dry_run=args.dry_run,
+                do_local=not args.remote_only,
+                do_remote=not args.local_only,
+                max_deletions=args.max_deletions,
+            )
         prune_attempts(
             repo,
             args.issue,

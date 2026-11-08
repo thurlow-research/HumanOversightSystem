@@ -488,6 +488,10 @@ show a completed review is an orphan, not a stalled branch: re-run the full chai
    in `origin/main` or a merged PR's `head.sha` equals its tip (at most 20 PR lookups per
    cycle, chosen at random from the unlanded branches so coverage rotates across cycles), and never on uncertainty.
    Unrecorded leftover branches are out of its scope — their cleanup is human-authorized.
+   That authorization is #2286: `readopt reap-orphans` (always `--dry-run` first) also covers
+   unrecorded local branches and remote `worker-*` heads, by PR, issue and content state, after
+   a 7-day grace; it never deletes an open-PR head or a local branch with unlanded work on an
+   open issue. `prune-attempts` also deletes the remote head of each attempt it deletes.
 
 Never delete a worker branch with raw `git branch -D`; deletion goes through `readopt.py`.
 
