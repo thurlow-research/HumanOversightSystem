@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.framework._role_writability_scaffold import add_role_writability_fixture
+
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "scripts" / "framework" / "check_agents_static.sh"
 LOGIC = ROOT / "scripts" / "oversight" / "agents_static_logic.py"
@@ -34,8 +36,9 @@ def _scaffold(tmp_path: Path) -> Path:
     (tmp_path / "scripts" / "oversight").mkdir(parents=True)
     shutil.copy(LOGIC, tmp_path / "scripts" / "oversight" / LOGIC.name)
 
+    add_role_writability_fixture(tmp_path)
     agents_dir = tmp_path / ".claude" / "agents"
-    agents_dir.mkdir(parents=True)
+    agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / "fake-agent.md").write_text(
         "---\nname: fake-agent\ndescription: test fixture\nmodel: sonnet\n---\n\n"
         "You are a test fixture agent.\n"

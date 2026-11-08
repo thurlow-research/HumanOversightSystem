@@ -112,6 +112,7 @@ excluded.
 
 - `scripts/framework/audit_predicate.py` — the single shared authority for "audit-only-and-well-formed" (ADR-035 AD-2, TECHNICAL-DESIGN-035 §3).
 - `scripts/framework/check_agents_static.sh` — fast static consistency checker for the agent pipeline.
+- `scripts/framework/check_role_writability.py` — Static check: every role the risk-assessor can emit is writable by its mapped agent (#2276).
 - `scripts/framework/config.sh` — HumanOversightSystem framework source configuration.
 - `scripts/framework/cut_release.sh` — cut a validated HOS release.
 - `scripts/framework/gen_codeowners.sh` — generate .github/CODEOWNERS from the canonical protected surface list (scripts/framework/protected_surfaces.txt), so CODEOWNERS and the require_human_approval status check can never drift (AGENT-IDENTITY.md §9).

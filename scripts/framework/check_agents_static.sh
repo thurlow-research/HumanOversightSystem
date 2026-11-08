@@ -11,6 +11,7 @@
 #   7. Agent-to-doc staleness: agent files changed without a docs update (warn-only, never fails)
 #   8. Every peer-review lane carries the D53 anti-framing instruction (#1132)
 #   9. No dated model generation IDs in agents, scripts, bootstrap, bin, or markdown (#1366)
+#  10. Every role the risk-assessor can emit is writable by its mapped agent (#2276)
 #
 # A clean run exits 0 and writes nothing (the phase1 validation stamp was retired, #2053).
 # CI runs this directly: .github/workflows/agent-static-check.yml.
@@ -367,6 +368,22 @@ done < <(_dated_model_candidates)
 
 if [[ $DATED_MODEL_FINDINGS -eq 0 ]]; then
     ok "no dated model generation IDs found"
+fi
+
+# ── 10. Role writability (#2276) ─────────────────────────────────────────────
+section "10. Role writability (#2276)"
+
+# check_role_writability.py exits 1 on findings (printing FAIL: lines) and 2 on a
+# missing required file/block; both are findings here, never a silent pass.
+ROLE_WRITABILITY_RC=0
+ROLE_WRITABILITY_OUT="$(python3 -m scripts.framework.check_role_writability --quiet 2>&1)" || ROLE_WRITABILITY_RC=$?
+if [[ $ROLE_WRITABILITY_RC -eq 0 ]]; then
+    ok "every risk-assessor-emittable role is writable by its mapped agent"
+else
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        fail "${line#FAIL: }"
+    done <<< "$ROLE_WRITABILITY_OUT"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
