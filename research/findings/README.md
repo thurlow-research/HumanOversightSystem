@@ -197,6 +197,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | `stamp-based-ci-enforcement.md` | oversight-mechanism | A committed git-*commit*-timestamp stamp bridges local validation and CI, proving validation ran current to the changes. |
 | `state-assertions-decay-faster-than-their-documents.md` | oversight-mechanism | State Assertions Decay Faster Than the Documents That Carry Them |
 | `structured-fault-explanation-drives-developer-action.md` | *(none)* | Structured Fault Explanation Drives Developer Action (vs. Bare Flags) |
+| `system-tests-run-on-the-real-host-by-code-not-by-agents.md` | oversight-mechanism | CI-runnable tiers are blind to environment-dependent behaviour; a check with no category is optional by construction. System tests form their own category: they run on the real host, are executed by code at fixed pipeline points, and are re-executed independently. The LLM interprets results and never decides whether a test ran. |
 | `the-1point7x-defect-rate-claim-has-a-precise-empirical-source.md` | research provenance / citation hygiene | The 1.7× agentic defect rate claim has a precise empirical source — cite it correctly or the premise weakens |
 | `the-distrust-check-exempted-its-most-important-target.md` | oversight-mechanism | An anti-gaming re-derivation check carved out code-review — its most important target; coverage must be scoped by threat model. |
 | `the-gate-must-time-out-its-own-dependencies.md` | oversight-mechanism | Every external call an oversight gate makes must be hard-bounded; a hung dependency is a dead gate (invisible denial of oversight). |
@@ -218,7 +219,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-62 of 103 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+63 of 104 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
@@ -274,6 +275,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `spec-gap-routing-chain.md`
 - `state-assertions-decay-faster-than-their-documents.md`
 - `structured-fault-explanation-drives-developer-action.md`
+- `system-tests-run-on-the-real-host-by-code-not-by-agents.md` (candidate: O3, since a check with no test category is skipped unless forced, and the category is how it gets forced)
 - `the-1point7x-defect-rate-claim-has-a-precise-empirical-source.md`
 - `the-ratchet-counts-human-attention-as-free.md` (candidate: a qualification of O7, since the ratchet needs a human-load cost term)
 - `the-recorder-must-not-be-in-the-recorded-set.md`
