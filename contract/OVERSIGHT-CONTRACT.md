@@ -350,6 +350,7 @@ role_mappings:
   test-system:    system-test
   process:        pm-agent
   infra:          infra-reviewer
+  architecture:   architect          # ADR / ADR-amendment steps; risk-assessor adds it (#2276)
 
 steps:
   - id: 1

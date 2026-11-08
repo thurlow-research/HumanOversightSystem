@@ -177,6 +177,9 @@ From the step manifest's `required_signoffs` list, confirm which reviewers are n
 - CRITICAL adds `security`, `privacy` if not already listed
 - HIGH+ **and the diff touches external connections** (DB queries, HTTP/API calls, queues, sockets, network I/O) adds `reliability` if not already listed
 - HIGH+ **and the diff touches ops-relevant surface** (background jobs, async tasks, external integrations, multi-service boundaries) adds `ops` if not already listed
+- Any tier **and the diff adds or changes an architecture artifact** (an ADR or ADR amendment) adds `architecture` if not already listed. The `architecture` role maps to `architect` (contract §5 `role_mappings`), which writes that register entry (#2276). Use the role key `architecture`, never the agent name `architect`.
+
+Every role you write to `required-reviewers.md` must be a role key in the contract §5 `role_mappings`, and its mapped agent must be allowed to write a register entry for it. `scripts/framework/check_role_writability.py` checks this statically (#2276). Never emit a role whose mapped agent cannot sign; the evaluator cannot waive a role, so such a step can never pass Phase 1.
 
 The `reliability`/`ops` adds are **conditional on the diff, not blanket-by-tier** — they are legitimately N/A for changes (and projects) with no external dependencies or ops complexity (see the `reliability-reviewer`/`ops-reviewer` N/A conditions). Judge the diff: a HIGH+ change that introduces or modifies an external connection or a background job, yet requires **no** reliability/ops sign-off, is the asymmetry with `security`/`privacy` that this closes (#135). When you add `reliability`/`ops` on this basis, state the diff evidence that triggered it.
 
