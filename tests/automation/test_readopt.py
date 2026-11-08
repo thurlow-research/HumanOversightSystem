@@ -21,7 +21,10 @@ IDENT = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=fals
 
 def git(repo: Path, *args: str, check: bool = True) -> str:
     proc = subprocess.run(
-        ["git", "-C", str(repo), *IDENT, *args], capture_output=True, text=True, check=check
+        ["git", "-C", str(repo), *IDENT, *args],
+        capture_output=True,
+        text=True,
+        check=check,
     )
     return proc.stdout.strip()
 
@@ -53,13 +56,17 @@ def write_record(repo: Path, branch: str, age_secs: int = 3600) -> Path:
     store = readopt.store_dir(readopt.make_git(repo), repo)
     store.mkdir(parents=True, exist_ok=True)
     rec = store / (branch.replace("%", "%25").replace("/", "%2F") + ".rec")
-    rec.write_text(f"schema=1\nbranch={branch}\ncycle_id=c-1\nrole=worker\ncreated_at=x\n")
+    rec.write_text(
+        f"schema=1\nbranch={branch}\ncycle_id=c-1\nrole=worker\ncreated_at=x\n"
+    )
     old = rec.stat().st_mtime - age_secs
     os.utime(rec, (old, old))
     return rec
 
 
-def make_branch(repo: Path, name: str, fname: str = "a.txt", text: str = "work\n") -> str:
+def make_branch(
+    repo: Path, name: str, fname: str = "a.txt", text: str = "work\n"
+) -> str:
     git(repo, "checkout", "-q", "-b", name, "main")
     tip = commit(repo, fname, text, f"work on {name}")
     git(repo, "checkout", "-q", "main")
@@ -74,7 +81,11 @@ def advance_main(repo: Path, fname: str, text: str) -> None:
 
 
 def branches(repo: Path) -> set:
-    return set(git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
+    return set(
+        git(
+            repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"
+        ).splitlines()
+    )
 
 
 # --- D-7 decision rule ------------------------------------------------------
@@ -123,7 +134,9 @@ def test_review_path_unrelated_merge_is_delta(repo):
 
 def test_review_path_merge_touching_reviewed_file_is_full(repo):
     lines = [f"{i}\n" for i in range(1, 10)]
-    original = make_branch(repo, "worker-1-x", "a.txt", "".join(["edited\n"] + lines[1:]))
+    original = make_branch(
+        repo, "worker-1-x", "a.txt", "".join(["edited\n"] + lines[1:])
+    )
     advance_main(repo, "a.txt", "".join(lines[:-1] + ["main edit\n"]))
     git(repo, "checkout", "-q", "worker-1-x")
     git(repo, "merge", "-q", "--no-edit", "origin/main")
@@ -199,7 +212,15 @@ def test_review_path_added_commit_is_full(repo):
 
 def test_review_path_cli_git_error_exits_2(repo, capsys):
     rc = readopt.main(
-        ["--repo", str(repo), "review-path", "--original-head", "nope", "--merged-head", "nope2"]
+        [
+            "--repo",
+            str(repo),
+            "review-path",
+            "--original-head",
+            "nope",
+            "--merged-head",
+            "nope2",
+        ]
     )
     assert rc == 2
 
@@ -207,7 +228,15 @@ def test_review_path_cli_git_error_exits_2(repo, capsys):
 def test_review_path_cli_prints_lines(repo, capsys):
     original, merged = _merged_scenario(repo, "b.txt")
     rc = readopt.main(
-        ["--repo", str(repo), "review-path", "--original-head", original, "--merged-head", merged]
+        [
+            "--repo",
+            str(repo),
+            "review-path",
+            "--original-head",
+            original,
+            "--merged-head",
+            merged,
+        ]
     )
     out = capsys.readouterr().out
     assert rc == 0
@@ -217,7 +246,14 @@ def test_review_path_cli_prints_lines(repo, capsys):
 
 def test_review_path_cli_rejects_option_like_ref(repo):
     rc = readopt.main(
-        ["--repo", str(repo), "review-path", "--original-head=--output=x", "--merged-head", "HEAD"]
+        [
+            "--repo",
+            str(repo),
+            "review-path",
+            "--original-head=--output=x",
+            "--merged-head",
+            "HEAD",
+        ]
     )
     assert rc == 2
 
@@ -368,14 +404,18 @@ def test_prune_keep_unknown_errors(attempts):
 
 
 def test_prune_issue_closed_deletes_all_but_not_other_issue(attempts):
-    deleted = readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=closed)
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed
+    )
     assert sorted(deleted) == ["worker-20-mid", "worker-20-new", "worker-20-old"]
     assert "worker-201-other" in branches(attempts)
 
 
 def test_prune_never_deletes_checked_out_branch(attempts):
     git(attempts, "checkout", "-q", "worker-20-old")
-    deleted = readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=closed)
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed
+    )
     assert "worker-20-old" not in deleted
     assert "worker-20-old" in branches(attempts)
 
@@ -388,7 +428,9 @@ def test_prune_dry_run(attempts):
 
 def test_prune_issue_closed_refused_when_issue_open(attempts):
     with pytest.raises(readopt.GitError, match="refused"):
-        readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=lambda n: "open")
+        readopt.prune_attempts(
+            attempts, 20, issue_closed=True, issue_state=lambda n: "open"
+        )
     assert {"worker-20-old", "worker-20-mid", "worker-20-new"} <= branches(attempts)
 
 
@@ -402,7 +444,7 @@ def test_prune_issue_closed_refused_when_lookup_fails(attempts):
 
 
 def test_prune_issue_closed_cli_refuses_without_network(attempts, monkeypatch):
-    monkeypatch.setattr(readopt, "github_issue_state", lambda git: (lambda n: "open"))
+    monkeypatch.setattr(readopt, "github_issue_state", lambda git: lambda n: "open")
     rc = readopt.main(
         ["--repo", str(attempts), "prune-attempts", "--issue", "20", "--issue-closed"]
     )
@@ -451,7 +493,10 @@ def _unlanded_branches(repo, n):
 def _looked_up(repo, seed, cap):
     calls = []
     readopt.reap_landed(
-        repo, pr_lookup=lambda b, t: calls.append(b) or False, max_lookups=cap, seed=seed
+        repo,
+        pr_lookup=lambda b, t: calls.append(b) or False,
+        max_lookups=cap,
+        seed=seed,
     )
     return calls
 
@@ -461,7 +506,9 @@ def test_reap_lookup_cap_prints_exactly_one_cap_line(repo, capsys):
     readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=2, seed=1)
     out = capsys.readouterr().out
     cap_lines = [ln for ln in out.splitlines() if "PR-lookup cap" in ln]
-    assert cap_lines == ["WARN: PR-lookup cap (2) reached — 3 branch(es) deferred to a later cycle"]
+    assert cap_lines == [
+        "WARN: PR-lookup cap (2) reached — 3 branch(es) deferred to a later cycle"
+    ]
 
 
 def test_reap_lookup_subset_depends_on_seed(repo):
@@ -488,7 +535,9 @@ def test_reap_cheap_checks_run_for_all_records_despite_cap(repo):
     make_branch(repo, "worker-89-x")
     write_record(repo, "worker-89-x", age_secs=100000)
     land_into_main(repo, "worker-89-x")
-    assert readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=0, seed=0) == ["worker-89-x"]
+    assert readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=0, seed=0) == [
+        "worker-89-x"
+    ]
 
 
 def test_reap_ancestry_landed_makes_no_lookup(repo):
@@ -529,7 +578,15 @@ def test_review_path_unexpected_exception_exits_2(repo, monkeypatch):
 
     monkeypatch.setattr(readopt, "compute_review_path", explode)
     rc = readopt.main(
-        ["--repo", str(repo), "review-path", "--original-head", "HEAD", "--merged-head", "HEAD"]
+        [
+            "--repo",
+            str(repo),
+            "review-path",
+            "--original-head",
+            "HEAD",
+            "--merged-head",
+            "HEAD",
+        ]
     )
     assert rc == 2
 
@@ -580,7 +637,10 @@ def test_summary_line(repo, capsys):
     make_branch(repo, "worker-71-x")
     write_record(repo, "worker-71-x")
     readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=1)
-    assert "SUMMARY reaped=0 lookups=1 skipped_cap=1 lookup_failures=0" in capsys.readouterr().out
+    assert (
+        "SUMMARY reaped=0 lookups=1 skipped_cap=1 lookup_failures=0"
+        in capsys.readouterr().out
+    )
 
 
 def test_failed_delete_emits_structured_line(repo, capsys):
@@ -659,7 +719,15 @@ def test_review_path_fails_closed_when_merge_not_done(repo):
     with pytest.raises(readopt.GitError, match="merge not done"):
         readopt.compute_review_path(readopt.make_git(repo), original, original)
     rc = readopt.main(
-        ["--repo", str(repo), "review-path", "--original-head", original, "--merged-head", original]
+        [
+            "--repo",
+            str(repo),
+            "review-path",
+            "--original-head",
+            original,
+            "--merged-head",
+            original,
+        ]
     )
     assert rc == 2
 
@@ -812,7 +880,10 @@ def lines_of(capsys, prefix=None):
 
 def remote_heads_of(repo, pattern="refs/heads/*"):
     out = git(repo, "ls-remote", "origin", pattern)
-    return {ln.split("\t")[1][len("refs/heads/") :]: ln.split("\t")[0] for ln in out.splitlines()}
+    return {
+        ln.split("\t")[1][len("refs/heads/") :]: ln.split("\t")[0]
+        for ln in out.splitlines()
+    }
 
 
 def push_branch(repo, name, ref=None):
@@ -830,7 +901,14 @@ def test_t1_never_list_names_current_and_worktree(repo, tmp_path, capsys):
     git(repo, "worktree", "add", "-q", str(tmp_path / "wt"), "wt-b")
     git(repo, "checkout", "-q", "cur")
     assert reap(repo) == 0
-    assert branches(repo) >= {"main", "audit-log", "release/x", "audit/y", "wt-b", "cur"}
+    assert branches(repo) >= {
+        "main",
+        "audit-log",
+        "release/x",
+        "audit/y",
+        "wt-b",
+        "cur",
+    }
     out = "\n".join(lines_of(capsys))
     assert "reaped_local=0" in out and "failed=0" in out
 
@@ -876,8 +954,12 @@ def test_t3_merged_pr_at_tip_reaps_local_and_remote_and_record(repo, capsys):
     rec = write_record(repo, "worker-5-x")
     assert reap(repo, prs=[pr("worker-5-x", tip, merged=True, number=7)]) == 0
     out = lines_of(capsys)
-    assert f"REAPED branch=worker-5-x reason=pr-merged where=local pr=#7 tip={tip}" in out
-    assert f"REAPED branch=worker-5-x reason=pr-merged where=remote pr=#7 tip={tip}" in out
+    assert (
+        f"REAPED branch=worker-5-x reason=pr-merged where=local pr=#7 tip={tip}" in out
+    )
+    assert (
+        f"REAPED branch=worker-5-x reason=pr-merged where=remote pr=#7 tip={tip}" in out
+    )
     assert "worker-5-x" not in branches(repo)
     assert "worker-5-x" not in remote_heads_of(repo)
     assert not rec.exists()
@@ -909,7 +991,9 @@ def test_t6_closed_issue_reaps_unlanded_but_legacy_branch_is_kept(repo, capsys):
     make_branch(repo, "fix/x", "a.txt", "unlanded legacy\n")
     reap(repo, issues={30: "closed"})
     out = lines_of(capsys)
-    assert any(ln.startswith("REAPED branch=worker-30-x reason=issue-closed") for ln in out)
+    assert any(
+        ln.startswith("REAPED branch=worker-30-x reason=issue-closed") for ln in out
+    )
     assert "worker-30-x" not in branches(repo)
     assert "fix/x" in branches(repo)
     reap(repo, issues={30: "closed"}, dry_run=True)
@@ -926,9 +1010,15 @@ def test_t7_tip_beyond_merged_pr_head_is_kept(repo, capsys):
     git(repo, "checkout", "-q", "main")
     reap(repo, prs=[pr("worker-40-x", first, merged=True)], issues={40: "open"})
     assert "worker-40-x" in branches(repo)
-    reap(repo, prs=[pr("worker-40-x", first, merged=True)], issues={40: "open"}, dry_run=True)
+    reap(
+        repo,
+        prs=[pr("worker-40-x", first, merged=True)],
+        issues={40: "open"},
+        dry_run=True,
+    )
     assert any(
-        "KEEP branch=worker-40-x reason=unlanded-pr-sha-mismatch" in ln for ln in lines_of(capsys)
+        "KEEP branch=worker-40-x reason=unlanded-pr-sha-mismatch" in ln
+        for ln in lines_of(capsys)
     )
 
 
@@ -937,7 +1027,8 @@ def test_t8_conflicting_stale_branch_on_open_issue_is_kept(repo, capsys):
     advance_main(repo, "a.txt", "main edit\n")
     reap(repo, issues={50: "open"}, dry_run=True)
     assert any(
-        "KEEP branch=worker-50-x reason=unlanded-open-issue" in ln for ln in lines_of(capsys)
+        "KEEP branch=worker-50-x reason=unlanded-open-issue" in ln
+        for ln in lines_of(capsys)
     )
 
 
@@ -962,7 +1053,9 @@ def test_t9_grace_fresh_reflog_on_old_tip(repo, capsys):
     git(repo, "branch", "-f", "worker-8-c", tip)  # as create_branch.sh --from does
     reap(repo, issues={8: "open"}, now=time.time(), dry_run=True)
     out = lines_of(capsys)
-    assert any("KEEP branch=worker-8-c reason=grace" in ln for ln in out), "\n".join(out)
+    assert any("KEEP branch=worker-8-c reason=grace" in ln for ln in out), "\n".join(
+        out
+    )
 
 
 def test_t10_dry_run_deletes_nothing_and_reports_every_branch(repo, capsys):
@@ -972,16 +1065,22 @@ def test_t10_dry_run_deletes_nothing_and_reports_every_branch(repo, capsys):
     make_branch(repo, "worker-7-z", "a.txt", "w\n")
     local_before, remote_before = branches(repo), remote_heads_of(repo)
     reap(
-        repo, prs=[pr("worker-5-x", tip, merged=True)], issues={6: "open", 7: "open"}, dry_run=True
+        repo,
+        prs=[pr("worker-5-x", tip, merged=True)],
+        issues={6: "open", 7: "open"},
+        dry_run=True,
     )
     out = lines_of(capsys)
     assert branches(repo) == local_before and remote_heads_of(repo) == remote_before
     named = {
-        re.search(r"branch=(\S+) .*where=local", ln).group(1) for ln in out if "where=local" in ln
+        re.search(r"branch=(\S+) .*where=local", ln).group(1)
+        for ln in out
+        if "where=local" in ln
     }
     assert named == local_before
     assert any(
-        ln.startswith("WOULD-REAP branch=worker-5-x reason=pr-merged where=remote") for ln in out
+        ln.startswith("WOULD-REAP branch=worker-5-x reason=pr-merged where=remote")
+        for ln in out
     )
 
 
@@ -1003,7 +1102,10 @@ def test_t11_failed_listing_aborts_with_zero_deletions(repo, capsys, failing):
 
     before = branches(repo)
     assert (
-        readopt.reap_orphans(repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=issue_states) == 2
+        readopt.reap_orphans(
+            repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=issue_states
+        )
+        == 2
     )
     out = "\n".join(lines_of(capsys))
     assert "listing failed — nothing deleted" in out and "aborted=1" in out
@@ -1021,7 +1123,10 @@ def test_t12_remote_moved_between_listing_and_push(repo, capsys):
     prs = [pr("worker-60-x", tip, merged=True)]
     assert reap(repo, prs=prs, remote_heads=lambda pat: [("worker-60-x", tip)]) == 0
     out = lines_of(capsys)
-    assert f"REAP-FAILED branch=worker-60-x reason=cas-or-push-failed where=remote tip={tip}" in out
+    assert (
+        f"REAP-FAILED branch=worker-60-x reason=cas-or-push-failed where=remote tip={tip}"
+        in out
+    )
     assert remote_heads_of(repo)["worker-60-x"] == moved
     assert "worker-60-x" not in branches(repo)  # the local side is independent
     assert any(RO_EVENT_RE.match(ln) for ln in out if ln.startswith("REAP"))
@@ -1053,7 +1158,9 @@ class _FakeRemote:
             self.calls.append(list(args))
             run.last_stderr = self.stderr
             if args[0] == "ls-remote":
-                return self.ls_rc, "\n".join(f"{s}\trefs/heads/{b}" for b, s in self.heads)
+                return self.ls_rc, "\n".join(
+                    f"{s}\trefs/heads/{b}" for b, s in self.heads
+                )
             return self.push_rc, self.push_out
 
         run.last_stderr = ""
@@ -1066,17 +1173,24 @@ def test_t13_token_never_printed_or_passed_in_argv(repo, monkeypatch, capsys):
     monkeypatch.setenv("GH_TOKEN", sentinel)
     git(repo, "remote", "set-url", "origin", "https://github.com/o/r.git")
     tip = make_old_branch(repo, "worker-5-x")
-    fake = _FakeRemote(heads=[("worker-5-x", tip)], ls_rc=128, stderr=f"fatal: {sentinel} {b64}")
+    fake = _FakeRemote(
+        heads=[("worker-5-x", tip)], ls_rc=128, stderr=f"fatal: {sentinel} {b64}"
+    )
     monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
     reap(repo, prs=[pr("worker-5-x", tip, merged=True)], do_local=False)
     out = capsys.readouterr()
     assert sentinel not in out.out + out.err and b64 not in out.out + out.err
     assert "WARN: remote head listing failed" in out.out
-    assert fake.envs and fake.envs[0]["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {b64}"
+    assert (
+        fake.envs
+        and fake.envs[0]["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {b64}"
+    )
     assert fake.envs[0]["GIT_CONFIG_KEY_1"] == "credential.helper"
     assert fake.envs[0]["GIT_CONFIG_VALUE_1"] == ""
     assert not any(sentinel in a or b64 in a for c in fake.calls for a in c)
-    assert not any(k.startswith("GIT_TRACE") or k == "GIT_CURL_VERBOSE" for k in fake.envs[0])
+    assert not any(
+        k.startswith("GIT_TRACE") or k == "GIT_CURL_VERBOSE" for k in fake.envs[0]
+    )
     assert all("https://github.com/o/r.git" in c for c in fake.calls)
 
 
@@ -1085,12 +1199,17 @@ def test_t13_push_failure_text_is_redacted(repo, monkeypatch, capsys):
     monkeypatch.setenv("GH_TOKEN", sentinel)
     git(repo, "remote", "set-url", "origin", "https://github.com/o/r.git")
     tip = make_old_branch(repo, "worker-5-x")
-    fake = _FakeRemote(heads=[("worker-5-x", tip)], push_rc=1, push_out=f"!\t:x\t{sentinel}")
+    fake = _FakeRemote(
+        heads=[("worker-5-x", tip)], push_rc=1, push_out=f"!\t:x\t{sentinel}"
+    )
     monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
     reap(repo, prs=[pr("worker-5-x", tip, merged=True)], do_local=False)
     out = capsys.readouterr()
     assert sentinel not in out.out + out.err
-    assert "REAP-FAILED branch=worker-5-x reason=cas-or-push-failed where=remote" in out.out
+    assert (
+        "REAP-FAILED branch=worker-5-x reason=cas-or-push-failed where=remote"
+        in out.out
+    )
 
 
 def test_redact_covers_literal_and_header_forms(monkeypatch):
@@ -1117,7 +1236,12 @@ def test_remote_runner_strips_trace_vars_and_times_out(repo, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "url", ["git@github.com:o/r.git", "ssh://git@github.com/o/r.git", "https://gitlab.com/o/r.git"]
+    "url",
+    [
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r.git",
+        "https://gitlab.com/o/r.git",
+    ],
 )
 def test_t23_unsupported_origin_skips_remote_phase(repo, monkeypatch, capsys, url):
     monkeypatch.setenv("GH_TOKEN", "SENTINEL")
@@ -1128,7 +1252,10 @@ def test_t23_unsupported_origin_skips_remote_phase(repo, monkeypatch, capsys, ur
 
     monkeypatch.setattr(readopt, "make_git_remote", boom_factory)
     assert reap(repo, dry_run=True) == 0
-    assert "remote phase skipped — unsupported origin URL scheme" in capsys.readouterr().out
+    assert (
+        "remote phase skipped — unsupported origin URL scheme"
+        in capsys.readouterr().out
+    )
 
 
 def test_t23_github_url_without_token_skips_remote_phase(repo, monkeypatch, capsys):
@@ -1162,7 +1289,9 @@ def test_t16_local_only_and_remote_only(repo, capsys):
 
 def test_t16_both_only_flags_exit_2(repo):
     with pytest.raises(SystemExit) as exc:
-        readopt.main(["--repo", str(repo), "reap-orphans", "--local-only", "--remote-only"])
+        readopt.main(
+            ["--repo", str(repo), "reap-orphans", "--local-only", "--remote-only"]
+        )
     assert exc.value.code == 2
 
 
@@ -1197,7 +1326,10 @@ def test_t18_closed_pr_on_open_issue_local_kept_remote_reaped(repo, capsys):
     prs = [pr("worker-70-x", tip, number=4), pr("fix/y", legacy, number=5)]
     reap(repo, prs=prs, issues={70: "open"})
     out = lines_of(capsys)
-    assert f"REAPED branch=worker-70-x reason=pr-closed where=remote pr=#4 tip={tip}" in out
+    assert (
+        f"REAPED branch=worker-70-x reason=pr-closed where=remote pr=#4 tip={tip}"
+        in out
+    )
     assert f"REAPED branch=fix/y reason=pr-closed where=local pr=#5 tip={legacy}" in out
     assert "worker-70-x" in branches(repo) and "fix/y" not in branches(repo)
     assert "worker-70-x" not in remote_heads_of(repo)
@@ -1225,10 +1357,16 @@ def test_t19_batched_branch_with_open_issue_ref_is_kept(repo, capsys):
 def test_t20_unknown_issue_is_kept_and_empty_pr_listing_aborts(repo, capsys):
     make_branch(repo, "worker-90-x", "a.txt", "w\n")
     reap(repo, issues={}, dry_run=True)
-    assert any("KEEP branch=worker-90-x reason=issue-unknown" in ln for ln in lines_of(capsys))
+    assert any(
+        "KEEP branch=worker-90-x reason=issue-unknown" in ln for ln in lines_of(capsys)
+    )
     before = branches(repo)
     rc = readopt.reap_orphans(
-        repo, slug=SLUG, now=FAR, pulls=lambda state: [], issue_states=lambda n: {90: "closed"}
+        repo,
+        slug=SLUG,
+        now=FAR,
+        pulls=lambda state: [],
+        issue_states=lambda n: {90: "closed"},
     )
     out = "\n".join(lines_of(capsys))
     assert rc == 2 and "aborted=1" in out and branches(repo) == before
@@ -1241,18 +1379,28 @@ def test_t21_tip_behind_merged_pr_head_is_covered(repo, capsys):
     ahead = commit(repo, "a.txt", "two\n", "two")
     git(repo, "checkout", "-q", "main")
     git(repo, "branch", "-D", "ahead")  # object stays present locally, as after a fetch
-    reap(repo, prs=[pr("worker-91-x", ahead, merged=True, number=6)], issues={91: "open"})
+    reap(
+        repo, prs=[pr("worker-91-x", ahead, merged=True, number=6)], issues={91: "open"}
+    )
     assert any(
-        ln.startswith(f"REAPED branch=worker-91-x reason=pr-merged where=local pr=#6 tip={tip}")
+        ln.startswith(
+            f"REAPED branch=worker-91-x reason=pr-merged where=local pr=#6 tip={tip}"
+        )
         for ln in lines_of(capsys)
     )
 
 
 def test_t21_pr_head_object_absent_or_non_main_base_is_not_covered(repo, capsys):
     tip = make_branch(repo, "worker-92-x", "a.txt", "w\n")
-    reap(repo, prs=[pr("worker-92-x", "1" * 40, merged=True)], issues={92: "open"}, dry_run=True)
+    reap(
+        repo,
+        prs=[pr("worker-92-x", "1" * 40, merged=True)],
+        issues={92: "open"},
+        dry_run=True,
+    )
     assert any(
-        "KEEP branch=worker-92-x reason=unlanded-pr-sha-mismatch" in ln for ln in lines_of(capsys)
+        "KEEP branch=worker-92-x reason=unlanded-pr-sha-mismatch" in ln
+        for ln in lines_of(capsys)
     )
     reap(
         repo,
@@ -1261,7 +1409,10 @@ def test_t21_pr_head_object_absent_or_non_main_base_is_not_covered(repo, capsys)
         dry_run=True,
     )
     out = "\n".join(lines_of(capsys))
-    assert "reason=pr-merged" not in out and "worker-92-x reason=unlanded-open-issue" in out
+    assert (
+        "reason=pr-merged" not in out
+        and "worker-92-x reason=unlanded-open-issue" in out
+    )
 
 
 def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
@@ -1272,7 +1423,9 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
     git(repo, "checkout", "-q", "-b", "tmp", "worker-31-b")
     commit(repo, "a.txt", "moved\n", "moved on")
     git(repo, "checkout", "-q", "main")
-    push_branch(repo, "worker-31-b", "tmp")  # remote b moved; the injected listing is stale
+    push_branch(
+        repo, "worker-31-b", "tmp"
+    )  # remote b moved; the injected listing is stale
     real_factory = readopt.make_git_remote
     pushes = []
 
@@ -1288,7 +1441,8 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
 
     monkeypatch.setattr(readopt, "make_git_remote", factory)
     prs = [
-        pr(f"worker-31-{n}", t, merged=True, number=i) for i, (n, t) in enumerate(tips.items(), 1)
+        pr(f"worker-31-{n}", t, merged=True, number=i)
+        for i, (n, t) in enumerate(tips.items(), 1)
     ]
     stale = lambda pat: [(f"worker-31-{n}", t) for n, t in tips.items()]  # noqa: E731
     reap(repo, prs=prs, remote_heads=stale, do_local=False)
@@ -1296,7 +1450,10 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
     assert len(pushes) == 1
     assert all("--atomic" not in a for a in pushes[0]) and "--no-verify" in pushes[0]
     assert sum(ln.startswith("REAPED") for ln in out) == 2
-    assert sum(ln.startswith("REAP-FAILED") and "cas-or-push-failed" in ln for ln in out) == 1
+    assert (
+        sum(ln.startswith("REAP-FAILED") and "cas-or-push-failed" in ln for ln in out)
+        == 1
+    )
     assert set(remote_heads_of(repo, "refs/heads/worker-31-*")) == {"worker-31-b"}
 
 
@@ -1305,9 +1462,14 @@ def test_push_parse_requires_per_ref_deleted_line():
 
     def run(args, timeout=0):
         calls.append(args)
-        return 1, "To x\n-\t:refs/heads/a\t[deleted]\n!\t:refs/heads/b\t[rejected] (stale info)\n"
+        return (
+            1,
+            "To x\n-\t:refs/heads/a\t[deleted]\n!\t:refs/heads/b\t[rejected] (stale info)\n",
+        )
 
-    got = readopt._push_delete(run, "u", [("a", "1" * 40), ("b", "2" * 40), ("c", "3" * 40)])
+    got = readopt._push_delete(
+        run, "u", [("a", "1" * 40), ("b", "2" * 40), ("c", "3" * 40)]
+    )
     assert got == {"a": True, "b": False, "c": False}
     assert readopt._push_delete(
         lambda a, t=0: (124, "-\t:refs/heads/a\t"), "u", [("a", "1" * 40)]
@@ -1322,7 +1484,12 @@ def test_no_candidates_makes_no_github_calls(repo, capsys):
         raise AssertionError("GitHub must not be called")
 
     rc = readopt.reap_orphans(
-        repo, slug=SLUG, now=time.time(), pulls=forbidden, issue_states=forbidden, dry_run=True
+        repo,
+        slug=SLUG,
+        now=time.time(),
+        pulls=forbidden,
+        issue_states=forbidden,
+        dry_run=True,
     )
     out = "\n".join(lines_of(capsys))
     assert rc == 0 and "api_calls=0" in out and "aborted=0" in out
@@ -1347,7 +1514,11 @@ def test_remote_listing_failure_still_runs_local_phase(repo, capsys):
 
     rc = reap(repo, issues={6: "open"}, remote_heads=bad)
     out = "\n".join(lines_of(capsys))
-    assert rc == 0 and "remote head listing failed" in out and "REAPED branch=worker-6-y" in out
+    assert (
+        rc == 0
+        and "remote head listing failed" in out
+        and "REAPED branch=worker-6-y" in out
+    )
 
 
 def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
@@ -1355,7 +1526,9 @@ def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
     monkeypatch.setattr(
         readopt.github,
         "get_issue",
-        lambda o, r, n: calls["get"].append(n) or ({"state": "closed"} if n != 3 else None),
+        lambda o, r, n: (
+            calls["get"].append(n) or ({"state": "closed"} if n != 3 else None)
+        ),
     )
     monkeypatch.setattr(
         readopt.github,
@@ -1364,7 +1537,9 @@ def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
     )
     lookup = readopt._github_issue_states(SLUG)
     assert lookup({1, 3}) == {1: "closed"}  # a 404 is unknown, never closed
-    assert lookup(set(range(100, 100 + readopt.PER_ISSUE_READ_LIMIT + 1))) == {9: "open"}
+    assert lookup(set(range(100, 100 + readopt.PER_ISSUE_READ_LIMIT + 1))) == {
+        9: "open"
+    }
     assert calls["get"] == [1, 3] and calls["list"] == 1
 
 
@@ -1436,6 +1611,167 @@ def test_t14_prune_remote_lookup_failure_never_fails_the_local_delete(attempts, 
     def bad(pat):
         raise RuntimeError("net down")
 
-    got = readopt.prune_attempts(attempts, 20, remote_heads=bad, remote_delete=lambda i: {})
+    got = readopt.prune_attempts(
+        attempts, 20, remote_heads=bad, remote_delete=lambda i: {}
+    )
     assert "worker-20-old" in got and "worker-20-old" not in branches(attempts)
     assert "remote head lookup failed" in capsys.readouterr().out
+
+
+# --- unit-test authority additions (#2286): decision rows not otherwise pinned ---
+
+
+def _failing_git(repo, *, fail_prefix, rc=128):
+    """Real git runner that returns ``rc`` for commands starting with fail_prefix."""
+    real = readopt.make_git(repo)
+
+    def run(args):
+        if list(args[: len(fail_prefix)]) == list(fail_prefix):
+            return rc, ""
+        return real(args)
+
+    return run
+
+
+@pytest.mark.parametrize(
+    "fail_prefix",
+    [("merge-base", "--is-ancestor"), ("merge-tree", "--write-tree")],
+)
+def test_git_error_in_landed_probe_keeps_branch(repo, capsys, fail_prefix):
+    make_branch(repo, "worker-60-x", "a.txt", "w\n")
+    git(repo, "branch", "-f", "worker-61-y", "worker-60-x")
+    run = _failing_git(
+        repo, fail_prefix=fail_prefix, rc=128 if fail_prefix[0] == "merge-base" else 2
+    )
+    before = branches(repo)
+    assert reap(repo, issues={60: "open", 61: "open"}, git=run) == 0
+    assert branches(repo) == before
+    reap(repo, issues={60: "open", 61: "open"}, git=run, dry_run=True)
+    out = lines_of(capsys, "KEEP")
+    assert any("branch=worker-60-x reason=git-error" in ln for ln in out)
+
+
+def test_git_error_on_closed_issue_commit_scan_keeps_branch(repo, capsys):
+    make_branch(repo, "worker-62-x", "a.txt", "w\n")
+    advance_main(repo, "a.txt", "main edit\n")  # conflict: not landed
+    run = _failing_git(repo, fail_prefix=("log", "--format=%B"))
+    assert reap(repo, issues={62: "closed"}, git=run) == 0
+    assert "worker-62-x" in branches(repo)
+    reap(repo, issues={62: "closed"}, git=run, dry_run=True)
+    assert any(
+        "branch=worker-62-x reason=git-error" in ln for ln in lines_of(capsys, "KEEP")
+    )
+
+
+def test_closed_issue_with_all_refs_closed_is_reaped_d2(repo, capsys):
+    git(repo, "checkout", "-q", "-b", "worker-63-x", "main")
+    commit(repo, "a.txt", "w\n", "work for #63 and #64")
+    git(repo, "checkout", "-q", "main")
+    advance_main(repo, "a.txt", "main edit\n")
+    reap(repo, issues={63: "closed", 64: "closed"}, dry_run=True)
+    assert any(
+        "WOULD-REAP branch=worker-63-x reason=issue-closed" in ln
+        for ln in lines_of(capsys)
+    )
+    reap(repo, issues={63: "closed", 64: "open"}, dry_run=True)
+    assert any(
+        "KEEP branch=worker-63-x reason=issue-closed-batch-open" in ln
+        for ln in lines_of(capsys)
+    )
+
+
+def test_open_pr_appearing_before_delete_phase_blocks_reap(repo, capsys):
+    tip = make_old_branch(repo, "worker-65-x")
+    push_branch(repo, "worker-65-x")
+    merged = pr("worker-65-x", tip, merged=True, number=3)
+    late_open = pr("worker-65-x", tip, state="open", number=4)
+    calls = []
+
+    def pulls(state):
+        calls.append(state)
+        if state == "all":
+            return [pr("unrelated-x", OTHER_SHA, merged=True, number=999), merged]
+        return [late_open]  # the pre-delete re-check sees a new open PR
+
+    assert (
+        readopt.reap_orphans(
+            repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=lambda n: {}
+        )
+        == 0
+    )
+    assert calls == ["all", "open"]
+    assert "worker-65-x" in branches(repo) and "worker-65-x" in remote_heads_of(repo)
+    out = lines_of(capsys)
+    assert not any(ln.startswith("REAPED") for ln in out)
+    assert any("reaped_local=0 reaped_remote=0" in ln for ln in out)
+
+
+def test_young_branch_with_open_pr_is_labelled_open_pr(repo, capsys):
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 19.5 * 86400))
+    make_dated_branch(repo, "worker-66-y", soon)  # 0.5 day old at the injected "now"
+    make_old_branch(repo, "worker-67-old")  # old enough to force phase B to run
+    tip = git(repo, "rev-parse", "worker-66-y")
+    prs = [pr("worker-66-y", tip, state="open", number=5)]
+    reap(
+        repo,
+        prs=prs,
+        issues={66: "open", 67: "open"},
+        now=time.time() + 20 * 86400,
+        dry_run=True,
+    )
+    out = lines_of(capsys, "KEEP")
+    assert any("branch=worker-66-y reason=open-pr" in ln for ln in out)
+    assert not any("worker-66-y reason=grace" in ln for ln in out)
+
+
+def test_remote_head_missing_commit_object_is_kept_not_deleted(repo, capsys):
+    pushed = []
+    reap(
+        repo,
+        remote_heads=lambda pat: [("worker-68-gone", "1" * 40)],
+        remote_delete=lambda items: pushed.append(items) or {},
+        dry_run=True,
+    )
+    assert any(
+        "branch=worker-68-gone reason=remote-tip-not-local" in ln
+        for ln in lines_of(capsys, "KEEP")
+    )
+    assert pushed == []
+
+
+def test_closed_pr_local_on_closed_issue_is_reaped_but_unknown_issue_is_kept(
+    repo, capsys
+):
+    closed = make_old_branch(repo, "worker-71-x")
+    unknown = make_old_branch(repo, "worker-72-x")
+    prs = [pr("worker-71-x", closed, number=6), pr("worker-72-x", unknown, number=7)]
+    # 71 is closed: the closed PR's head carries no open-issue work. 72 is absent
+    # from the state map: unknown is treated like open and the branch is protected.
+    reap(repo, prs=prs, issues={71: "closed"}, dry_run=True)
+    out = lines_of(capsys)
+    assert any(
+        "WOULD-REAP branch=worker-71-x reason=pr-closed where=local" in ln for ln in out
+    )
+    assert any(
+        "KEEP branch=worker-72-x reason=closed-pr-open-issue where=local" in ln
+        for ln in out
+    )
+
+
+def test_remote_head_with_unreadable_commit_date_is_kept_as_git_error(repo, capsys):
+    tip = make_old_branch(repo, "worker-73-x")
+    run = _failing_git(repo, fail_prefix=("log", "-1", "--format=%ct"))
+    pushed = []
+    reap(
+        repo,
+        do_local=False,
+        git=run,
+        remote_heads=lambda pat: [("worker-73-x", tip)],
+        remote_delete=lambda items: pushed.append(items) or {},
+        dry_run=True,
+    )
+    assert any(
+        "branch=worker-73-x reason=git-error where=remote" in ln
+        for ln in lines_of(capsys, "KEEP")
+    )
+    assert pushed == []
