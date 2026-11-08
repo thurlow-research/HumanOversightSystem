@@ -54,8 +54,8 @@ def _parse_codeowners(path: Path) -> list[CodeownersEntry]:
     if not path.is_file():
         return entries
     for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         parts = line.split()
         if len(parts) < 2:

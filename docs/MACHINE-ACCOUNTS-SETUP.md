@@ -171,7 +171,7 @@ Use a **Ruleset** rather than classic branch protection — Rulesets support ins
 
 Click **Create**, then delete the classic branch protection rule at **Settings → Branches**.
 
-Result: every PR requires overseer approval; protected-surface or above-ceiling PRs require human approval. `hos-auditsync-hos` can push audit logs directly to main; all other actors go through the PR flow.
+Result: every PR requires overseer approval; protected-surface PRs require human approval; above-ceiling PRs need the overseer's head-bound interim sign-off plus a designated human's approval on the same head (#2174). `hos-auditsync-hos` can push audit logs directly to main; all other actors go through the PR flow.
 
 ## Step 7 — Regenerate CODEOWNERS for your owner  *(consumers)*
 
@@ -190,7 +190,7 @@ so the two never drift. Commit it.
 | worker can't approve its own PR | GitHub "no self-approval" + worker has no approval grant | structural |
 | **every PR → overseer must review** | `require-overseer-approval` status check (#621) | **server-side** |
 | **protected surface → human** | `require-human-approval` status check **+** CODEOWNERS | **server-side (the §5.1 determination-honesty gate)** |
-| above overseer ceiling → human | `require-tier-ceiling` status check | server-side |
+| above overseer ceiling → human | `require-tier-ceiling` status check **+** `require-overseer-approval` (head-bound interim sign-off + designated-human approval, #2174) | server-side |
 | unenforced test suite → real failures block merge | `tests` status check (#1244) | server-side (retry-then-fail; override only via `contract/gate-suspension.md`) |
 | no bot `--admin` bypass | "Do not allow bypassing" + bots lack Admin | server-side |
 

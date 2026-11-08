@@ -3063,8 +3063,8 @@ def _codeowners_humans_from_text(text: Optional[str]) -> set[str]:
     if text is None:
         return humans
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         for owner in line.split()[1:]:
             owner = owner.lstrip("@")

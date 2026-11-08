@@ -263,15 +263,21 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 def codeowners_humans(repo_root: str = ".") -> set[str]:
     """Individual human logins (lowercased, '@' stripped) named anywhere in
     .github/CODEOWNERS. Team patterns (org/team) are not individual humans
-    and are skipped (AF-2). Empty if the file is missing. Promoted verbatim
-    from probe.py:_codeowners_humans (byte-identical behaviour, AD-1)."""
+    and are skipped (AF-2). Empty if the file is missing. Originally promoted
+    verbatim from probe.py:_codeowners_humans (AD-1); since #2202 it also
+    strips inline comments.
+
+    GitHub treats '#' as the start of a comment anywhere on a line, so each
+    line is truncated at the first '#' before tokenising (#2202). '\\#'
+    escapes are not supported: they are treated as a comment start, the
+    fail-safe direction (it can only drop owners, never add them)."""
     path = _codeowners_path(repo_root)
     if not path.is_file():
         return set()
     humans: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         parts = line.split()
         for owner in parts[1:]:
