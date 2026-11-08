@@ -152,7 +152,7 @@ def test_real_repo_is_clean(capsys):
 
 
 def test_markdown_emphasis_does_not_hide_scope(tmp_path):
-    line = "You write a register entry **only** when required; do not write one otherwise, register entry.\n"
+    line = "You do not write a register entry **unless** the step requires it.\n"
     f = tmp_path / "a.md"
     f.write_text(line)
     assert crw.find_unscoped_prohibitions(f) == []
@@ -162,8 +162,37 @@ def test_real_architect_line_is_scoped():
     arch = ROOT / ".claude" / "agents" / "architect.md"
     line = next(ln for ln in arch.read_text().splitlines() if "`architecture` role" in ln)
     plain = line.replace("*", "").replace("_", "")
-    assert crw.SCOPE_RE.search(plain)
+    sentence = next(x for x in crw.SENTENCE_SPLIT_RE.split(plain) if crw.PROHIBITION_RE.search(x))
+    assert crw.SCOPE_RE.search(sentence)
     assert crw.find_unscoped_prohibitions(arch) == []
+    unscoped = sentence.replace("Unless the `architecture` role is required, ", "")
+    assert crw.PROHIBITION_RE.search(unscoped) and not crw.SCOPE_RE.search(unscoped)
+
+
+def _hits(tmp_path, text):
+    f = tmp_path / "a.md"
+    f.write_text(text + "\n")
+    return crw.find_unscoped_prohibitions(f)
+
+
+def test_post_verbal_negation_unscoped_is_flagged(tmp_path):
+    assert _hits(tmp_path, "You write no register entry.")
+    assert _hits(tmp_path, "It writes no per-step sign-off register entry.")
+
+
+def test_scope_in_other_sentence_does_not_suppress(tmp_path):
+    assert _hits(tmp_path, "You write no register entry. Review only when asked.")
+    assert _hits(tmp_path, "Act unless told otherwise; do not write a register entry.")
+
+
+def test_same_sentence_scope_passes(tmp_path):
+    assert not _hits(tmp_path, "Unless the role is required, you write no register entry.")
+
+
+def test_dotted_path_does_not_break_splitting(tmp_path):
+    text = "Unless listed in `.claudetmp/x/required.md` or a.md, you write no register entry."
+    assert not _hits(tmp_path, text)
+    assert _hits(tmp_path, "See required.md and .claudetmp; you write no register entry.")
 
 
 def test_widened_negations_are_caught(tmp_path):

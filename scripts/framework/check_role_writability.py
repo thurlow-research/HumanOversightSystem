@@ -14,7 +14,8 @@ Checks (all deterministic, no AI):
   2. Contract and step-manifest template mappings agree on the agent per role.
   3. Every mapped agent has ``.claude/agents/<agent>.md``.
   4. No mapped agent file carries an unscoped register-write prohibition.
-     Matching is single-line: a prohibition split across lines is not seen.
+     Matching is per sentence within a single line: a prohibition split across
+     lines is not seen, and a scope word must be in the prohibition's sentence.
   5. Every emitted role and every role_mappings key is a backticked key in the
      contract section 3 ``**Roles**`` table.
 
@@ -60,9 +61,11 @@ KEY_RE = re.compile(r"`([a-z][a-z0-9-]*)`")
 # (SCOPE_RE), as architect.md's does.
 PROHIBITION_RE = re.compile(
     r"\b(?:(?:do(?:es)?|must|may|shall) not|never|don't|cannot|can't)\s+"
-    r"(?:\w+\s+){0,2}(?:writes?|writing)\b[^.;]*\bregister entr",
+    r"(?:\w+\s+){0,2}(?:writes?|writing)\b[^.;]*\bregister entr"
+    r"|\b(?:writes?|writing)\s+no\b[^.;]*\bregister entr",
     re.IGNORECASE,
 )
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;?!])\s+")
 SCOPE_RE = re.compile(r"\b(?:only when|except when|unless)\b", re.IGNORECASE)
 
 
@@ -127,8 +130,13 @@ def find_unscoped_prohibitions(path: Path) -> list[tuple[int, str]]:
     hits = []
     for n, ln in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         plain = ln.replace("*", "").replace("_", "")
-        if PROHIBITION_RE.search(plain) and not SCOPE_RE.search(plain):
-            hits.append((n, ln.strip()))
+        # Scope must sit in the same sentence as the prohibition. Splitting
+        # needs whitespace after the punctuation, so `x.md` and `.claudetmp`
+        # paths do not split.
+        for sentence in SENTENCE_SPLIT_RE.split(plain):
+            if PROHIBITION_RE.search(sentence) and not SCOPE_RE.search(sentence):
+                hits.append((n, ln.strip()))
+                break
     return hits
 
 

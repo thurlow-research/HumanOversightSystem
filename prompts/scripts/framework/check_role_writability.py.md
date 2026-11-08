@@ -76,6 +76,14 @@ v2: the negation must directly govern "write" (at most two words between) and
 
 ---
 
+## Round 3 (second-review findings)
+
+- PROHIBITION_RE gains a post-verbal alternation (`writes?|writing` + `no` ... `register entr`).
+- Scope words must be in the same sentence as the prohibition (split on `[.;?!]` followed by whitespace, so dotted paths do not split).
+- Tests: post-verbal, cross-sentence scope, same-sentence scope, dotted path, and the real architect.md line (matches the prohibition, suppressed only by same-sentence "Unless").
+
+---
+
 ## Reproducibility Check
 
 To verify this prompt still produces equivalent output in a new session:
