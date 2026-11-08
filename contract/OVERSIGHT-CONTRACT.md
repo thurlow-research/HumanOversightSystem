@@ -267,6 +267,7 @@ The `oversight-evaluator` reads this field in Phase 1 (§7) when a notification 
 | `a11y` | Accessibility (WCAG AA) |
 | `ops` | Observability / telemetry spec conformance (optional — projects with ops complexity) |
 | `reliability` | Resilience review — timeouts, retry, graceful degradation (optional — projects with external connections) |
+| `architecture` | ADR / ADR-amendment review at the step's head, written by `architect`. The risk-assessor adds it on any step that adds or changes an architecture artifact. It is not approval of the step's code (#2276). |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
 **Documentation currency (required for any step that modifies documented behavior):** The relevant spec, design doc, AGENTS.md entry, or METHODOLOGY.md section must reflect what was built before the step is signed off. A step whose observable behavior differs from its documentation is not done — it is broken. "I'll update the docs later" is not a valid sign-off state.
