@@ -15,6 +15,7 @@ Each test copies only the script's own dependencies into an isolated tmp_path
 layout (mirrors tests/framework/test_codeowners_current.py) so it never
 touches the real repo tree.
 """
+
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,7 +103,7 @@ def test_dated_id_in_bin_fails(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "hos-thing").write_text(
-        '#!/usr/bin/env bash\n# uses claude-opus-4-8 for review\n'
+        "#!/usr/bin/env bash\n# uses claude-opus-4-8 for review\n"
     )
     result = _run(tmp_path)
     assert result.returncode == 1
@@ -112,9 +113,7 @@ def test_dated_id_in_bin_fails(tmp_path):
 def test_dated_id_in_current_docs_fails(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "AGENTS.md").write_text(
-        "# Agents\n\n**Model:** `claude-sonnet-4-6`\n"
-    )
+    (tmp_path / "docs" / "AGENTS.md").write_text("# Agents\n\n**Model:** `claude-sonnet-4-6`\n")
     result = _run(tmp_path)
     assert result.returncode == 1
     assert "dated model generation ID" in result.stdout
@@ -128,8 +127,7 @@ def test_current_alias_model_id_does_not_false_positive(tmp_path):
     _scaffold(tmp_path)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "NOTES.md").write_text(
-        "The AI-Model trailer should read `claude-sonnet-5`, the actual "
-        "running model ID.\n"
+        "The AI-Model trailer should read `claude-sonnet-5`, the actual " "running model ID.\n"
     )
     result = _run(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr

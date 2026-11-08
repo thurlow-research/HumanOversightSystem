@@ -20,6 +20,7 @@ Exit codes: 0 clean, 1 findings, 2 usage error or a required file/block missing
 
 Usage: python3 -m scripts.framework.check_role_writability [--repo-root PATH] [--quiet]
 """
+
 from __future__ import annotations
 
 import argparse

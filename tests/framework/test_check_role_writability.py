@@ -2,6 +2,7 @@
 
 Every test builds a fixture tree under tmp_path; the real-repo test is read-only.
 """
+
 from pathlib import Path
 
 from scripts.framework import check_role_writability as crw
@@ -30,7 +31,9 @@ RISK = """# Risk assessor
 - adds `bogus` here, outside Phase 6
 """
 SCOPED = "You write a register entry only when the step requires it.\n"
-PRE_FIX = "You do not write a per-step sign-off register entry; your decisions are recorded in the ADR\n"
+PRE_FIX = (
+    "You do not write a per-step sign-off register entry; your decisions are recorded in the ADR\n"
+)
 
 
 def _tree(tmp_path, contract=CONTRACT, template=TEMPLATE, risk=RISK, agents=None):
@@ -40,11 +43,15 @@ def _tree(tmp_path, contract=CONTRACT, template=TEMPLATE, risk=RISK, agents=None
     adir = tmp_path / ".claude" / "agents"
     adir.mkdir(parents=True)
     (adir / "risk-assessor.md").write_text(risk)
-    agents = agents if agents is not None else {
-        "code-reviewer": "Reviews code.\n",
-        "architect": SCOPED,
-        "ops-reviewer": "Reviews ops.\n",
-    }
+    agents = (
+        agents
+        if agents is not None
+        else {
+            "code-reviewer": "Reviews code.\n",
+            "architect": SCOPED,
+            "ops-reviewer": "Reviews ops.\n",
+        }
+    )
     for name, body in agents.items():
         (adir / f"{name}.md").write_text(body)
     return tmp_path
@@ -69,7 +76,10 @@ def test_unmapped_emitted_role_fails(tmp_path, capsys):
 
 def test_roles_outside_phase6_are_ignored(tmp_path):
     assert crw.read_phase6_roles(_tree(tmp_path) / ".claude/agents/risk-assessor.md") == [
-        "code-review", "architecture", "ops"]
+        "code-review",
+        "architecture",
+        "ops",
+    ]
 
 
 def test_conflicting_mappings_fail(tmp_path, capsys):
@@ -87,9 +97,10 @@ def test_missing_agent_file_fails(tmp_path, capsys):
 
 
 def test_unscoped_prohibition_fails_with_file_line(tmp_path, capsys):
-    root = _tree(tmp_path, agents={
-        "code-reviewer": "ok\n", "ops-reviewer": "ok\n",
-        "architect": "intro\n" + PRE_FIX})
+    root = _tree(
+        tmp_path,
+        agents={"code-reviewer": "ok\n", "ops-reviewer": "ok\n", "architect": "intro\n" + PRE_FIX},
+    )
     rc, out = _run(root, capsys)
     assert rc == 1
     assert ".claude/agents/architect.md:2:" in out.out
@@ -97,14 +108,17 @@ def test_unscoped_prohibition_fails_with_file_line(tmp_path, capsys):
 
 def test_scoped_prohibition_passes(tmp_path, capsys):
     scoped = "You do not write a sign-off register entry unless the step requires it.\n"
-    root = _tree(tmp_path, agents={
-        "code-reviewer": "ok\n", "ops-reviewer": "ok\n", "architect": scoped})
+    root = _tree(
+        tmp_path, agents={"code-reviewer": "ok\n", "ops-reviewer": "ok\n", "architect": scoped}
+    )
     rc, out = _run(root, capsys)
     assert rc == 0, out
 
 
 def test_escalation_boilerplate_is_not_a_prohibition(tmp_path):
-    line = "stop, do not attempt a 6th round. Escalate and write a `Status: ESCALATED` register entry."
+    line = (
+        "stop, do not attempt a 6th round. Escalate and write a `Status: ESCALATED` register entry."
+    )
     f = tmp_path / "a.md"
     f.write_text(line + "\n")
     assert crw.find_unscoped_prohibitions(f) == []
