@@ -808,3 +808,80 @@ class TestListIssueCommentsUnbounded:
         # unbounded callers are not subject to the #2263 payload check
         with patch("scripts.automation.lib.github._run_gh", side_effect=[{"message": "x"}]):
             assert list_issue_comments("o", "r", 1) == ["message"]
+
+
+# ── #2286: list_all_pulls / list_all_issue_states ────────────────────────────
+
+
+def _pr_page(n, start=0):
+    return [{"number": start + i} for i in range(n)]
+
+
+def test_list_all_pulls_concatenates_pages_and_stops_at_short_page():
+    pages = [_pr_page(100), _pr_page(100, 100), _pr_page(3, 200)]
+    with patch.object(github_module, "_run_gh", side_effect=pages) as run:
+        got = github_module.list_all_pulls("o", "r")
+    assert len(got) == 203 and run.call_count == 3
+    url = run.call_args_list[0][0][0][0]
+    assert "state=all" in url and "direction=asc" in url and "per_page=100&page=1" in url
+
+
+def test_list_all_pulls_exceeding_max_pages_raises():
+    with patch.object(github_module, "_run_gh", return_value=_pr_page(100)) as run:
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_pulls("o", "r", max_pages=3)
+    assert run.call_count == 3
+
+
+def test_list_all_pulls_non_list_and_404_raise():
+    with patch.object(github_module, "_run_gh", return_value={"message": "x"}):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_pulls("o", "r")
+    with patch.object(github_module, "_run_gh", return_value=None):
+        with pytest.raises(GitHubError) as exc:
+            github_module.list_all_pulls("o", "r")
+    assert not isinstance(exc.value, github_module.ListTruncatedError)
+    with patch.object(github_module, "_run_gh", side_effect=[_pr_page(100), None]):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_pulls("o", "r")
+
+
+def test_list_all_pulls_empty_all_listing_raises_but_empty_open_is_fine():
+    with patch.object(github_module, "_run_gh", return_value=[]):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_pulls("o", "r", state="all")
+        assert github_module.list_all_pulls("o", "r", state="open") == []
+
+
+def _issue_page(n, start=0, state="open"):
+    return [{"number": start + i, "state": state} for i in range(n)]
+
+
+def test_list_all_issue_states_maps_number_to_state():
+    pages = [_issue_page(100), _issue_page(2, 100, "closed")]
+    with patch.object(github_module, "_run_gh", side_effect=pages):
+        got = github_module.list_all_issue_states("o", "r")
+    assert len(got) == 102 and got[5] == "open" and got[101] == "closed"
+
+
+def test_list_all_issue_states_fails_closed():
+    with patch.object(github_module, "_run_gh", return_value=_issue_page(100)):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_issue_states("o", "r", max_pages=2)
+    with patch.object(github_module, "_run_gh", return_value={"x": 1}):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_issue_states("o", "r")
+    with patch.object(github_module, "_run_gh", return_value=[{"number": 1, "state": "weird"}]):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_all_issue_states("o", "r")
+    with patch.object(github_module, "_run_gh", return_value=None):
+        with pytest.raises(GitHubError):
+            github_module.list_all_issue_states("o", "r")
+
+
+def test_gh_call_count_counts_logical_calls():
+    before = github_module.gh_call_count()
+    proc = MagicMock(returncode=0, stdout='HTTP/2 200 \n\n{"a": 1}', stderr="")
+    with patch.object(github_module.subprocess, "run", return_value=proc):
+        github_module._run_gh(["/x"])
+    assert github_module.gh_call_count() == before + 1

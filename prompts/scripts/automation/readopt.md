@@ -99,6 +99,34 @@ coder as follow-up messages, each driven by a recorded finding (see the step reg
 Pasting only the brief into a fresh session reproduces v1, not the final code; the follow-ups
 above are needed as well.
 
+## #2286 reap-orphans (slice 1)
+
+Date 2026-11-08, model claude-opus-5-5, risk HIGH. The `coder` subagent was dispatched by the
+worker with this brief (condensed):
+
+```
+Implement slice 1 of issue #2286 exactly as specified by the APPROVED technical design
+docs/v0.7.0/TECHNICAL-DESIGN-2286-reap-orphans.md, including its binding section 10 architect
+edits A1-A11 (they override earlier sections). Files: scripts/automation/readopt.py,
+scripts/automation/lib/github.py, tests/automation/test_readopt.py (+ test_github.py for the
+helpers), and this artifact. Do not edit .claude/agents/worker.md or bin/hos-cron (slice 2).
+Hard rules: never run reap-orphans / prune-attempts without --dry-run against the real repo;
+tests use temp repos with a local bare origin and fake github.py; the GitHub token never
+appears in argv, URLs, printed output or exception text.
+```
+
+Intent: a `readopt.py reap-orphans` subcommand deleting orphaned local branches and remote
+`worker-*` heads by PR / issue / content state after a 7-day grace, fail-closed on any failed
+listing, never touching open-PR heads or unlanded work on open issues; `prune-attempts` also
+deletes the remote head of each attempt it deletes (compare-and-swap, WARN-only on failure).
+Remote deletes are one batched, per-ref-leased `git push` whose auth travels only in the
+subprocess environment.
+
+Design-contract deviations found while building (the TD has the contract, the code is right):
+the branch-reflog timestamp is read with `git log -g -1 --date=unix --format=%gd` (parsed from
+`<branch>@{<epoch>}`), because `%ct` under `-g` is the commit's date, not the reflog entry's;
+`github.gh_call_count()` was added so the SUMMARY `api_calls=` is a measured number.
+
 ## Human Review Notes
 
 <!-- pending -->
