@@ -181,6 +181,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | `post-pr-behavior-gap-in-agent-specs.md` | oversight-mechanism | Agent Specs That Gate Before an Action Often Leave Post-Action Behavior Undefined — the Agent Fills the Gap with the Most Salient Available Action |
 | `prompt-resident-governance-is-unattributable.md` | oversight-mechanism | Governance That Lives in Prompt Text Produces Unattributable Decisions |
 | `ratchet-principle.md` | oversight-mechanism | Automation may only tighten oversight; reducing it always requires an explicit human decision — the core safety invariant. |
+| `real-data-not-reviewer-diversity-caught-the-bug.md` | oversight-mechanism | Every lane, cross-vendor included, approved a gate bug that only real data reveals. Given one real capture, agy and codex caught it. Spec-only generated tests caught it in 0 of 5 models; with the capture, 4 of 5. Qualifies cross-vendor decorrelation: necessary, not sufficient. Local models are test proposers, not reviewers. |
 | `refactor-to-reusable-is-a-quality-audit.md` | oversight-mechanism | Refactoring an artifact into a reusable/layered form audits the original — it surfaces hidden coupling and hidden gaps. |
 | `release-gate-catches-its-own-missing-oversight.md` | oversight-mechanism | Ship a pinned, re-validated tag, not trunk-HEAD; the release gate re-found the anti-gaming controls stranded off main. |
 | `release-gate-caught-governance-hole-the-inner-loop-passed.md` | oversight-mechanism | The v0.3.0 Release Gate Caught a Governance Gaming-Hole That the Entire Inner Loop Had Passed |
@@ -217,7 +218,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-61 of 102 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+62 of 103 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
@@ -265,6 +266,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `more-context-makes-llm-review-worse-not-better.md`
 - `post-pr-behavior-gap-in-agent-specs.md`
 - `prompt-resident-governance-is-unattributable.md`
+- `real-data-not-reviewer-diversity-caught-the-bug.md` (candidate: O2, since the pipeline had no layer that put real environment data in front of a reviewer; it also qualifies O1/O8's reliance on decorrelation)
 - `reviewer-output-contract.md`
 - `richer-ai-explanations-may-increase-overreliance-not-reduce-it.md`
 - `safety-serialization-makes-the-human-the-rate-limiter.md`
