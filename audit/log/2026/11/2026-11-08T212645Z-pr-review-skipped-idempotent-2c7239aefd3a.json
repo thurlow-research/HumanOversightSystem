@@ -1,0 +1,1 @@
+{"agent":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"473a6344e4ef18fe1cf5b75e9dc23fcdd456ce66","pr":2292,"reason":"§1215: overseer HUMAN_REQUIRED verdict (review 5819690717) already posted for this head; no new commits, human reviews, or comments since; needs-human present","repo":"thurlow-research/HumanOversightSystem"}
