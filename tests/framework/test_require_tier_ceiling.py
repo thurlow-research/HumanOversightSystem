@@ -25,12 +25,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _MODULE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "framework"
-    / "require_tier_ceiling.py"
+    Path(__file__).resolve().parents[2] / "scripts" / "framework" / "require_tier_ceiling.py"
 )
 _SPEC = importlib.util.spec_from_file_location("require_tier_ceiling", _MODULE_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
 rtc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(rtc)
 
@@ -59,6 +57,7 @@ def _fake_env(overseer: str = _OVERSEER, ceiling: str = _CEILING) -> dict:
 # test_no_overseer_approval_passes
 # ---------------------------------------------------------------------------
 
+
 def test_no_overseer_approval_passes(monkeypatch):
     """No APPROVED review from the overseer → ceiling is N/A → returns 0."""
     monkeypatch.setattr(rtc, "load_env", lambda _path: _fake_env())
@@ -74,6 +73,7 @@ def test_no_overseer_approval_passes(monkeypatch):
 # ---------------------------------------------------------------------------
 # test_low_tier_overseer_approval_passes
 # ---------------------------------------------------------------------------
+
 
 def test_low_tier_overseer_approval_passes(monkeypatch):
     """Overseer approved, tier=LOW, ceiling=LOW → returns 0 (at-ceiling is allowed)."""
@@ -95,6 +95,7 @@ def test_low_tier_overseer_approval_passes(monkeypatch):
 # ---------------------------------------------------------------------------
 # test_above_ceiling_fails
 # ---------------------------------------------------------------------------
+
 
 def test_above_ceiling_fails(monkeypatch):
     """Overseer approved, tier=MEDIUM, ceiling=LOW → returns 1 (above ceiling)."""
@@ -146,6 +147,7 @@ def test_rn_failure_on_python_surface_fails_closed(monkeypatch):
 
 def test_head_fetch_error_fails_closed(monkeypatch):
     """Head-content fetch failure → exit 2 (never guess a tier)."""
+
     def _boom(repo, pr, files, dest):
         raise rtc._HeadFetchError("api down")
 
@@ -170,7 +172,8 @@ def test_no_python_files_uses_structural(monkeypatch):
     monkeypatch.setattr(rtc, "get_changed_files", lambda pr: docs)
     monkeypatch.setattr(rtc, "_try_validator_summary", lambda: None)
     monkeypatch.setattr(
-        rtc, "_fetch_head_python",
+        rtc,
+        "_fetch_head_python",
         lambda *a, **k: pytest.fail("must not fetch when no .py files changed"),
     )
 
@@ -183,6 +186,7 @@ def test_no_python_files_uses_structural(monkeypatch):
 # ---------------------------------------------------------------------------
 # test_missing_env_fails_closed
 # ---------------------------------------------------------------------------
+
 
 def test_missing_env_fails_closed(monkeypatch, tmp_path):
     """No machine-accounts.env → exit 2 (fail-closed)."""
@@ -201,6 +205,7 @@ def test_missing_env_fails_closed(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Additional unit-level tests for helper functions
 # ---------------------------------------------------------------------------
+
 
 def test_overseer_has_approved_case_insensitive():
     reviews = [{"state": "APPROVED", "user": {"login": "HOS-OVERSEER-HOS[BOT]"}}]
@@ -238,7 +243,7 @@ def test_simplified_tier_small_change():
 def test_load_env_parses_quoted_values(tmp_path):
     env_file = tmp_path / "machine-accounts.env"
     env_file.write_text(
-        '# comment\n'
+        "# comment\n"
         'BOT_OVERSEER_USERNAME="hos-overseer-hos[bot]"\n'
         "OVERSEER_CEILING='LOW'\n"
         "TIER_CEILING_CHECK_NAME=require-tier-ceiling\n"
@@ -265,6 +270,7 @@ def test_try_validator_summary_reads_tier(tmp_path, monkeypatch):
 # _score_to_tier / _max_tier
 # ---------------------------------------------------------------------------
 
+
 def test_score_to_tier_boundaries():
     # Mirrors schema.py:score_to_tier exclusive-upper-bound semantics.
     assert rtc._score_to_tier(0.0) == "LOW"
@@ -287,6 +293,7 @@ def test_max_tier():
 # compute_tier precedence / flooring
 # ---------------------------------------------------------------------------
 
+
 def test_compute_tier_prefers_summary(monkeypatch):
     monkeypatch.setattr(rtc, "_try_validator_summary", lambda: "HIGH")
     assert rtc.compute_tier("org/repo", "1", _LOW_FILES) == "HIGH"
@@ -306,9 +313,7 @@ def test_compute_tier_all_python_deleted_uses_structural(monkeypatch):
     monkeypatch.setattr(rtc, "_try_validator_summary", lambda: None)
     monkeypatch.setattr(rtc, "_fetch_head_python", lambda repo, pr, files, dest: [])
     calls: list = []
-    monkeypatch.setattr(
-        rtc, "_try_rn_calculator", lambda paths: calls.append(1) or "CRITICAL"
-    )
+    monkeypatch.setattr(rtc, "_try_rn_calculator", lambda paths: calls.append(1) or "CRITICAL")
     assert rtc.compute_tier("org/repo", "1", _LOW_FILES) == "LOW"
     assert not calls
 
@@ -316,6 +321,7 @@ def test_compute_tier_all_python_deleted_uses_structural(monkeypatch):
 # ---------------------------------------------------------------------------
 # _try_rn_calculator — derives tier from score (rn emits no `tier` key, #973)
 # ---------------------------------------------------------------------------
+
 
 class _FakeProc:
     def __init__(self, returncode, stdout, stderr=""):
@@ -326,20 +332,25 @@ class _FakeProc:
 
 def test_try_rn_calculator_derives_tier_from_score(monkeypatch):
     monkeypatch.setattr(
-        rtc.subprocess, "run",
-        lambda *a, **k: _FakeProc(0, json.dumps(
-            {"dimension": "risk_number", "score": 0.60, "error": None, "tier_floor": None}
-        )),
+        rtc.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(
+            0,
+            json.dumps(
+                {"dimension": "risk_number", "score": 0.60, "error": None, "tier_floor": None}
+            ),
+        ),
     )
     assert rtc._try_rn_calculator(["x.py"]) == "HIGH"  # 0.60 → HIGH
 
 
 def test_try_rn_calculator_honors_tier_floor(monkeypatch):
     monkeypatch.setattr(
-        rtc.subprocess, "run",
-        lambda *a, **k: _FakeProc(0, json.dumps(
-            {"score": 0.10, "error": None, "tier_floor": "MEDIUM"}
-        )),
+        rtc.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(
+            0, json.dumps({"score": 0.10, "error": None, "tier_floor": "MEDIUM"})
+        ),
     )
     # score 0.10 → LOW, floored up to MEDIUM by tier_floor.
     assert rtc._try_rn_calculator(["x.py"]) == "MEDIUM"
@@ -347,10 +358,9 @@ def test_try_rn_calculator_honors_tier_floor(monkeypatch):
 
 def test_try_rn_calculator_error_envelope_returns_none(monkeypatch):
     monkeypatch.setattr(
-        rtc.subprocess, "run",
-        lambda *a, **k: _FakeProc(0, json.dumps(
-            {"score": 0.0, "error": "no input files"}
-        )),
+        rtc.subprocess,
+        "run",
+        lambda *a, **k: _FakeProc(0, json.dumps({"score": 0.0, "error": "no input files"})),
     )
     assert rtc._try_rn_calculator(["x.py"]) is None
 
@@ -365,9 +375,11 @@ def test_try_rn_calculator_empty_paths_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# compute_tier_for_pr — single source of truth reused by
-# require_overseer_approval.py's above-ceiling bypass (#1426)
+# compute_tier_for_pr — single source of truth for this gate's tier; formerly
+# also reused by require_overseer_approval.py's above-ceiling bypass (#1426),
+# retired in #2174
 # ---------------------------------------------------------------------------
+
 
 def test_compute_tier_for_pr_no_changed_files_is_safe(monkeypatch):
     monkeypatch.setattr(rtc, "get_changed_files", lambda pr: [])
@@ -391,6 +403,7 @@ def test_compute_tier_for_pr_delegates_to_compute_tier(monkeypatch):
 # _fetch_head_python — DATA-only head fetch, skip deleted, fail-closed on error
 # ---------------------------------------------------------------------------
 
+
 def test_fetch_head_python_skips_deleted(monkeypatch, tmp_path):
     monkeypatch.setattr(rtc, "_pr_head_sha", lambda repo, pr: "deadbeef")
 
@@ -409,7 +422,8 @@ def test_fetch_head_python_skips_deleted(monkeypatch, tmp_path):
 def test_fetch_head_python_raises_on_non_404(monkeypatch, tmp_path):
     monkeypatch.setattr(rtc, "_pr_head_sha", lambda repo, pr: "deadbeef")
     monkeypatch.setattr(
-        rtc.subprocess, "run",
+        rtc.subprocess,
+        "run",
         lambda *a, **k: _FakeProc(1, "", "gh: Server Error (HTTP 500)"),
     )
     with pytest.raises(rtc._HeadFetchError):
@@ -420,11 +434,10 @@ def test_fetch_head_python_skips_escaping_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(rtc, "_pr_head_sha", lambda repo, pr: "deadbeef")
     called: list = []
     monkeypatch.setattr(
-        rtc.subprocess, "run",
+        rtc.subprocess,
+        "run",
         lambda *a, **k: called.append(1) or _FakeProc(0, "z=1\n"),
     )
-    out = rtc._fetch_head_python(
-        "o/r", "1", ["../escape.py", "/abs.py"], tmp_path
-    )
+    out = rtc._fetch_head_python("o/r", "1", ["../escape.py", "/abs.py"], tmp_path)
     assert out == []
     assert not called  # both paths rejected before any fetch

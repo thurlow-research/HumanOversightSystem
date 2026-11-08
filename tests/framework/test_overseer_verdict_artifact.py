@@ -284,8 +284,8 @@ def test_d7_gate_does_not_quote_the_retired_faberix_wording():
     # dropped the quotation entirely would satisfy it. Pin the live §5 wording.
     assert "Above OVERSEER_CEILING → record a review, but never APPROVED" in collapsed, (
         "require_overseer_approval.py does not quote the LIVE FABERIX-ROLES.md §5 "
-        "wording — the E2 replacement is what the #1426 bypass's own rationale "
-        "rests on (#1657)"
+        "wording — the E2 replacement is what the #2174 interim sign-off's "
+        "rationale rests on (#1657)"
     )
 
 

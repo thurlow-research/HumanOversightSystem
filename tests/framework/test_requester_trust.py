@@ -112,6 +112,18 @@ class TestCodeownersHumans(_TmpRepo):
         self._write(".github/CODEOWNERS", "/scripts/framework/ @ScottThurlow\n")
         assert codeowners_humans(self.repo_root) == {"scottthurlow"}
 
+    def test_inline_comments_are_stripped(self):
+        """#2202: '#' starts a comment anywhere on a line (GitHub semantics)."""
+        self._write(
+            ".github/CODEOWNERS",
+            "/docs/ @alice # docs team\n/x @ScottThurlow #trailing\n",
+        )
+        assert codeowners_humans(self.repo_root) == {"alice", "scottthurlow"}
+
+    def test_commented_out_owner_is_not_counted(self):
+        self._write(".github/CODEOWNERS", "/only/a/path # @mallory\n")
+        assert "mallory" not in codeowners_humans(self.repo_root)
+
     def test_lowercases_and_dedupes(self):
         self._write(".github/CODEOWNERS", "/a @ScottThurlow\n/b @scottthurlow\n")
         assert codeowners_humans(self.repo_root) == {"scottthurlow"}

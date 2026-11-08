@@ -633,9 +633,10 @@ When in doubt, HUMAN_REQUIRED. The overseer errs toward escalation, never toward
 
 Every disposition you reach posts **exactly one** verdict review, via
 `bootstrap/pr_review.sh submit-verdict`. A conversation comment is not a verdict:
-`require-overseer-approval` and the #1426 above-ceiling bypass both read
-`/pulls/{n}/reviews`, so a verdict posted anywhere else leaves those gates
-unsatisfiable and the PR merges only by admin override (#1657).
+`require-overseer-approval` reads `/pulls/{n}/reviews` for both its paths — your
+APPROVED review, or your marked COMMENTED interim sign-off on the current head plus
+a designated human's approval on that head (#2174) — so a verdict posted anywhere
+else leaves the gate unsatisfiable and the PR merges only by admin override (#1657).
 
 Two events exist. `REQUEST_CHANGES` is not available: the wrapper rejects it, and
 blocking is the job of a resolvable review thread (`post_review_thread.sh`, #1207),
@@ -892,9 +893,10 @@ Three wrappers, chosen by what the content *is*:
   ```
   bash bootstrap/pr_review.sh submit-verdict --pr <n> --event <approve|comment> --tier <TIER> --disposition <AUTO_MERGE|HUMAN_REQUIRED|PROPOSE_ONLY> --expected-action <ACTION> --body-file <path> --app overseer
   ```
-  A conversation comment is not a verdict. `require-overseer-approval` and the #1426
-  bypass read `/pulls/{n}/reviews`; a verdict posted to `/issues/{n}/comments` leaves
-  zero review records and both gates unsatisfiable (#1657).
+  A conversation comment is not a verdict. `require-overseer-approval` reads
+  `/pulls/{n}/reviews` for both the APPROVED path and the #2174 head-bound interim
+  sign-off; a verdict posted to `/issues/{n}/comments` leaves zero review records and
+  the gate unsatisfiable (#1657).
   `post_review_thread.sh` is not an alternative — it deliberately submits its implicit
   review as COMMENT and must not assert a verdict on your behalf (#1248).
 

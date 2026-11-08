@@ -1,9 +1,11 @@
 name: Require overseer approval (all PRs)
 
 # Server-side enforcement that every PR has an APPROVED review from
-# hos-overseer-hos[bot] before it may merge. Closes the gap (#621) where a
-# human approval satisfied GitHub's "1 approving review" branch-protection
-# requirement without the overseer ever having looked at the PR.
+# hos-overseer-hos[bot] (or, above the overseer's ceiling, the head-bound
+# interim sign-off plus a designated human's approval; see below) before it
+# may merge. Closes the gap (#621) where a human approval satisfied GitHub's
+# "1 approving review" branch-protection requirement without the overseer
+# ever having looked at the PR.
 #
 # Human approval is additive — for protected surfaces (CODEOWNERS) and
 # CRITICAL-tier PRs a human approval is ALSO required, but it does NOT replace
@@ -11,15 +13,16 @@ name: Require overseer approval (all PRs)
 # own "Merge without waiting for requirements" admin override (explicit, logged
 # by GitHub), NOT a label or comment mechanism.
 #
-# Above-ceiling bypass (#1426): require-overseer-approval (this check) and
-# require-tier-ceiling were jointly unsatisfiable for a PR whose tier exceeds
-# OVERSEER_CEILING — the overseer correctly withholds APPROVED authority above
-# its ceiling (docs/FABERIX-ROLES.md §5), which left this gate permanently
-# unsatisfied. This script now also passes when the overseer posted SOME
-# review (any state — it looked at the PR and deliberately did not approve
-# above its ceiling) AND the PR's computed tier exceeds OVERSEER_CEILING AND a
-# human (non-bot) has approved instead. This does not weaken #621: a human
-# approval with NO overseer review at all still fails this gate.
+# Above-ceiling path (#2174, which replaced the retired #1426 above-ceiling
+# bypass): the overseer correctly withholds APPROVED authority above its
+# ceiling (docs/FABERIX-ROLES.md §5). The gate therefore passes on the
+# overseer bot's APPROVED review, OR when both hold on the same current head
+# SHA: the overseer's latest non-empty verdict on that head is a COMMENTED
+# review carrying a valid interim sign-off marker (appended by
+# pr_review_cli.py submit-verdict) authored by the overseer Bot, AND a
+# designated human (HUMAN_REVIEWER plus individual code owners) has an
+# APPROVED review on that head. A human approval alone still fails (#621).
+# See scripts/framework/require_overseer_approval.py's header.
 #
 # Pairs with:
 #   require-human-approval  — protected-surface / CRITICAL tier gate

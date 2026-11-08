@@ -65,8 +65,8 @@ def parse_codeowners(text: str) -> list[tuple[str, list[str]]]:
     """
     entries: list[tuple[str, list[str]]] = []
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         tokens = line.split()
         pattern = tokens[0]

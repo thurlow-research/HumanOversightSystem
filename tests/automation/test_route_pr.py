@@ -633,6 +633,8 @@ CO_CASES = [
     ["# comment", "", "/a/** @Dave  @erin"],
     ["/a/** @org/t", "/b/** @frank"],
     ["/x/** @hos-overseer-hos[bot] dev@example.com"],
+    ["/a/** @dave # docs team"],
+    ["/a/** @dave #@mallory", "/b/** @erin"],
     [],
 ]
 CO_FILES = [
@@ -676,6 +678,22 @@ def test_t_co_2_no_codeowners_file():
         None, ["a.py"], bot_accounts=BOT_ACCOUNTS, human_reviewer="h"
     )
     assert (got.login, got.source, got.note) == ("h", "machine-accounts.env", "no CODEOWNERS file")
+
+
+# #2202: inline '#' comments must not leak owners in either parser.
+def test_t_co_3_oversight_parser_strips_inline_comment():
+    assert codeowners.parse_codeowners("/a @u1 # docs team\n/b # @mallory\n") == [
+        ("/a", ["@u1"]),
+        ("/b", []),
+    ]
+
+
+def test_t_co_3_automation_find_owners_strips_inline_comment(tmp_path):
+    from scripts.automation.lib.codeowners import find_owners
+
+    path = tmp_path / "CODEOWNERS"
+    path.write_text("docs/ @alice # docs team @mallory\n")
+    assert find_owners("docs/a.md", path) == ["@alice"]
 
 
 def test_drift_guard_raises_when_login_not_in_humans_set():

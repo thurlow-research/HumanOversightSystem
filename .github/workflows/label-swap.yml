@@ -56,7 +56,9 @@ jobs:
             /approve|/decline)
               # Parse individual CODEOWNERS users (not @org/team refs — those
               # contain a '/' in the token and won't match ^@word$ in awk).
-              CODEOWNERS_USERS=$(awk 'NF && !/^#/ {
+              # Everything from the first '#' is a comment, as on GitHub
+              # (#2202); sub() re-splits $0 so NF and $i reflect the strip.
+              CODEOWNERS_USERS=$(awk '{ sub(/#.*/, "") } NF {
                 for (i=1; i<=NF; i++) {
                   if ($i ~ /^@[A-Za-z0-9_-]+$/) {
                     sub(/^@/, "", $i)
