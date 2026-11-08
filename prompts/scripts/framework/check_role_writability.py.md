@@ -66,6 +66,16 @@ v2: the negation must directly govern "write" (at most two words between) and
 
 ---
 
+## Round 2 (code-review round-1 fixes)
+
+- Section 10 of check_agents_static.sh is gated on the checker file existing (legacy install.sh --source copies the script without it): warn and skip when absent; a missing contract with the checker present stays a FAIL.
+- Strip markdown emphasis before SCOPE_RE; widen the prohibition regex (must/may/shall not, cannot, can't, writes/writing); document single-line matching.
+- Commented mapping lines count only as `# <role>: <agent>` + EOL or `#` comment.
+- Cross-check emitted roles and role_mappings keys against the contract section 3 `**Roles**` table (missing role FAIL, missing table exit 2).
+- Tests added for each, plus section-10 skip and failing paths through check_agents_static.sh.
+
+---
+
 ## Reproducibility Check
 
 To verify this prompt still produces equivalent output in a new session:

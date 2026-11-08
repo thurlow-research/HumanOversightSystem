@@ -375,15 +375,22 @@ section "10. Role writability (#2276)"
 
 # check_role_writability.py exits 1 on findings (printing FAIL: lines) and 2 on a
 # missing required file/block; both are findings here, never a silent pass.
-ROLE_WRITABILITY_RC=0
-ROLE_WRITABILITY_OUT="$(python3 -m scripts.framework.check_role_writability --quiet 2>&1)" || ROLE_WRITABILITY_RC=$?
-if [[ $ROLE_WRITABILITY_RC -eq 0 ]]; then
-    ok "every risk-assessor-emittable role is writable by its mapped agent"
+# The legacy install.sh --source path copies this script without the checker, so
+# the section is skipped (warn) only when the checker itself is absent; a
+# missing contract with the checker present stays a hard FAIL.
+if [[ -f scripts/framework/check_role_writability.py ]]; then
+    ROLE_WRITABILITY_RC=0
+    ROLE_WRITABILITY_OUT="$(python3 -m scripts.framework.check_role_writability --quiet 2>&1)" || ROLE_WRITABILITY_RC=$?
+    if [[ $ROLE_WRITABILITY_RC -eq 0 ]]; then
+        ok "every risk-assessor-emittable role is writable by its mapped agent"
+    else
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            fail "${line#FAIL: }"
+        done <<< "$ROLE_WRITABILITY_OUT"
+    fi
 else
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        fail "${line#FAIL: }"
-    done <<< "$ROLE_WRITABILITY_OUT"
+    warn "role-writability checker not installed; section skipped"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

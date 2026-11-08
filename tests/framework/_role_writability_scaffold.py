@@ -20,7 +20,8 @@ def add_role_writability_fixture(root: Path) -> None:
     shutil.copy(MODULE, fw / MODULE.name)
     (root / "contract").mkdir(exist_ok=True)
     (root / "contract" / "OVERSIGHT-CONTRACT.md").write_text(
-        "role_mappings:\n  process:        pm-agent\n"
+        "**Roles** (the HOS checks for these roles):\n\n| Role key | Meaning |\n|---|---|\n"
+        "| `process` | PM |\n\nrole_mappings:\n  process:        pm-agent\n"
     )
     (root / "contract" / "step-manifest.template.yaml").write_text(
         "role_mappings:\n  process:        pm-agent\n"
