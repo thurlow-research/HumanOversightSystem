@@ -56,17 +56,13 @@ def write_record(repo: Path, branch: str, age_secs: int = 3600) -> Path:
     store = readopt.store_dir(readopt.make_git(repo), repo)
     store.mkdir(parents=True, exist_ok=True)
     rec = store / (branch.replace("%", "%25").replace("/", "%2F") + ".rec")
-    rec.write_text(
-        f"schema=1\nbranch={branch}\ncycle_id=c-1\nrole=worker\ncreated_at=x\n"
-    )
+    rec.write_text(f"schema=1\nbranch={branch}\ncycle_id=c-1\nrole=worker\ncreated_at=x\n")
     old = rec.stat().st_mtime - age_secs
     os.utime(rec, (old, old))
     return rec
 
 
-def make_branch(
-    repo: Path, name: str, fname: str = "a.txt", text: str = "work\n"
-) -> str:
+def make_branch(repo: Path, name: str, fname: str = "a.txt", text: str = "work\n") -> str:
     git(repo, "checkout", "-q", "-b", name, "main")
     tip = commit(repo, fname, text, f"work on {name}")
     git(repo, "checkout", "-q", "main")
@@ -81,11 +77,7 @@ def advance_main(repo: Path, fname: str, text: str) -> None:
 
 
 def branches(repo: Path) -> set:
-    return set(
-        git(
-            repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"
-        ).splitlines()
-    )
+    return set(git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
 
 
 # --- D-7 decision rule ------------------------------------------------------
@@ -134,9 +126,7 @@ def test_review_path_unrelated_merge_is_delta(repo):
 
 def test_review_path_merge_touching_reviewed_file_is_full(repo):
     lines = [f"{i}\n" for i in range(1, 10)]
-    original = make_branch(
-        repo, "worker-1-x", "a.txt", "".join(["edited\n"] + lines[1:])
-    )
+    original = make_branch(repo, "worker-1-x", "a.txt", "".join(["edited\n"] + lines[1:]))
     advance_main(repo, "a.txt", "".join(lines[:-1] + ["main edit\n"]))
     git(repo, "checkout", "-q", "worker-1-x")
     git(repo, "merge", "-q", "--no-edit", "origin/main")
@@ -404,18 +394,14 @@ def test_prune_keep_unknown_errors(attempts):
 
 
 def test_prune_issue_closed_deletes_all_but_not_other_issue(attempts):
-    deleted = readopt.prune_attempts(
-        attempts, 20, issue_closed=True, issue_state=closed
-    )
+    deleted = readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=closed)
     assert sorted(deleted) == ["worker-20-mid", "worker-20-new", "worker-20-old"]
     assert "worker-201-other" in branches(attempts)
 
 
 def test_prune_never_deletes_checked_out_branch(attempts):
     git(attempts, "checkout", "-q", "worker-20-old")
-    deleted = readopt.prune_attempts(
-        attempts, 20, issue_closed=True, issue_state=closed
-    )
+    deleted = readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=closed)
     assert "worker-20-old" not in deleted
     assert "worker-20-old" in branches(attempts)
 
@@ -428,9 +414,7 @@ def test_prune_dry_run(attempts):
 
 def test_prune_issue_closed_refused_when_issue_open(attempts):
     with pytest.raises(readopt.GitError, match="refused"):
-        readopt.prune_attempts(
-            attempts, 20, issue_closed=True, issue_state=lambda n: "open"
-        )
+        readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=lambda n: "open")
     assert {"worker-20-old", "worker-20-mid", "worker-20-new"} <= branches(attempts)
 
 
@@ -506,9 +490,7 @@ def test_reap_lookup_cap_prints_exactly_one_cap_line(repo, capsys):
     readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=2, seed=1)
     out = capsys.readouterr().out
     cap_lines = [ln for ln in out.splitlines() if "PR-lookup cap" in ln]
-    assert cap_lines == [
-        "WARN: PR-lookup cap (2) reached — 3 branch(es) deferred to a later cycle"
-    ]
+    assert cap_lines == ["WARN: PR-lookup cap (2) reached — 3 branch(es) deferred to a later cycle"]
 
 
 def test_reap_lookup_subset_depends_on_seed(repo):
@@ -535,9 +517,7 @@ def test_reap_cheap_checks_run_for_all_records_despite_cap(repo):
     make_branch(repo, "worker-89-x")
     write_record(repo, "worker-89-x", age_secs=100000)
     land_into_main(repo, "worker-89-x")
-    assert readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=0, seed=0) == [
-        "worker-89-x"
-    ]
+    assert readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=0, seed=0) == ["worker-89-x"]
 
 
 def test_reap_ancestry_landed_makes_no_lookup(repo):
@@ -637,10 +617,7 @@ def test_summary_line(repo, capsys):
     make_branch(repo, "worker-71-x")
     write_record(repo, "worker-71-x")
     readopt.reap_landed(repo, pr_lookup=no_pr, max_lookups=1)
-    assert (
-        "SUMMARY reaped=0 lookups=1 skipped_cap=1 lookup_failures=0"
-        in capsys.readouterr().out
-    )
+    assert "SUMMARY reaped=0 lookups=1 skipped_cap=1 lookup_failures=0" in capsys.readouterr().out
 
 
 def test_failed_delete_emits_structured_line(repo, capsys):
@@ -880,10 +857,7 @@ def lines_of(capsys, prefix=None):
 
 def remote_heads_of(repo, pattern="refs/heads/*"):
     out = git(repo, "ls-remote", "origin", pattern)
-    return {
-        ln.split("\t")[1][len("refs/heads/") :]: ln.split("\t")[0]
-        for ln in out.splitlines()
-    }
+    return {ln.split("\t")[1][len("refs/heads/") :]: ln.split("\t")[0] for ln in out.splitlines()}
 
 
 def push_branch(repo, name, ref=None):
@@ -954,12 +928,8 @@ def test_t3_merged_pr_at_tip_reaps_local_and_remote_and_record(repo, capsys):
     rec = write_record(repo, "worker-5-x")
     assert reap(repo, prs=[pr("worker-5-x", tip, merged=True, number=7)]) == 0
     out = lines_of(capsys)
-    assert (
-        f"REAPED branch=worker-5-x reason=pr-merged where=local pr=#7 tip={tip}" in out
-    )
-    assert (
-        f"REAPED branch=worker-5-x reason=pr-merged where=remote pr=#7 tip={tip}" in out
-    )
+    assert f"REAPED branch=worker-5-x reason=pr-merged where=local pr=#7 tip={tip}" in out
+    assert f"REAPED branch=worker-5-x reason=pr-merged where=remote pr=#7 tip={tip}" in out
     assert "worker-5-x" not in branches(repo)
     assert "worker-5-x" not in remote_heads_of(repo)
     assert not rec.exists()
@@ -991,9 +961,7 @@ def test_t6_closed_issue_reaps_unlanded_but_legacy_branch_is_kept(repo, capsys):
     make_branch(repo, "fix/x", "a.txt", "unlanded legacy\n")
     reap(repo, issues={30: "closed"})
     out = lines_of(capsys)
-    assert any(
-        ln.startswith("REAPED branch=worker-30-x reason=issue-closed") for ln in out
-    )
+    assert any(ln.startswith("REAPED branch=worker-30-x reason=issue-closed") for ln in out)
     assert "worker-30-x" not in branches(repo)
     assert "fix/x" in branches(repo)
     reap(repo, issues={30: "closed"}, dry_run=True)
@@ -1017,8 +985,7 @@ def test_t7_tip_beyond_merged_pr_head_is_kept(repo, capsys):
         dry_run=True,
     )
     assert any(
-        "KEEP branch=worker-40-x reason=unlanded-pr-sha-mismatch" in ln
-        for ln in lines_of(capsys)
+        "KEEP branch=worker-40-x reason=unlanded-pr-sha-mismatch" in ln for ln in lines_of(capsys)
     )
 
 
@@ -1027,8 +994,7 @@ def test_t8_conflicting_stale_branch_on_open_issue_is_kept(repo, capsys):
     advance_main(repo, "a.txt", "main edit\n")
     reap(repo, issues={50: "open"}, dry_run=True)
     assert any(
-        "KEEP branch=worker-50-x reason=unlanded-open-issue" in ln
-        for ln in lines_of(capsys)
+        "KEEP branch=worker-50-x reason=unlanded-open-issue" in ln for ln in lines_of(capsys)
     )
 
 
@@ -1053,9 +1019,7 @@ def test_t9_grace_fresh_reflog_on_old_tip(repo, capsys):
     git(repo, "branch", "-f", "worker-8-c", tip)  # as create_branch.sh --from does
     reap(repo, issues={8: "open"}, now=time.time(), dry_run=True)
     out = lines_of(capsys)
-    assert any("KEEP branch=worker-8-c reason=grace" in ln for ln in out), "\n".join(
-        out
-    )
+    assert any("KEEP branch=worker-8-c reason=grace" in ln for ln in out), "\n".join(out)
 
 
 def test_t10_dry_run_deletes_nothing_and_reports_every_branch(repo, capsys):
@@ -1073,14 +1037,11 @@ def test_t10_dry_run_deletes_nothing_and_reports_every_branch(repo, capsys):
     out = lines_of(capsys)
     assert branches(repo) == local_before and remote_heads_of(repo) == remote_before
     named = {
-        re.search(r"branch=(\S+) .*where=local", ln).group(1)
-        for ln in out
-        if "where=local" in ln
+        re.search(r"branch=(\S+) .*where=local", ln).group(1) for ln in out if "where=local" in ln
     }
     assert named == local_before
     assert any(
-        ln.startswith("WOULD-REAP branch=worker-5-x reason=pr-merged where=remote")
-        for ln in out
+        ln.startswith("WOULD-REAP branch=worker-5-x reason=pr-merged where=remote") for ln in out
     )
 
 
@@ -1102,10 +1063,7 @@ def test_t11_failed_listing_aborts_with_zero_deletions(repo, capsys, failing):
 
     before = branches(repo)
     assert (
-        readopt.reap_orphans(
-            repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=issue_states
-        )
-        == 2
+        readopt.reap_orphans(repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=issue_states) == 2
     )
     out = "\n".join(lines_of(capsys))
     assert "listing failed — nothing deleted" in out and "aborted=1" in out
@@ -1123,10 +1081,7 @@ def test_t12_remote_moved_between_listing_and_push(repo, capsys):
     prs = [pr("worker-60-x", tip, merged=True)]
     assert reap(repo, prs=prs, remote_heads=lambda pat: [("worker-60-x", tip)]) == 0
     out = lines_of(capsys)
-    assert (
-        f"REAP-FAILED branch=worker-60-x reason=cas-or-push-failed where=remote tip={tip}"
-        in out
-    )
+    assert f"REAP-FAILED branch=worker-60-x reason=cas-or-push-failed where=remote tip={tip}" in out
     assert remote_heads_of(repo)["worker-60-x"] == moved
     assert "worker-60-x" not in branches(repo)  # the local side is independent
     assert any(RO_EVENT_RE.match(ln) for ln in out if ln.startswith("REAP"))
@@ -1147,20 +1102,18 @@ class _FakeRemote:
     """Stands in for make_git_remote: records argv/env, scripted per subcommand."""
 
     def __init__(self, heads=(), push_rc=0, push_out="", ls_rc=0, stderr=""):
-        self.calls, self.envs = [], []
+        self.calls, self.envs, self.timeouts = [], [], []
         self.heads, self.push_rc, self.push_out = list(heads), push_rc, push_out
         self.ls_rc, self.stderr = ls_rc, stderr
 
-    def factory(self, repo, extra_env):
-        self.envs.append(dict(extra_env))
-
+    def factory(self, repo, env_fn):
         def run(args, timeout=60):
+            self.envs.append(dict(env_fn()))  # env is built per call (lazy)
+            self.timeouts.append(timeout)
             self.calls.append(list(args))
             run.last_stderr = self.stderr
             if args[0] == "ls-remote":
-                return self.ls_rc, "\n".join(
-                    f"{s}\trefs/heads/{b}" for b, s in self.heads
-                )
+                return self.ls_rc, "\n".join(f"{s}\trefs/heads/{b}" for b, s in self.heads)
             return self.push_rc, self.push_out
 
         run.last_stderr = ""
@@ -1173,24 +1126,17 @@ def test_t13_token_never_printed_or_passed_in_argv(repo, monkeypatch, capsys):
     monkeypatch.setenv("GH_TOKEN", sentinel)
     git(repo, "remote", "set-url", "origin", "https://github.com/o/r.git")
     tip = make_old_branch(repo, "worker-5-x")
-    fake = _FakeRemote(
-        heads=[("worker-5-x", tip)], ls_rc=128, stderr=f"fatal: {sentinel} {b64}"
-    )
+    fake = _FakeRemote(heads=[("worker-5-x", tip)], ls_rc=128, stderr=f"fatal: {sentinel} {b64}")
     monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
     reap(repo, prs=[pr("worker-5-x", tip, merged=True)], do_local=False)
     out = capsys.readouterr()
     assert sentinel not in out.out + out.err and b64 not in out.out + out.err
     assert "WARN: remote head listing failed" in out.out
-    assert (
-        fake.envs
-        and fake.envs[0]["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {b64}"
-    )
+    assert fake.envs and fake.envs[0]["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {b64}"
     assert fake.envs[0]["GIT_CONFIG_KEY_1"] == "credential.helper"
     assert fake.envs[0]["GIT_CONFIG_VALUE_1"] == ""
     assert not any(sentinel in a or b64 in a for c in fake.calls for a in c)
-    assert not any(
-        k.startswith("GIT_TRACE") or k == "GIT_CURL_VERBOSE" for k in fake.envs[0]
-    )
+    assert not any(k.startswith("GIT_TRACE") or k == "GIT_CURL_VERBOSE" for k in fake.envs[0])
     assert all("https://github.com/o/r.git" in c for c in fake.calls)
 
 
@@ -1199,17 +1145,126 @@ def test_t13_push_failure_text_is_redacted(repo, monkeypatch, capsys):
     monkeypatch.setenv("GH_TOKEN", sentinel)
     git(repo, "remote", "set-url", "origin", "https://github.com/o/r.git")
     tip = make_old_branch(repo, "worker-5-x")
-    fake = _FakeRemote(
-        heads=[("worker-5-x", tip)], push_rc=1, push_out=f"!\t:x\t{sentinel}"
-    )
+    fake = _FakeRemote(heads=[("worker-5-x", tip)], push_rc=1, push_out=f"!\t:x\t{sentinel}")
     monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
     reap(repo, prs=[pr("worker-5-x", tip, merged=True)], do_local=False)
     out = capsys.readouterr()
     assert sentinel not in out.out + out.err
-    assert (
-        "REAP-FAILED branch=worker-5-x reason=cas-or-push-failed where=remote"
-        in out.out
-    )
+    assert "REAP-FAILED branch=worker-5-x reason=cas-or-push-failed where=remote" in out.out
+
+
+def test_push_timeout_reports_distinct_reason_and_warns(repo, monkeypatch, capsys):
+    tip = make_old_branch(repo, "worker-5-x")
+    fake = _FakeRemote(heads=[("worker-5-x", tip)], push_rc=124)
+    monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
+    reap(repo, prs=[pr("worker-5-x", tip, merged=True)], do_local=False)
+    out = capsys.readouterr().out
+    assert "REAP-FAILED branch=worker-5-x reason=push-timeout where=remote" in out
+    assert "cas-or-push-failed" not in out
+    assert "next run's ls-remote is the truth" in out
+
+
+def test_push_delete_chunks_at_50_refs_each_with_own_timeout():
+    calls = []
+
+    def run(args, timeout=0):
+        calls.append((list(args), timeout))
+        deleted = [a for a in args if a.startswith(":refs/heads/")]
+        return 0, "".join(f"-\t{d}\t[deleted]\n" for d in deleted)
+
+    items = [(f"b{i}", "1" * 40) for i in range(120)]
+    got = readopt._push_delete(run, "u", items)
+    assert all(v is True for v in got.values()) and len(got) == 120
+    sizes = [sum(a.startswith(":refs/heads/") for a in c) for c, _ in calls]
+    assert sizes == [50, 50, 20]
+    assert all(t == readopt.PUSH_TIMEOUT_SECS for _, t in calls)
+
+
+def test_push_delete_timeout_marks_only_its_chunk():
+    seq = iter([(0, "-\t:refs/heads/b0\t[deleted]\n"), (124, "")])
+
+    def run(args, timeout=0):
+        return next(seq)
+
+    items = [(f"b{i}", "1" * 40) for i in range(51)]
+    got = readopt._push_delete(run, "u", items)
+    assert got["b0"] is True and got["b1"] is False
+    assert got["b50"] == readopt.PUSH_TIMEOUT
+
+
+def test_push_env_uses_token_current_at_call_time(repo, monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "OLDTOKEN")
+    git(repo, "remote", "set-url", "origin", "https://github.com/o/r.git")
+    fake = _FakeRemote()
+    monkeypatch.setattr(readopt, "make_git_remote", fake.factory)
+    _url, run = readopt._remote_ops(readopt.make_git(repo), repo)
+    monkeypatch.setenv("GH_TOKEN", "NEWTOKEN")
+    run(["push"], 1)
+    new_b64 = base64.b64encode(b"x-access-token:NEWTOKEN").decode()
+    assert fake.envs[0]["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {new_b64}"
+
+
+def test_remote_runner_redacts_creation_time_token_after_rotation(repo, monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "OLDTOKEN")
+    run = readopt.make_git_remote(repo, dict)
+    monkeypatch.setenv("GH_TOKEN", "NEWTOKEN")
+
+    class P:
+        returncode, stdout, stderr = 1, "", "fatal: OLDTOKEN and NEWTOKEN"
+
+    monkeypatch.setattr(readopt.subprocess, "run", lambda *a, **k: P())
+    run(["ls-remote"], 1)
+    assert "OLDTOKEN" not in run.last_stderr and "NEWTOKEN" not in run.last_stderr
+
+
+def test_remote_runner_strips_askpass_and_trace_from_child_env(repo, monkeypatch):
+    for k in ("GIT_ASKPASS", "SSH_ASKPASS", "GIT_TRACE", "GIT_CURL_VERBOSE"):
+        monkeypatch.setenv(k, "1")
+    seen = {}
+
+    class P:
+        returncode, stdout, stderr = 0, "", ""
+
+    def fake_run(argv, **kw):
+        seen.update(kw["env"])
+        return P()
+
+    monkeypatch.setattr(readopt.subprocess, "run", fake_run)
+    readopt.make_git_remote(repo, lambda: {"X": "y"})(["version"], 1)
+    assert seen["X"] == "y"
+    assert not {"GIT_ASKPASS", "SSH_ASKPASS", "GIT_TRACE", "GIT_CURL_VERBOSE"} & set(seen)
+
+
+def test_summary_reports_remote_skipped_and_recheck(repo, monkeypatch, capsys):
+    git(repo, "remote", "set-url", "origin", "ssh://git@github.com/o/r.git")
+    reap(repo, dry_run=True)
+    last = lines_of(capsys, "SUMMARY")[-1]
+    assert last.endswith("aborted=0 remote_skipped=1 recheck=skipped")
+    git(repo, "remote", "set-url", "origin", str(repo.parent / "origin.git"))
+    reap(repo, remote_heads=lambda pat: [], remote_delete=lambda i: {})
+    assert lines_of(capsys, "SUMMARY")[-1].endswith("remote_skipped=0 recheck=none")
+
+
+def test_summary_remote_skipped_on_listing_failure(repo, capsys):
+    def boom(pat):
+        raise RuntimeError("down")
+
+    reap(repo, remote_heads=boom, remote_delete=lambda i: {}, dry_run=True)
+    assert "remote_skipped=1" in lines_of(capsys, "SUMMARY")[-1]
+
+
+def test_summary_recheck_done_when_something_is_reaped(repo, capsys):
+    git(repo, "branch", "worker-7-a", "main")
+    reap(repo, issues={7: "closed"}, remote_heads=lambda p: [], remote_delete=lambda i: {})
+    assert "recheck=done" in lines_of(capsys, "SUMMARY")[-1]
+
+
+def test_git_error_before_listing_still_prints_summary_exit_2(repo, capsys):
+    rc = readopt.reap_orphans(repo, slug=SLUG, now=FAR, base="no-such-ref", dry_run=True)
+    cap = capsys.readouterr()
+    assert rc == 2
+    assert cap.out.splitlines()[-1].startswith("SUMMARY ")
+    assert "aborted=1" in cap.out.splitlines()[-1]
 
 
 def test_redact_covers_literal_and_header_forms(monkeypatch):
@@ -1230,7 +1285,7 @@ def test_local_origin_gets_no_auth_env(repo, monkeypatch):
 def test_remote_runner_strips_trace_vars_and_times_out(repo, monkeypatch):
     monkeypatch.setenv("GIT_TRACE", "1")
     monkeypatch.setenv("GIT_CURL_VERBOSE", "1")
-    run = readopt.make_git_remote(repo, {})
+    run = readopt.make_git_remote(repo, dict)
     rc, _ = run(["version"], 30)
     assert rc == 0 and run.last_stderr == ""
 
@@ -1252,10 +1307,7 @@ def test_t23_unsupported_origin_skips_remote_phase(repo, monkeypatch, capsys, ur
 
     monkeypatch.setattr(readopt, "make_git_remote", boom_factory)
     assert reap(repo, dry_run=True) == 0
-    assert (
-        "remote phase skipped — unsupported origin URL scheme"
-        in capsys.readouterr().out
-    )
+    assert "remote phase skipped — unsupported origin URL scheme" in capsys.readouterr().out
 
 
 def test_t23_github_url_without_token_skips_remote_phase(repo, monkeypatch, capsys):
@@ -1273,7 +1325,7 @@ def test_t15_max_deletions_defers_the_rest(repo, capsys):
     assert sum(ln.startswith("REAPED") for ln in out) == 1
     assert sum(ln.startswith("DEFERRED") for ln in out) == 2
     assert len({"worker-7-a", "worker-7-b", "worker-7-c"} & branches(repo)) == 2
-    assert out[-1].endswith("aborted=0") and "deferred=2" in out[-1]
+    assert " aborted=0 " in out[-1] and "deferred=2" in out[-1]
 
 
 def test_t16_local_only_and_remote_only(repo, capsys):
@@ -1289,9 +1341,7 @@ def test_t16_local_only_and_remote_only(repo, capsys):
 
 def test_t16_both_only_flags_exit_2(repo):
     with pytest.raises(SystemExit) as exc:
-        readopt.main(
-            ["--repo", str(repo), "reap-orphans", "--local-only", "--remote-only"]
-        )
+        readopt.main(["--repo", str(repo), "reap-orphans", "--local-only", "--remote-only"])
     assert exc.value.code == 2
 
 
@@ -1326,10 +1376,7 @@ def test_t18_closed_pr_on_open_issue_local_kept_remote_reaped(repo, capsys):
     prs = [pr("worker-70-x", tip, number=4), pr("fix/y", legacy, number=5)]
     reap(repo, prs=prs, issues={70: "open"})
     out = lines_of(capsys)
-    assert (
-        f"REAPED branch=worker-70-x reason=pr-closed where=remote pr=#4 tip={tip}"
-        in out
-    )
+    assert f"REAPED branch=worker-70-x reason=pr-closed where=remote pr=#4 tip={tip}" in out
     assert f"REAPED branch=fix/y reason=pr-closed where=local pr=#5 tip={legacy}" in out
     assert "worker-70-x" in branches(repo) and "fix/y" not in branches(repo)
     assert "worker-70-x" not in remote_heads_of(repo)
@@ -1357,9 +1404,7 @@ def test_t19_batched_branch_with_open_issue_ref_is_kept(repo, capsys):
 def test_t20_unknown_issue_is_kept_and_empty_pr_listing_aborts(repo, capsys):
     make_branch(repo, "worker-90-x", "a.txt", "w\n")
     reap(repo, issues={}, dry_run=True)
-    assert any(
-        "KEEP branch=worker-90-x reason=issue-unknown" in ln for ln in lines_of(capsys)
-    )
+    assert any("KEEP branch=worker-90-x reason=issue-unknown" in ln for ln in lines_of(capsys))
     before = branches(repo)
     rc = readopt.reap_orphans(
         repo,
@@ -1379,13 +1424,9 @@ def test_t21_tip_behind_merged_pr_head_is_covered(repo, capsys):
     ahead = commit(repo, "a.txt", "two\n", "two")
     git(repo, "checkout", "-q", "main")
     git(repo, "branch", "-D", "ahead")  # object stays present locally, as after a fetch
-    reap(
-        repo, prs=[pr("worker-91-x", ahead, merged=True, number=6)], issues={91: "open"}
-    )
+    reap(repo, prs=[pr("worker-91-x", ahead, merged=True, number=6)], issues={91: "open"})
     assert any(
-        ln.startswith(
-            f"REAPED branch=worker-91-x reason=pr-merged where=local pr=#6 tip={tip}"
-        )
+        ln.startswith(f"REAPED branch=worker-91-x reason=pr-merged where=local pr=#6 tip={tip}")
         for ln in lines_of(capsys)
     )
 
@@ -1399,8 +1440,7 @@ def test_t21_pr_head_object_absent_or_non_main_base_is_not_covered(repo, capsys)
         dry_run=True,
     )
     assert any(
-        "KEEP branch=worker-92-x reason=unlanded-pr-sha-mismatch" in ln
-        for ln in lines_of(capsys)
+        "KEEP branch=worker-92-x reason=unlanded-pr-sha-mismatch" in ln for ln in lines_of(capsys)
     )
     reap(
         repo,
@@ -1409,10 +1449,7 @@ def test_t21_pr_head_object_absent_or_non_main_base_is_not_covered(repo, capsys)
         dry_run=True,
     )
     out = "\n".join(lines_of(capsys))
-    assert (
-        "reason=pr-merged" not in out
-        and "worker-92-x reason=unlanded-open-issue" in out
-    )
+    assert "reason=pr-merged" not in out and "worker-92-x reason=unlanded-open-issue" in out
 
 
 def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
@@ -1423,9 +1460,7 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
     git(repo, "checkout", "-q", "-b", "tmp", "worker-31-b")
     commit(repo, "a.txt", "moved\n", "moved on")
     git(repo, "checkout", "-q", "main")
-    push_branch(
-        repo, "worker-31-b", "tmp"
-    )  # remote b moved; the injected listing is stale
+    push_branch(repo, "worker-31-b", "tmp")  # remote b moved; the injected listing is stale
     real_factory = readopt.make_git_remote
     pushes = []
 
@@ -1441,8 +1476,7 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
 
     monkeypatch.setattr(readopt, "make_git_remote", factory)
     prs = [
-        pr(f"worker-31-{n}", t, merged=True, number=i)
-        for i, (n, t) in enumerate(tips.items(), 1)
+        pr(f"worker-31-{n}", t, merged=True, number=i) for i, (n, t) in enumerate(tips.items(), 1)
     ]
     stale = lambda pat: [(f"worker-31-{n}", t) for n, t in tips.items()]  # noqa: E731
     reap(repo, prs=prs, remote_heads=stale, do_local=False)
@@ -1450,10 +1484,7 @@ def test_t22_one_batched_push_with_per_ref_results(repo, monkeypatch, capsys):
     assert len(pushes) == 1
     assert all("--atomic" not in a for a in pushes[0]) and "--no-verify" in pushes[0]
     assert sum(ln.startswith("REAPED") for ln in out) == 2
-    assert (
-        sum(ln.startswith("REAP-FAILED") and "cas-or-push-failed" in ln for ln in out)
-        == 1
-    )
+    assert sum(ln.startswith("REAP-FAILED") and "cas-or-push-failed" in ln for ln in out) == 1
     assert set(remote_heads_of(repo, "refs/heads/worker-31-*")) == {"worker-31-b"}
 
 
@@ -1467,13 +1498,11 @@ def test_push_parse_requires_per_ref_deleted_line():
             "To x\n-\t:refs/heads/a\t[deleted]\n!\t:refs/heads/b\t[rejected] (stale info)\n",
         )
 
-    got = readopt._push_delete(
-        run, "u", [("a", "1" * 40), ("b", "2" * 40), ("c", "3" * 40)]
-    )
+    got = readopt._push_delete(run, "u", [("a", "1" * 40), ("b", "2" * 40), ("c", "3" * 40)])
     assert got == {"a": True, "b": False, "c": False}
     assert readopt._push_delete(
         lambda a, t=0: (124, "-\t:refs/heads/a\t"), "u", [("a", "1" * 40)]
-    ) == {"a": False}
+    ) == {"a": readopt.PUSH_TIMEOUT}
 
 
 def test_no_candidates_makes_no_github_calls(repo, capsys):
@@ -1514,11 +1543,7 @@ def test_remote_listing_failure_still_runs_local_phase(repo, capsys):
 
     rc = reap(repo, issues={6: "open"}, remote_heads=bad)
     out = "\n".join(lines_of(capsys))
-    assert (
-        rc == 0
-        and "remote head listing failed" in out
-        and "REAPED branch=worker-6-y" in out
-    )
+    assert rc == 0 and "remote head listing failed" in out and "REAPED branch=worker-6-y" in out
 
 
 def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
@@ -1526,9 +1551,7 @@ def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
     monkeypatch.setattr(
         readopt.github,
         "get_issue",
-        lambda o, r, n: (
-            calls["get"].append(n) or ({"state": "closed"} if n != 3 else None)
-        ),
+        lambda o, r, n: (calls["get"].append(n) or ({"state": "closed"} if n != 3 else None)),
     )
     monkeypatch.setattr(
         readopt.github,
@@ -1537,9 +1560,7 @@ def test_issue_states_default_uses_per_issue_reads_then_list(monkeypatch):
     )
     lookup = readopt._github_issue_states(SLUG)
     assert lookup({1, 3}) == {1: "closed"}  # a 404 is unknown, never closed
-    assert lookup(set(range(100, 100 + readopt.PER_ISSUE_READ_LIMIT + 1))) == {
-        9: "open"
-    }
+    assert lookup(set(range(100, 100 + readopt.PER_ISSUE_READ_LIMIT + 1))) == {9: "open"}
     assert calls["get"] == [1, 3] and calls["list"] == 1
 
 
@@ -1611,9 +1632,7 @@ def test_t14_prune_remote_lookup_failure_never_fails_the_local_delete(attempts, 
     def bad(pat):
         raise RuntimeError("net down")
 
-    got = readopt.prune_attempts(
-        attempts, 20, remote_heads=bad, remote_delete=lambda i: {}
-    )
+    got = readopt.prune_attempts(attempts, 20, remote_heads=bad, remote_delete=lambda i: {})
     assert "worker-20-old" in got and "worker-20-old" not in branches(attempts)
     assert "remote head lookup failed" in capsys.readouterr().out
 
@@ -1658,9 +1677,7 @@ def test_git_error_on_closed_issue_commit_scan_keeps_branch(repo, capsys):
     assert reap(repo, issues={62: "closed"}, git=run) == 0
     assert "worker-62-x" in branches(repo)
     reap(repo, issues={62: "closed"}, git=run, dry_run=True)
-    assert any(
-        "branch=worker-62-x reason=git-error" in ln for ln in lines_of(capsys, "KEEP")
-    )
+    assert any("branch=worker-62-x reason=git-error" in ln for ln in lines_of(capsys, "KEEP"))
 
 
 def test_closed_issue_with_all_refs_closed_is_reaped_d2(repo, capsys):
@@ -1669,14 +1686,10 @@ def test_closed_issue_with_all_refs_closed_is_reaped_d2(repo, capsys):
     git(repo, "checkout", "-q", "main")
     advance_main(repo, "a.txt", "main edit\n")
     reap(repo, issues={63: "closed", 64: "closed"}, dry_run=True)
-    assert any(
-        "WOULD-REAP branch=worker-63-x reason=issue-closed" in ln
-        for ln in lines_of(capsys)
-    )
+    assert any("WOULD-REAP branch=worker-63-x reason=issue-closed" in ln for ln in lines_of(capsys))
     reap(repo, issues={63: "closed", 64: "open"}, dry_run=True)
     assert any(
-        "KEEP branch=worker-63-x reason=issue-closed-batch-open" in ln
-        for ln in lines_of(capsys)
+        "KEEP branch=worker-63-x reason=issue-closed-batch-open" in ln for ln in lines_of(capsys)
     )
 
 
@@ -1694,10 +1707,7 @@ def test_open_pr_appearing_before_delete_phase_blocks_reap(repo, capsys):
         return [late_open]  # the pre-delete re-check sees a new open PR
 
     assert (
-        readopt.reap_orphans(
-            repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=lambda n: {}
-        )
-        == 0
+        readopt.reap_orphans(repo, slug=SLUG, now=FAR, pulls=pulls, issue_states=lambda n: {}) == 0
     )
     assert calls == ["all", "open"]
     assert "worker-65-x" in branches(repo) and "worker-65-x" in remote_heads_of(repo)
@@ -1733,15 +1743,12 @@ def test_remote_head_missing_commit_object_is_kept_not_deleted(repo, capsys):
         dry_run=True,
     )
     assert any(
-        "branch=worker-68-gone reason=remote-tip-not-local" in ln
-        for ln in lines_of(capsys, "KEEP")
+        "branch=worker-68-gone reason=remote-tip-not-local" in ln for ln in lines_of(capsys, "KEEP")
     )
     assert pushed == []
 
 
-def test_closed_pr_local_on_closed_issue_is_reaped_but_unknown_issue_is_kept(
-    repo, capsys
-):
+def test_closed_pr_local_on_closed_issue_is_reaped_but_unknown_issue_is_kept(repo, capsys):
     closed = make_old_branch(repo, "worker-71-x")
     unknown = make_old_branch(repo, "worker-72-x")
     prs = [pr("worker-71-x", closed, number=6), pr("worker-72-x", unknown, number=7)]
@@ -1749,12 +1756,9 @@ def test_closed_pr_local_on_closed_issue_is_reaped_but_unknown_issue_is_kept(
     # from the state map: unknown is treated like open and the branch is protected.
     reap(repo, prs=prs, issues={71: "closed"}, dry_run=True)
     out = lines_of(capsys)
+    assert any("WOULD-REAP branch=worker-71-x reason=pr-closed where=local" in ln for ln in out)
     assert any(
-        "WOULD-REAP branch=worker-71-x reason=pr-closed where=local" in ln for ln in out
-    )
-    assert any(
-        "KEEP branch=worker-72-x reason=closed-pr-open-issue where=local" in ln
-        for ln in out
+        "KEEP branch=worker-72-x reason=closed-pr-open-issue where=local" in ln for ln in out
     )
 
 
@@ -1771,7 +1775,6 @@ def test_remote_head_with_unreadable_commit_date_is_kept_as_git_error(repo, caps
         dry_run=True,
     )
     assert any(
-        "branch=worker-73-x reason=git-error where=remote" in ln
-        for ln in lines_of(capsys, "KEEP")
+        "branch=worker-73-x reason=git-error where=remote" in ln for ln in lines_of(capsys, "KEEP")
     )
     assert pushed == []

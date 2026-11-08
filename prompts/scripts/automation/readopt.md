@@ -125,7 +125,24 @@ subprocess environment.
 Design-contract deviations found while building (the TD has the contract, the code is right):
 the branch-reflog timestamp is read with `git log -g -1 --date=unix --format=%gd` (parsed from
 `<branch>@{<epoch>}`), because `%ct` under `-g` is the commit's date, not the reflog entry's;
-`github.gh_call_count()` was added so the SUMMARY `api_calls=` is a measured number.
+`github.gh_call_count()` was added so the SUMMARY `api_calls=` is a measured number;
+`_one_line` now redacts the token before collapsing whitespace; a young (grace) branch with an
+open PR is relabelled `open-pr` (N5 outranks G1 in the table; both are KEEP); the remote runner
+keeps its redacted last stderr on `run.last_stderr` for the ls-remote WARN; the injection seams
+have these shapes: `pulls(state)` returns PR dicts, `issue_states(needed)` is the hybrid of
+A9 (per-issue reads at or below 20 numbers, else one list), `remote_heads(pattern)` returns
+`[(branch, sha)]`; and `--dry-run` skips the pre-delete open-PR re-check.
+
+Fix round 1 (reviewer SHOULD_FIX/NIT items): a push timeout (rc 124) reports
+`reason=push-timeout` with a WARN that the next run's ls-remote is the truth, and the batched
+remote delete is chunked at 50 refs per push, each with its own timeout; SUMMARY gains the
+appended fields `remote_skipped=<0|1>` (remote phase could not run; exit stays 0) and
+`recheck=<done|none|skipped>` (`skipped` on dry-run, so a WOULD-REAP can become KEEP open-pr in
+the real run); the push auth env is built at call time from the current GH_TOKEN and `_redact`
+scrubs both the creation-time and the current token; `GIT_ASKPASS` and `SSH_ASKPASS` are
+stripped from the child git env; every exit-2 path (store dir, base tree, for-each-ref, slug)
+prints a final `SUMMARY ... aborted=1` line; the remote-head grace uses the tip commit date
+(accepted and documented, TD section 10 post-review note, behaviour unchanged).
 
 ## Human Review Notes
 

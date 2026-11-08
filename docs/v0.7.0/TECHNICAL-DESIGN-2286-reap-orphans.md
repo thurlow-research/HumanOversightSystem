@@ -385,3 +385,5 @@ No open question needs a human ruling for slice 1.
 **Follow-up to file (worker, not this reviewer):** `prune-attempts --issue-closed` has the A2 batched-branch hazard. Either apply the same `#ref` check there, or document the hazard in `worker.md`.
 
 **No human ruling required.**
+
+**Post-review note (worker, fix round 1):** the remote-head grace (§2.2) is measured from the tip *commit* date, not the push time. Git exposes no push timestamp for a remote head, so a recently pushed old commit is judged old and can be reaped without waiting out the grace. Accepted as a residual: deletion still requires every other rule (no open PR, landed or closed-issue, tip compare-and-swap), and the content stays in `refs/pull/N/head` where a PR existed. Behaviour is unchanged; the limit is documented in the `readopt.py` module docstring.
