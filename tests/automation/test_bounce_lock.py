@@ -864,3 +864,112 @@ def test_adoption_logs_at_info(tmp_path, monkeypatch, caplog):
         _call(tmp_path, [_f()], [])
     post.assert_not_called()
     assert any("adopted already-posted bounce comment 77" in r.getMessage() for r in caplog.records)
+
+
+# --- #2272: cap defaults to BOUNCE_CAP; cap=None is the explicit opt-out ----------
+
+
+def _seed_bounces(tmp_path, n):
+    """Record `n` earlier bounces on other keys (explicitly uncapped)."""
+    for i in range(n):
+        out: list = []
+        _call(tmp_path, [_f(key=f"MERITS:s{i}.py:s", path=f"s{i}.py")], out, cap=None)
+        assert not isinstance(out[0], Exception), out
+    assert bounce_count("cid-1", repo_root=str(tmp_path)) == n
+
+
+def test_default_cap_concurrent_different_findings_post_once(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_slow_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _seed_bounces(tmp_path, BOUNCE_CAP - 1)
+        del bodies[:]
+        results = _run_two(
+            tmp_path,
+            [_f(key="MERITS:a.py:a", path="a.py")],
+            [_f(key="MERITS:b.py:b", path="b.py")],
+        )
+    assert len(bodies) == 1
+    assert sorted(r.at_cap for r in results) == [False, True]
+    assert [r.skipped for r in results if r.at_cap] == [True]
+    assert bounce_count("cid-1", repo_root=str(tmp_path)) == BOUNCE_CAP
+    events = bounce_events("cid-1", repo_root=str(tmp_path))
+    assert sum(1 for e in events if e["event"] == "pr-bounced") == BOUNCE_CAP
+
+
+def test_default_cap_at_cap_posts_and_writes_nothing(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _seed_bounces(tmp_path, BOUNCE_CAP)
+        del bodies[:]
+        results: list = []
+        _call(tmp_path, [_f(key="MERITS:new.py:n", path="new.py")], results)
+    assert not isinstance(results[0], Exception), results
+    assert results[0].at_cap is True and results[0].skipped is True
+    assert bodies == []
+    assert bounce_count("cid-1", repo_root=str(tmp_path)) == BOUNCE_CAP
+
+
+def test_default_cap_follows_monkeypatched_bounce_cap(tmp_path, monkeypatch):
+    bodies: list = []
+    monkeypatch.setattr(f"{MA}.BOUNCE_CAP", 1)
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        first: list = []
+        _call(tmp_path, [_f(key="MERITS:a.py:a", path="a.py")], first)
+        second: list = []
+        _call(tmp_path, [_f(key="MERITS:b.py:b", path="b.py")], second)
+    assert first[0].at_cap is False
+    assert second[0].at_cap is True and second[0].skipped is True
+    assert len(bodies) == 1
+
+
+def test_explicit_cap_none_posts_past_the_cap(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _seed_bounces(tmp_path, BOUNCE_CAP)
+        del bodies[:]
+        results: list = []
+        _call(tmp_path, [_f(key="MERITS:new.py:n", path="new.py")], results, cap=None)
+    assert not isinstance(results[0], Exception), results
+    assert results[0].at_cap is False and results[0].skipped is False
+    assert len(bodies) == 1
+    assert bounce_count("cid-1", repo_root=str(tmp_path)) == BOUNCE_CAP + 1
+
+
+@pytest.mark.parametrize("bad", [True, False, -1, 1.5, "2"])
+def test_invalid_cap_raises_before_any_github_call(tmp_path, bad):
+    with (
+        patch(f"{MA}.post_comment") as post,
+        patch(f"{MA}._run_gh") as run_gh,
+        patch(f"{MA}._bounce_lock") as lock,
+    ):
+        with pytest.raises(ValueError, match="cap"):
+            record_pr_bounce(
+                OWNER,
+                REPO,
+                123,
+                cid="cid-1",
+                reason_category="MERITS_FINDING",
+                summary="s",
+                repo_root=str(tmp_path),
+                failures=["tok-a"],
+                cap=bad,
+            )
+    post.assert_not_called()
+    run_gh.assert_not_called()
+    lock.assert_not_called()

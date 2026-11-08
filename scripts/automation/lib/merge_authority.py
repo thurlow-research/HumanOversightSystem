@@ -894,6 +894,10 @@ _BOUNCE_REASON_CATEGORIES = frozenset(
 # _bounce_comment_body's f-string.
 BOUNCE_CAP = 2
 
+# record_pr_bounce's `cap` default: resolved to the current BOUNCE_CAP at call time
+# (not definition time), so a caller that omits it is still capped.
+_CAP_DEFAULT: Any = object()
+
 
 def _bounce_register_path(step: Union[str, int]) -> str:
     return f".claudetmp/signoffs/step{step}-register.md"
@@ -2546,7 +2550,7 @@ def record_pr_bounce(
     head_sha: Optional[str] = None,
     findings: Optional[Sequence[Finding]] = None,
     epoch_since: Optional[str] = None,
-    cap: Optional[int] = None,
+    cap: Optional[int] = _CAP_DEFAULT,
 ) -> BounceResult:
     """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
 
@@ -2568,11 +2572,18 @@ def record_pr_bounce(
 
     Steps 3-6 (read prior events, dedup, cap check, post, append) run under a
     per-(repo, cid) flock (#2227), so concurrent callers cannot double-post or
-    burn two bounces for one rejection. With `cap` given, a lock-time count at
-    or above it posts and writes nothing and returns skipped=True, at_cap=True.
+    burn two bounces for one rejection. The cap is enforced by default: omitting
+    `cap` uses BOUNCE_CAP (read at call time), and a lock-time count at or above
+    it posts and writes nothing and returns skipped=True, at_cap=True. Passing
+    `cap=None` is the explicit, documented opt-out (no cap check). A non-int,
+    bool or negative `cap` raises ValueError before any GitHub call or lock.
     BounceLockTimeout is raised before any write. The label/draft finalize steps
     run after the lock is released and are idempotent via repair.
     """
+    if cap is _CAP_DEFAULT:
+        cap = BOUNCE_CAP
+    if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 0):
+        raise ValueError(f"cap must be a non-negative int or None, got {cap!r}")
     if reason_category not in _BOUNCE_REASON_CATEGORIES:
         raise ValueError(
             f"reason_category must be one of {sorted(_BOUNCE_REASON_CATEGORIES)}, "
