@@ -44,6 +44,7 @@ def test_file_exists():
 
 def test_file_is_executable():
     import stat
+
     mode = _HOS_HUMAN.stat().st_mode
     assert mode & stat.S_IXUSR, "bin/hos-human is not executable (chmod +x needed)"
 
@@ -61,19 +62,16 @@ def test_uses_temp_file_auth_not_process_substitution():
     those documentation notes do not trigger a false positive.
     """
     src = _src()
-    code_lines = [
-        ln for ln in src.splitlines()
-        if ln.strip() and not ln.strip().startswith("#")
-    ]
+    code_lines = [ln for ln in src.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     code_only = "\n".join(code_lines)
 
     # The temp-file pattern must be present in executable code.
-    assert "mktemp" in code_only, (
-        "bin/hos-human does not use mktemp — expected temp-file auth pattern"
-    )
-    assert "get_app_token.sh" in code_only and "--app human" in code_only, (
-        "bin/hos-human must call get_app_token.sh --app human"
-    )
+    assert (
+        "mktemp" in code_only
+    ), "bin/hos-human does not use mktemp — expected temp-file auth pattern"
+    assert (
+        "get_app_token.sh" in code_only and "--app human" in code_only
+    ), "bin/hos-human must call get_app_token.sh --app human"
     # No actual executable source <(...) — only comment lines may mention it.
     assert "source <(" not in code_only, (
         "bin/hos-human executable code uses 'source <(...)' — "
@@ -94,9 +92,9 @@ def test_exit_trap_cleans_up_token_file():
     trap is the only reliable cleanup mechanism.
     """
     src = _src()
-    assert "trap" in src, (
-        "bin/hos-human has no EXIT trap — token temp file may survive abnormal exits"
-    )
+    assert (
+        "trap" in src
+    ), "bin/hos-human has no EXIT trap — token temp file may survive abnormal exits"
     trap_lines = [ln for ln in src.splitlines() if "trap" in ln and "EXIT" in ln]
     assert trap_lines, (
         "no 'trap ... EXIT' line found in bin/hos-human — "
@@ -137,14 +135,11 @@ def test_identity_guard_uses_exported_variables_not_literal():
     """
     src = _src()
     assert "HOS_BOT_LOGIN" in src, "identity guard variable HOS_BOT_LOGIN missing"
-    assert "HOS_EXPECTED_BOT_LOGIN" in src, (
-        "identity guard variable HOS_EXPECTED_BOT_LOGIN missing"
-    )
+    assert "HOS_EXPECTED_BOT_LOGIN" in src, "identity guard variable HOS_EXPECTED_BOT_LOGIN missing"
     # Both must be referenced in a comparison context (not just assigned).
     # Check both appear on the same line (the guard expression).
     guard_lines = [
-        ln for ln in src.splitlines()
-        if "HOS_BOT_LOGIN" in ln and "HOS_EXPECTED_BOT_LOGIN" in ln
+        ln for ln in src.splitlines() if "HOS_BOT_LOGIN" in ln and "HOS_EXPECTED_BOT_LOGIN" in ln
     ]
     assert guard_lines, (
         "no line comparing HOS_BOT_LOGIN to HOS_EXPECTED_BOT_LOGIN found — "
@@ -160,9 +155,9 @@ def test_identity_guard_uses_exported_variables_not_literal():
 def test_repo_sync_called():
     """hos_repo_sync.sh must be called (best-effort) at session start."""
     src = _src()
-    assert "hos_repo_sync.sh" in src, (
-        "bin/hos-human does not call hos_repo_sync.sh — session-start sync is missing"
-    )
+    assert (
+        "hos_repo_sync.sh" in src
+    ), "bin/hos-human does not call hos_repo_sync.sh — session-start sync is missing"
 
 
 # --------------------------------------------------------------------------- #
