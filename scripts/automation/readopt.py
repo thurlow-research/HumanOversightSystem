@@ -51,7 +51,11 @@ Safety
 inside a PR head (ARCHIVE_REASONS; today rule D2 ``issue-closed``) first writes the
 recovery ref ``refs/archive/reap/<branch>@<tip12>`` (local, create-only; for a remote head
 it is also pushed to origin) and deletes only if that succeeded; otherwise it prints
-``KEEP ... reason=archive-failed`` and deletes nothing. The ref lives outside ``refs/heads``
+``KEEP ... reason=archive-failed`` and deletes nothing. A successful write is reported on
+its own line, ``ARCHIVED branch=<b> where=<local|remote> ref=<ref> tip=<sha>``, printed
+before the delete; REAPED/REAP-FAILED lines are unchanged (bin/hos-cron audits them with an
+end-anchored regex). WOULD-REAP lines in a dry run carry ``archive=<ref>``. The ref lives
+outside ``refs/heads``
 so no branch selector sees it. ``--list-archives`` lists them with age and NEVER prunes;
 pruning archives is a separate human-authorized step. RESTORE:
 ``git fetch origin refs/archive/reap/<name>@<tip12>:refs/archive/reap/<name>@<tip12>``
@@ -942,6 +946,17 @@ def _fmt(
     return line
 
 
+def _archived_line(d: _Decision) -> str:
+    """Printed after a successful archive write, before the delete. REAPED/REAP-FAILED
+    lines must stay byte-identical to the pre-#2293 shape: bin/hos-cron audits them with an
+    end-anchored regex, so the archive is reported on its own line instead."""
+    ref = _archive_ref(d.ref.name, d.ref.tip)
+    return (
+        f"ARCHIVED branch={_printable_name(d.ref.name)} where={d.ref.where}"
+        f" ref={_printable_name(ref)} tip={d.ref.tip}"
+    )
+
+
 def _github_pulls(slug: "tuple[str, str]") -> PullsLookup:
     return lambda state: github.list_all_pulls(slug[0], slug[1], state=state)
 
@@ -1300,17 +1315,18 @@ def reap_orphans(
             continue
         needs_archive = d.reason in ARCHIVE_REASONS
         if d.ref.where == "remote":
-            # Budget is reserved at selection: a remote archive failure still uses its
-            # slot (remote runs last, so nothing later could have used it).
+            # Budget is reserved at selection, before the batched archive push: a remote
+            # archive failure still uses its slot, so a later remote ref in the same run
+            # may be DEFERRED although nothing was deleted for the failed one. Only ever
+            # keeps more; the cap is never exceeded.
             attempted += 1
             remote_batch.append(d)
             continue
-        archive = None
         if needs_archive:
             # An archive-failed decision is never attempted as a delete, so it does not
             # consume the --max-deletions budget.
             if _write_local_archive(git, d.ref.name, d.ref.tip):
-                archive = _archive_ref(d.ref.name, d.ref.tip)
+                print(_archived_line(d))
                 counts["archived"] += 1
             else:
                 print(_fmt("KEEP", d, reason="archive-failed"))
@@ -1318,7 +1334,7 @@ def reap_orphans(
                 continue
         attempted += 1
         if _delete_branch(git, d.ref.name, recs_by_branch.get(d.ref.name, []), d.ref.tip):
-            print(_fmt("REAPED", d, with_pr=True, archive=archive))
+            print(_fmt("REAPED", d, with_pr=True))
             counts["reaped_local"] += 1
         else:
             print(_fmt("REAP-FAILED", d, reason="delete-failed"))
@@ -1336,6 +1352,7 @@ def reap_orphans(
         for d in to_archive:
             if archived.get(d.ref.name) is True:
                 archives[d.ref.name] = _archive_ref(d.ref.name, d.ref.tip)
+                print(_archived_line(d))
                 counts["archived"] += 1
                 # Best effort only: the remote copy is what gates the delete.
                 if not _write_local_archive(git, d.ref.name, d.ref.tip):
@@ -1360,7 +1377,7 @@ def reap_orphans(
         for d in remote_batch:
             got = outcome.get(d.ref.name)
             if got is True:
-                print(_fmt("REAPED", d, with_pr=True, archive=archives.get(d.ref.name)))
+                print(_fmt("REAPED", d, with_pr=True))
                 counts["reaped_remote"] += 1
             else:
                 why = "push-timeout" if got == PUSH_TIMEOUT else "cas-or-push-failed"

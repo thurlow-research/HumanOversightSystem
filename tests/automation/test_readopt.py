@@ -2709,11 +2709,14 @@ def test_a1_local_d2_writes_archive_ref_and_reaped_line_carries_it(repo, capsys)
     assert "worker-30-x" not in branches(repo)
     assert git(repo, "rev-parse", ref) == tip
     assert any(
-        ln.startswith("REAPED branch=worker-30-x reason=issue-closed")
-        and ln.endswith(f" tip={tip} archive={ref}")
+        ln.startswith("REAPED branch=worker-30-x reason=issue-closed") and ln.endswith(f" tip={tip}")
         for ln in out
     )
-    assert " archived=1" in out[-1] and out[-1].endswith("archived=1")
+    assert not any(ln.startswith(("REAPED", "REAP-FAILED")) and "archive=" in ln for ln in out)
+    archived = f"ARCHIVED branch=worker-30-x where=local ref={ref} tip={tip}"
+    assert archived in out
+    assert out.index(archived) < next(i for i, ln in enumerate(out) if ln.startswith("REAPED"))
+    assert out[-1].endswith("archived=1")
 
 
 def test_a2_archive_at_different_sha_blocks_deletion(repo, capsys):
@@ -2749,8 +2752,10 @@ def test_a2c_read_back_mismatch_blocks_deletion(repo, capsys):
         return real(args)
 
     reap(repo, issues={30: "closed"}, git=run)
+    out = lines_of(capsys)
     assert "worker-30-x" in branches(repo)
-    assert any("reason=archive-failed" in ln for ln in lines_of(capsys))
+    assert any("reason=archive-failed" in ln for ln in out)
+    assert "kept=2" in out[-1] and "archived=0" in out[-1]
 
 
 def test_a3_existing_archive_at_same_tip_is_idempotent(repo, capsys):
@@ -2759,7 +2764,9 @@ def test_a3_existing_archive_at_same_tip_is_idempotent(repo, capsys):
     reap(repo, issues={30: "closed"})
     out = lines_of(capsys)
     assert "worker-30-x" not in branches(repo)
-    assert any(ln.startswith("REAPED branch=worker-30-x") and "archive=" in ln for ln in out)
+    assert any(ln.startswith("ARCHIVED branch=worker-30-x") for ln in out)
+    assert any(ln.startswith("REAPED branch=worker-30-x") for ln in out)
+    assert git(repo, "rev-parse", archive_name("worker-30-x", tip)) == tip
 
 
 def test_a4_remote_d2_archives_before_delete_and_gates_the_batch(repo, capsys):
@@ -2796,8 +2803,9 @@ def test_a4_remote_d2_archives_before_delete_and_gates_the_batch(repo, capsys):
     assert order[0][1] == sorted((n, t) for n, t in tips.items())
     assert order[1][1] == [("worker-30-a", tips["worker-30-a"])]
     ref_a = archive_name("worker-30-a", tips["worker-30-a"])
-    assert any(
-        ln.startswith("REAPED branch=worker-30-a") and ln.endswith(f"archive={ref_a}") for ln in out
+    assert any(ln.startswith("REAPED branch=worker-30-a") for ln in out)
+    assert (
+        f"ARCHIVED branch=worker-30-a where=remote ref={ref_a} tip={tips['worker-30-a']}" in out
     )
     for n in ("b", "c"):
         want = f"KEEP branch=worker-30-{n} reason=archive-failed where=remote"
@@ -2937,3 +2945,75 @@ def test_a12_cli_list_archives_never_reaps(repo, capsys):
     out = lines_of(capsys)
     assert out[-1] == "ARCHIVES total=1 older=0 threshold_days=90"
     assert "worker-30-x" in branches(repo)
+
+
+def test_a13_check_ref_format_failure_blocks_deletion(repo, capsys):
+    d2_branch(repo)
+    reap(
+        repo,
+        issues={30: "closed"},
+        git=_failing_git(repo, fail_prefix=("check-ref-format",), rc=1),
+    )
+    out = lines_of(capsys)
+    assert "worker-30-x" in branches(repo)
+    assert any("KEEP branch=worker-30-x reason=archive-failed" in ln for ln in out)
+    assert not any(ln.startswith("REAPED") for ln in out)
+    assert not git(repo, "for-each-ref", "refs/archive/")
+
+
+def test_a14_remote_archive_raising_keeps_ref_and_skips_delete(repo, capsys):
+    make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    push_branch(repo, "worker-30-x")
+    git(repo, "branch", "-D", "worker-30-x")
+    deleted = []
+
+    def boom(items):
+        raise RuntimeError("network down")
+
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=lambda items: deleted.extend(items) or {},
+        remote_archive=boom,
+    )
+    out = lines_of(capsys)
+    assert not deleted
+    assert any(ln.startswith("WARN: remote archive failed") for ln in out)
+    assert any("KEEP branch=worker-30-x reason=archive-failed where=remote" in ln for ln in out)
+    assert "worker-30-x" in remote_heads_of(repo)
+
+
+def test_a15_remote_archive_failure_still_uses_budget_so_later_ref_is_deferred(repo, capsys):
+    for n in ("a", "b"):
+        make_branch(repo, f"worker-30-{n}", "a.txt", f"unlanded {n}\n")
+        push_branch(repo, f"worker-30-{n}")
+        git(repo, "branch", "-D", f"worker-30-{n}")
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        max_deletions=1,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=lambda items: {b: True for b, _ in items},
+        remote_archive=lambda items: {b: False for b, _ in items},
+    )
+    out = lines_of(capsys)
+    assert any("KEEP branch=worker-30-a reason=archive-failed" in ln for ln in out)
+    assert any(ln.startswith("DEFERRED branch=worker-30-b") for ln in out)
+
+
+def test_a16_reaped_lines_match_hos_cron_event_regex(repo, capsys):
+    """bin/hos-cron audits REAPED lines with an END-ANCHORED regex; an archived reap must
+    still match it (#2293 regression). The literal is read from the file, not copied."""
+    text = (Path(__file__).resolve().parents[2] / "bin" / "hos-cron").read_text()
+    found = re.findall(r"^\s*_RB_EVENT_RE='([^']+)'$", text, re.MULTILINE)
+    assert len(found) == 1
+    event_re = re.compile(found[0])
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"})
+    reaped = lines_of(capsys, "REAPED")
+    assert len(reaped) == 1
+    m = event_re.match(reaped[0])
+    assert m and m.group(2) == "worker-30-x" and m.group(7) == tip

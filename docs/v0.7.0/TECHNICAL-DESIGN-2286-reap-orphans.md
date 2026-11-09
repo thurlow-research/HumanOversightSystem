@@ -231,7 +231,8 @@ python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7]
 | Real run, cap reached | `DEFERRED branch=<b> reason=<r> where=… tip=<sha40>` |
 
 **Field order is binding (architect edit A8):** `branch=` then `reason=` first, then the other fields. The existing `_RO_EVENT_RE` (`^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=`) requires ` reason=` to follow the branch name directly. The draft order `branch=… where=… reason=` would not have matched. `tip=` records the deleted SHA in the cycle log, which is the only recovery handle for never-pushed D2 work (§9.2).
-| Always, last line | `SUMMARY reaped_local=<n> reaped_remote=<n> kept=<n> failed=<n> deferred=<n> api_calls=<n> aborted=0\|1` |
+| Always, last line | `SUMMARY reaped_local=<n> reaped_remote=<n> kept=<n> failed=<n> deferred=<n> api_calls=<n> aborted=0\|1 archived=<n>` (`archived=` appended by #2293) |
+| Real run, before deleting an unlanded (D2) tip (#2293) | `ARCHIVED branch=<b> where=local\|remote ref=refs/archive/reap/<b>@<tip12> tip=<sha40>`; REAPED/REAP-FAILED lines are unchanged; a failed archive prints `KEEP … reason=archive-failed` |
 
 - A real run does not print KEEP lines, which keeps the cron log small.
 - Every interpolated value is a branch name that passed N1, a fixed reason token, an integer, or `_one_line(_redact(...))` text in WARN lines. Nothing else is interpolated (CWE-117).
