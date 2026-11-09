@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"a993db60e9f9b2f32395520f4ac5e5a99ab826fe","pr":2312,"reason":"Same head already reviewed 09:15Z (human-required, interim sign-off posted, needs-human set, ScottThurlow requested); no new commits, reviews, or comments since","timestamp":"2026-11-09T09:27:04Z"}
