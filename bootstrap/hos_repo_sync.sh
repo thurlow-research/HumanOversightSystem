@@ -253,7 +253,11 @@ _prune_local_branches() {
   local rc note=""
   "$tbin" --kill-after=10 "$secs" python3 -u -m scripts.automation.readopt \
       --repo "$root_phys" reap-orphans --local-only --grace-days 1 --max-deletions 25 \
-      --no-issue-closed 2>&1 | sed 's/^/hos-repo-sync: prune: /'
+      --no-issue-closed </dev/null 2>&1 \
+    | awk -v p="hos-repo-sync: prune: " '
+        /^REAPED / { reaped = 1 }
+        { print p $0; fflush() }
+        END { if (reaped) print p "recover a deleted branch with: git branch <name> <tip>  (or git fetch origin pull/<N>/head:<name>)" }'
   rc="${PIPESTATUS[0]}"
   if [ "$rc" -ne 0 ]; then
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then note=" (timeout)"; fi

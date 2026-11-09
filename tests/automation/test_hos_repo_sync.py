@@ -371,6 +371,7 @@ class TestPrune:
             "--max-deletions", "25", "--no-issue-closed",
         ]  # fmt: skip
         assert calls[0]["cwd"] == clone_real
+        assert "recover a deleted branch" not in r.stdout  # no REAPED line, no hint
 
     def test_s2_interval_skip_does_not_prune(self, prune_repo, state_dir):
         env = _prune_env(prune_repo.tmp)
@@ -442,6 +443,30 @@ class TestPrune:
         assert "sync result unaffected" in r.stderr
         assert "(timeout)" not in r.stderr
 
+    def test_s9b_rc_137_is_classified_as_timeout(self, prune_repo, state_dir):
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, PRUNE_STUB_RC="137"))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "exited 137 (timeout)" in r.stderr
+
+    @pytest.mark.parametrize(
+        "secs, expected",
+        [(None, "90"), ("abc", "90"), ("0", "90"), ("-5", "90"), ("7", "7")],
+    )
+    def test_s10b_timeout_seconds_validation(self, prune_repo, state_dir, tmp_path, secs, expected):
+        real = shutil.which("timeout") or shutil.which("gtimeout")
+        shims = tmp_path / "shims"
+        shims.mkdir()
+        log = tmp_path / "timeout-argv.log"
+        shim = shims / "timeout"
+        shim.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        shim.chmod(0o755)
+        env = _prune_env(prune_repo.tmp, HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS=secs)
+        r = _run_prune(
+            prune_repo.clone, state_dir, env, path=f"{shims}{os.pathsep}{os.environ['PATH']}"
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert f"--kill-after=10 {expected} " in log.read_text()
+
     def test_s10_timeout_is_bounded_and_keeps_early_output(self, prune_repo, state_dir):
         env = _prune_env(
             prune_repo.tmp,
@@ -467,6 +492,10 @@ class TestPrune:
         lines = r.stdout.splitlines()
         a = lines.index(f"hos-repo-sync: prune: {reaped}")
         assert lines[a + 1] == f"hos-repo-sync: prune: {summary}"
+        assert lines[a + 2].startswith(
+            "hos-repo-sync: prune: recover a deleted branch with: git branch <name> <tip>"
+        )
+        assert sum("recover a deleted branch" in ln for ln in lines) == 1
 
     def test_s12_dirty_behind_tree_still_prunes(self, prune_repo, state_dir):
         prune_repo.advance_remote()
@@ -480,7 +509,8 @@ class TestPrune:
         bindir = tmp_path / "minbin"
         bindir.mkdir()
         tools = (
-            "git python3 sed cksum cut grep mktemp stat id date dirname cat mv mkdir rm " "uname sh"
+            "git python3 sed cksum cut grep mktemp stat id date dirname cat mv mkdir rm "
+            "uname sh awk"
         ).split()
         for tool in tools:
             found = shutil.which(tool)
@@ -497,6 +527,9 @@ class TestPrune:
         [
             ("x_worker_root={clone}/", True),
             ("x_overseer_root={clone}", True),
+            ("x_human_root={clone}", False),
+            ("x_worker_root_extra={clone}", False),
+            ("x_worker_root=", False),
             ("x_worker_root={clone}\r", True),
             ("x_worker_root={clone}/  ", True),
             ("x_worker_root={other}", False),
