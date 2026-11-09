@@ -49,7 +49,13 @@ Safety
 Only branches that have an ownership record are ever considered by
 ``reap-landed``; unrecorded leftover branches are never touched there (that is
 ``reap-orphans``' job, human-authorized by #2286). The checked-out branch is
-never deleted. ``reap-orphans --dry-run`` skips the pre-delete open-PR re-check, so a
+never deleted. ``reap-orphans`` (#2287) also deletes review copies of PR heads
+(``pr-7``, ``pr7-check``, ... rule D4) only when that PR's current head contains every
+commit of the tip, and NEVER deletes ``audit/*``, ``chore/audit-overseer-cycle-*`` or
+``chore/overseer-audit-*`` branches, nor any unlanded branch whose diff against its
+merge-base touches ``audit/log``, ``audit/oversight-log.jsonl`` or
+``audit/overnight-loop-log.md`` (they may hold records that exist nowhere else).
+``reap-orphans --dry-run`` skips the pre-delete open-PR re-check, so a
 WOULD-REAP can become ``KEEP open-pr`` in the real run (SUMMARY ``recheck=skipped``
 vs ``done``/``none``); SUMMARY also carries ``remote_skipped=1`` when the remote phase
 could not run. The remote-head grace uses the tip COMMIT date (not the push time,
@@ -811,6 +817,13 @@ def is_protected_branch(name: str) -> bool:
 
 _WORKER_RE = re.compile(r"worker-(\d+)-")
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
+# #2287 D4: names of local copies of a PR head (pr-7, pr7-check, pr-7-review...).
+# Group 1 is the PR number; the leading number wins (pr1830-809 -> #1830).
+REVIEW_RE = re.compile(r"pr-?([1-9][0-9]{0,6})(?:-(?:review|check|new|[0-9]+))?")
+# #2287 N2a: overseer audit-record branches (exact prefixes, never the substring "audit").
+_AUDIT_BRANCH_PREFIXES = ("chore/audit-overseer-cycle-", "chore/overseer-audit-")
+# #2287 N6: paths whose changes are audit records that may exist nowhere else.
+_AUDIT_RECORD_PATHS = ("audit/log", "audit/oversight-log.jsonl", "audit/overnight-loop-log.md")
 
 # (state) -> PR objects. Raises on failure (the run then deletes nothing).
 PullsLookup = Callable[[str], "list[dict]"]
@@ -895,6 +908,19 @@ def _covers(git: GitRunner, pr: dict, tip: str) -> bool:
         return False
     rc, _ = git(["merge-base", "--is-ancestor", tip, sha])
     return rc == 0
+
+
+def _audit_guard(git: GitRunner, base: str, tip: str) -> Optional[str]:
+    """#2287 N6: KEEP reason when ``tip`` adds or changes audit records relative to
+    its merge-base with ``base`` ("audit-content"; "git-error" on any git failure),
+    else None. Applied before every unlanded deletion (D1', D2, D4)."""
+    rc, mb = git(["merge-base", base, tip])
+    if rc != 0 or not mb.strip():
+        return "git-error"
+    rc, out = git(["diff", "--name-only", mb.strip(), tip, "--", *_AUDIT_RECORD_PATHS])
+    if rc != 0:
+        return "git-error"
+    return "audit-content" if out.strip() else None
 
 
 def _commit_issue_refs(git: GitRunner, base: str, tip: str) -> "Optional[set[int]]":
@@ -1024,6 +1050,9 @@ def reap_orphans(
         if is_protected_branch(name):
             keep(ref, "protected-name")
             continue
+        if name.startswith(_AUDIT_BRANCH_PREFIXES):  # N2a (#2287): holds unsynced records
+            keep(ref, "audit-branch")
+            continue
         if ref.where == "local":
             if name == current:
                 keep(ref, "current-branch")
@@ -1075,6 +1104,7 @@ def reap_orphans(
             if not all_pulls:
                 raise _Abort("empty pull-request listing")
             index = _index_pulls(all_pulls, owner_repo)
+            by_number = {p.get("number"): p for p in all_pulls if p.get("number") is not None}
             open_heads = {
                 name for name, prs in index.items() if any(p.get("state") == "open" for p in prs)
             }
@@ -1104,6 +1134,7 @@ def reap_orphans(
                     continue
                 m = _WORKER_RE.match(ref.name)
                 plan: dict = {
+                    "by_number": by_number,
                     "prs": prs,
                     "covering": covering,
                     "issue": int(m.group(1)) if m else None,
@@ -1222,11 +1253,17 @@ def _decide_rest(
     covering: "list[dict]" = plan["covering"]
     closed_cover = [p for p in covering if not p.get("merged_at") and p.get("state") == "closed"]
     protected_by_issue = False
+    # N6 (#2287, A12): an unlanded deletion is withheld when the branch carries audit
+    # records. The branch then falls through to D3 (landed content is safe to reap) and
+    # ends at the KEEP reason held here.
+    audit_hold: Optional[str] = None
     if closed_cover:
         if ref.where == "local" and issue is not None and state != "closed":
             protected_by_issue = True  # A1: never delete open-issue work on a closed PR
         else:
-            return _Decision(ref, True, "pr-closed", f"#{closed_cover[0].get('number')}")
+            audit_hold = _audit_guard(git, base, ref.tip)
+            if audit_hold is None:
+                return _Decision(ref, True, "pr-closed", f"#{closed_cover[0].get('number')}")
 
     d2_blocked = d2_git_error = False
     if issue_closed and issue is not None and state == "closed":
@@ -1234,7 +1271,9 @@ def _decide_rest(
         if refs is None:
             d2_git_error = True
         elif all(states.get(n) == "closed" for n in refs):
-            return _Decision(ref, True, "issue-closed")
+            audit_hold = audit_hold or _audit_guard(git, base, ref.tip)
+            if audit_hold is None:
+                return _Decision(ref, True, "issue-closed")
         else:
             d2_blocked = True
 
@@ -1249,6 +1288,28 @@ def _decide_rest(
     if rc not in (0, 1):
         return _Decision(ref, False, "git-error")
 
+    # D4 (#2287): a local copy of a PR head that is no PR's own head.ref. Reaped only
+    # when that PR's current head contains every commit of the tip (A1: not for a
+    # real PR head, whose name merely looks like a review copy).
+    review = REVIEW_RE.fullmatch(ref.name)
+    if review and not plan["prs"]:
+        number = int(review.group(1))
+        target = plan["by_number"].get(number)
+        if target is None:
+            return _Decision(ref, False, "review-pr-unknown")
+        if not _covers(git, target, ref.tip):
+            return _Decision(ref, False, "review-pr-sha-mismatch")
+        guard = audit_hold or _audit_guard(git, base, ref.tip)
+        if guard is not None:
+            return _Decision(ref, False, guard)
+        if target.get("state") == "closed":
+            return _Decision(ref, True, "review-pr-done", f"#{number}")
+        if target.get("state") == "open":
+            return _Decision(ref, True, "review-stale", f"#{number}")
+        return _Decision(ref, False, "review-pr-unknown")
+
+    if audit_hold is not None:
+        return _Decision(ref, False, audit_hold)
     if protected_by_issue:
         reason = "closed-pr-open-issue"
     elif plan["prs"] and not covering:

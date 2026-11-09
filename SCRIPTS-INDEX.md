@@ -43,6 +43,7 @@ excluded.
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
 - `bootstrap/pr_review.sh` — L3 wrapper for the PR-review verdict primitive (#1657)
 - `bootstrap/query_issues.sh` — canonical read-side wrapper for GitHub issue and PR queries under a HOS bot identity (#1192, consolidated by #1204)
+- `bootstrap/review_worktree.sh` — the sanctioned way to get a PR's code locally WITHOUT creating a local branch (#2287, TD-2287 section 2).
 - `bootstrap/revoke_app_token.sh` — revoke the GitHub App installation token currently held in GH_TOKEN (#1191)
 - `bootstrap/setup_clis.sh` — Repo-independent machine bootstrap for the AI-oversight agent CLIs.
 - `bootstrap/submit_pr.sh` — canonical wrapper for pushing a branch and opening a PR under a HOS bot identity (#1085)
