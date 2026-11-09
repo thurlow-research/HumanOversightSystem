@@ -497,6 +497,8 @@ class TestPrune:
         [
             ("x_worker_root={clone}/", True),
             ("x_overseer_root={clone}", True),
+            ("x_worker_root={clone}\r", True),
+            ("x_worker_root={clone}/  ", True),
             ("x_worker_root={other}", False),
         ],
     )

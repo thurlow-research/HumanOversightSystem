@@ -209,6 +209,7 @@ _is_registered_cron_root() {
   while IFS= read -r line || [ -n "$line" ]; do
     if [[ "$line" =~ ^[A-Za-z0-9_]+_(worker|overseer)_root=(.*)$ ]]; then
       val="${BASH_REMATCH[2]}"
+      val="${val%"${val##*[![:space:]]}"}"  # trailing CR / whitespace
       val="${val%/}"
       [ -n "$val" ] || continue
       if [ -d "$val" ]; then
