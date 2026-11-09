@@ -3017,3 +3017,72 @@ def test_a16_reaped_lines_match_hos_cron_event_regex(repo, capsys):
     assert len(reaped) == 1
     m = event_re.match(reaped[0])
     assert m and m.group(2) == "worker-30-x" and m.group(7) == tip
+
+
+def _real_push_runner(repo: Path):
+    def run(args, timeout):
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *IDENT, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout
+
+    return run
+
+
+def test_a17_push_archive_real_bare_repo_creates_ref_at_tip_and_is_idempotent(repo, tmp_path):
+    tip = make_branch(repo, "worker-50-a", "a.txt", "unlanded\n")
+    origin = str(tmp_path / "origin.git")
+    run = _real_push_runner(repo)
+    items = [("worker-50-a", tip)]
+    ref = readopt._archive_ref("worker-50-a", tip)
+    assert readopt._push_archive(run, origin, items) == {"worker-50-a": True}
+    assert git(tmp_path / "origin.git", "rev-parse", ref) == tip
+    # Second push: porcelain "=" (up to date) still counts as archived.
+    assert readopt._push_archive(run, origin, items) == {"worker-50-a": True}
+
+
+def test_a18_push_archive_real_bare_repo_failure_is_false_and_never_forces(repo, tmp_path):
+    tip = make_branch(repo, "worker-50-b", "a.txt", "unlanded\n")
+    run = _real_push_runner(repo)
+    bad = str(tmp_path / "does-not-exist.git")
+    assert readopt._push_archive(run, bad, [("worker-50-b", tip)]) == {"worker-50-b": False}
+    # A ref already at a different sha is rejected, not overwritten.
+    origin = tmp_path / "origin.git"
+    ref = readopt._archive_ref("worker-50-b", tip)
+    # Divergent (not an ancestor of tip) so a non-forced push is a rejected non-ff.
+    other = make_branch(repo, "worker-50-other", "b.txt", "divergent\n")
+    git(repo, "push", "-q", "origin", "worker-50-other")
+    git(origin, "update-ref", ref, other)
+    assert readopt._push_archive(run, str(origin), [("worker-50-b", tip)]) == {
+        "worker-50-b": False
+    }
+    assert git(origin, "rev-parse", ref) == other
+
+
+def test_a19_push_archive_chunks_over_push_chunk(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(readopt, "PUSH_CHUNK", 2)
+    tips = []
+    for i in range(3):
+        name = f"worker-6{i}-c"
+        tips.append((name, make_branch(repo, name, "a.txt", f"w{i}\n")))
+    calls = []
+    inner = _real_push_runner(repo)
+
+    def run(args, timeout):
+        calls.append(args)
+        return inner(args, timeout)
+
+    got = readopt._push_archive(run, str(tmp_path / "origin.git"), tips)
+    assert got == {n: True for n, _ in tips}
+    assert len(calls) == 2
+
+
+def test_a20_list_archives_rc2_when_for_each_ref_fails(repo, capsys):
+    def bad(args):
+        return 1, ""
+
+    assert readopt.list_archives(repo, git=bad) == 2
+    assert "listing archives failed" in capsys.readouterr().err
