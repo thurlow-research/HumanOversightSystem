@@ -13,9 +13,12 @@ branch is deliberately named "trunk" (not "main") in most tests to prove
 branch detection reads origin/HEAD rather than assuming a name.
 """
 
+import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -42,6 +45,9 @@ def _git(*args, cwd):
 def _run_script(repo_dir, state_dir, interval=None):
     env = dict(os.environ)
     env["HOS_REPO_SYNC_STATE_DIR"] = str(state_dir)
+    # The developer's shell must never switch the prune on for the existing tests.
+    env.pop("HOS_REPO_SYNC_PRUNE", None)
+    env.pop("HOS_TOKEN_APP_ROLE", None)
     args = [BASH, str(SCRIPT)]
     if interval is not None:
         args.append(str(interval))
@@ -264,3 +270,250 @@ class TestPerRepoStateIsolation:
 
         state_files = list(shared_state.glob("*.json"))
         assert len(state_files) == 2, "each repo must get its own state file"
+
+
+# ---------------------------------------------------------------------------
+# #2288 S3 — local-branch prune (TECHNICAL-DESIGN-2288-S3-repo-sync-prune.md)
+#
+# The script is copied into <clone>/bootstrap/ (gate P4: it prunes only the
+# clone it ships in) and readopt is a stdlib-only STUB: no network, no gh.
+# ---------------------------------------------------------------------------
+
+STUB_READOPT = """\
+import json, os, sys, time
+with open(os.environ["PRUNE_CAPTURE"], "a") as fh:
+    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
+for line in os.environ.get("PRUNE_STUB_OUT", "").splitlines():
+    print(line, flush=True)
+time.sleep(float(os.environ.get("PRUNE_STUB_SLEEP", "0")))
+sys.exit(int(os.environ.get("PRUNE_STUB_RC", "0")))
+"""
+
+HAVE_TIMEOUT = bool(shutil.which("timeout") or shutil.which("gtimeout"))
+
+
+def _install_script(clone):
+    dest = clone / "bootstrap"
+    dest.mkdir(exist_ok=True)
+    shutil.copy(SCRIPT, dest / "hos_repo_sync.sh")
+    return dest / "hos_repo_sync.sh"
+
+
+def _install_stub(clone):
+    auto = clone / "scripts" / "automation"
+    auto.mkdir(parents=True, exist_ok=True)
+    (clone / "scripts" / "__init__.py").write_text("")
+    (auto / "__init__.py").write_text("")
+    (auto / "readopt.py").write_text(STUB_READOPT)
+
+
+def _prune_env(tmp, **extra):
+    home = tmp / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "HOS_REPO_SYNC_PRUNE": "1",
+        "HOS_TOKEN_APP_ROLE": "human",
+        "HOME": str(home),
+        "PRUNE_CAPTURE": str(tmp / "capture.jsonl"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.update(extra)
+    return {k: v for k, v in env.items() if v is not None}
+
+
+def _run_prune(clone, state_dir, env_extra, interval=0, script=None, path=None):
+    env = dict(os.environ)
+    env.pop("HOS_REPO_SYNC_PRUNE", None)
+    env.pop("HOS_TOKEN_APP_ROLE", None)
+    env.pop("HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS", None)
+    env["HOS_REPO_SYNC_STATE_DIR"] = str(state_dir)
+    env.update(env_extra)
+    if path is not None:
+        env["PATH"] = path
+    return subprocess.run(
+        [BASH, str(script or (clone / "bootstrap" / "hos_repo_sync.sh")), str(interval)],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env(env),
+        check=False,
+    )
+
+
+def _calls(tmp):
+    cap = tmp / "capture.jsonl"
+    if not cap.exists():
+        return []
+    return [json.loads(ln) for ln in cap.read_text().splitlines() if ln]
+
+
+@pytest.fixture
+def prune_repo(tmp_path):
+    if not GIT:
+        pytest.skip("git not available")
+    if not HAVE_TIMEOUT:
+        pytest.skip("neither timeout nor gtimeout available")
+    env = RepoEnv(tmp_path / "repo", default_branch="main")
+    _install_script(env.clone)
+    _install_stub(env.clone)
+    return env
+
+
+class TestPrune:
+    def test_s1_invokes_reaper_with_fixed_argv(self, prune_repo, state_dir):
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp))
+        assert r.returncode == 0, r.stdout + r.stderr
+        calls = _calls(prune_repo.tmp)
+        assert len(calls) == 1
+        clone_real = str(prune_repo.clone.resolve())
+        assert calls[0]["argv"] == [
+            "--repo", clone_real, "reap-orphans", "--local-only", "--grace-days", "1",
+            "--max-deletions", "25", "--no-issue-closed",
+        ]  # fmt: skip
+        assert calls[0]["cwd"] == clone_real
+
+    def test_s2_interval_skip_does_not_prune(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp)
+        assert _run_prune(prune_repo.clone, state_dir, env, interval=900).returncode == 0
+        second = _run_prune(prune_repo.clone, state_dir, env, interval=900)
+        assert "skipped, last synced" in second.stdout
+        assert len(_calls(prune_repo.tmp)) == 1
+
+    def test_s3_fetch_failure_does_not_prune(self, prune_repo, state_dir):
+        _git("remote", "set-url", "origin", str(prune_repo.tmp / "nope.git"), cwd=prune_repo.clone)
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp))
+        assert r.returncode == 1
+        assert _calls(prune_repo.tmp) == []
+
+    @pytest.mark.parametrize("flag", [None, "0"])
+    def test_s4_off_unless_exactly_one(self, prune_repo, state_dir, flag):
+        r = _run_prune(
+            prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, HOS_REPO_SYNC_PRUNE=flag)
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "prune" not in r.stdout + r.stderr
+        assert _calls(prune_repo.tmp) == []
+
+    @pytest.mark.parametrize("role", ["worker", None])
+    def test_s5_requires_human_role(self, prune_repo, state_dir, role):
+        r = _run_prune(
+            prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, HOS_TOKEN_APP_ROLE=role)
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "prune skipped — not the human role" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
+    def test_s6_module_absent_skips_once(self, prune_repo, state_dir):
+        shutil.rmtree(prune_repo.clone / "scripts")
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp))
+        assert r.returncode == 0, r.stdout + r.stderr
+        msg = "prune skipped — scripts/automation/readopt.py not present"
+        assert r.stdout.count(msg) == 1
+
+    def test_s7_only_prunes_the_scripts_own_clone(self, prune_repo, state_dir):
+        # The REAL repo script run with cwd = a different clone: gate P4 must stop it
+        # before the real readopt (which always prints SUMMARY) could run.
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp), script=SCRIPT)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "prune skipped — not this script's own clone" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+        assert "SUMMARY " not in r.stdout + r.stderr
+
+    def test_s8_default_branch_must_be_main(self, tmp_path, state_dir):
+        if not GIT:
+            pytest.skip("git not available")
+        if not HAVE_TIMEOUT:
+            pytest.skip("neither timeout nor gtimeout available")
+        env = RepoEnv(tmp_path / "repo", default_branch="trunk")
+        _install_script(env.clone)
+        _install_stub(env.clone)
+        r = _run_prune(env.clone, state_dir, _prune_env(env.tmp))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "prune skipped — default branch is not main" in r.stdout
+        assert _calls(env.tmp) == []
+
+    @pytest.mark.parametrize("rc", [1, 2, 3])
+    def test_s9_reaper_rc_never_changes_sync_exit(self, prune_repo, state_dir, rc):
+        r = _run_prune(
+            prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, PRUNE_STUB_RC=str(rc))
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert f"WARN: readopt reap-orphans exited {rc}" in r.stderr
+        assert "sync result unaffected" in r.stderr
+        assert "(timeout)" not in r.stderr
+
+    def test_s10_timeout_is_bounded_and_keeps_early_output(self, prune_repo, state_dir):
+        env = _prune_env(
+            prune_repo.tmp,
+            PRUNE_STUB_SLEEP="10",
+            PRUNE_STUB_OUT="early line",
+            HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS="1",
+        )
+        start = time.monotonic()
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert time.monotonic() - start < 15
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "hos-repo-sync: prune: early line" in r.stdout
+        assert "(timeout)" in r.stderr
+
+    def test_s11_reaper_output_passes_through_verbatim_in_order(self, prune_repo, state_dir):
+        reaped = f"REAPED branch=human/x reason=pr-merged where=local pr=#5 tip={'a' * 40}"
+        summary = "SUMMARY reaped_local=1 failed=0"
+        r = _run_prune(
+            prune_repo.clone,
+            state_dir,
+            _prune_env(prune_repo.tmp, PRUNE_STUB_OUT=f"{reaped}\n{summary}"),
+        )
+        lines = r.stdout.splitlines()
+        a = lines.index(f"hos-repo-sync: prune: {reaped}")
+        assert lines[a + 1] == f"hos-repo-sync: prune: {summary}"
+
+    def test_s12_dirty_behind_tree_still_prunes(self, prune_repo, state_dir):
+        prune_repo.advance_remote()
+        (prune_repo.clone / "README.md").write_text("dirty\n")
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "STALE" in r.stderr
+        assert len(_calls(prune_repo.tmp)) == 1
+
+    def test_s13_no_timeout_binary_skips(self, prune_repo, state_dir, tmp_path):
+        bindir = tmp_path / "minbin"
+        bindir.mkdir()
+        tools = (
+            "git python3 sed cksum cut grep mktemp stat id date dirname cat mv mkdir rm " "uname sh"
+        ).split()
+        for tool in tools:
+            found = shutil.which(tool)
+            if found is None:
+                pytest.skip(f"cannot build a minimal PATH: {tool} missing")
+            (bindir / tool).symlink_to(found)
+        r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp), path=str(bindir))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "prune skipped — no timeout(1) available" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
+    @pytest.mark.parametrize(
+        "line_fmt, expect_skip",
+        [
+            ("x_worker_root={clone}/", True),
+            ("x_overseer_root={clone}", True),
+            ("x_worker_root={other}", False),
+        ],
+    )
+    def test_s14_registered_cron_root_is_never_pruned(
+        self, prune_repo, state_dir, line_fmt, expect_skip
+    ):
+        env = _prune_env(prune_repo.tmp)
+        conf = Path(env["HOME"]) / ".config" / "hos" / "projects.conf"
+        conf.parent.mkdir(parents=True)
+        conf.write_text(
+            line_fmt.format(clone=prune_repo.clone, other=prune_repo.tmp / "elsewhere") + "\n"
+        )
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        if expect_skip:
+            assert "prune skipped — clone is a registered worker/overseer root" in r.stdout
+            assert _calls(prune_repo.tmp) == []
+        else:
+            assert len(_calls(prune_repo.tmp)) == 1
