@@ -2709,7 +2709,8 @@ def test_a1_local_d2_writes_archive_ref_and_reaped_line_carries_it(repo, capsys)
     assert "worker-30-x" not in branches(repo)
     assert git(repo, "rev-parse", ref) == tip
     assert any(
-        ln.startswith("REAPED branch=worker-30-x reason=issue-closed") and ln.endswith(f" tip={tip}")
+        ln.startswith("REAPED branch=worker-30-x reason=issue-closed")
+        and ln.endswith(f" tip={tip}")
         for ln in out
     )
     assert not any(ln.startswith(("REAPED", "REAP-FAILED")) and "archive=" in ln for ln in out)
@@ -2804,9 +2805,7 @@ def test_a4_remote_d2_archives_before_delete_and_gates_the_batch(repo, capsys):
     assert order[1][1] == [("worker-30-a", tips["worker-30-a"])]
     ref_a = archive_name("worker-30-a", tips["worker-30-a"])
     assert any(ln.startswith("REAPED branch=worker-30-a") for ln in out)
-    assert (
-        f"ARCHIVED branch=worker-30-a where=remote ref={ref_a} tip={tips['worker-30-a']}" in out
-    )
+    assert f"ARCHIVED branch=worker-30-a where=remote ref={ref_a} tip={tips['worker-30-a']}" in out
     for n in ("b", "c"):
         want = f"KEEP branch=worker-30-{n} reason=archive-failed where=remote"
         assert any(want in ln for ln in out)
@@ -3056,9 +3055,7 @@ def test_a18_push_archive_real_bare_repo_failure_is_false_and_never_forces(repo,
     other = make_branch(repo, "worker-50-other", "b.txt", "divergent\n")
     git(repo, "push", "-q", "origin", "worker-50-other")
     git(origin, "update-ref", ref, other)
-    assert readopt._push_archive(run, str(origin), [("worker-50-b", tip)]) == {
-        "worker-50-b": False
-    }
+    assert readopt._push_archive(run, str(origin), [("worker-50-b", tip)]) == {"worker-50-b": False}
     assert git(origin, "rev-parse", ref) == other
 
 
