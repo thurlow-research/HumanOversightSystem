@@ -250,3 +250,24 @@ def test_hos_cron_rejects_human_role():
             "bin/hos-cron appears to accept --role human — "
             "human is an interactive role, not a cron role"
         )
+
+
+# --------------------------------------------------------------------------- #
+# #2288 S3: session-start sync opts in to the local-branch prune
+# --------------------------------------------------------------------------- #
+
+
+def _code_lines() -> list[str]:
+    return [ln for ln in _src().splitlines() if not ln.lstrip().startswith("#")]
+
+
+def test_hh1_sync_call_opts_in_per_command_without_export():
+    """The prune opt-in is a per-command env assignment (non-comment lines only)."""
+    code = _code_lines()
+    sync_lines = [ln for ln in code if "hos_repo_sync.sh" in ln]
+    assert len(sync_lines) == 1, sync_lines
+    assert sync_lines[0].strip() == (
+        'HOS_REPO_SYNC_PRUNE="${HOS_REPO_SYNC_PRUNE:-1}" '
+        'bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true'
+    )
+    assert not any("export HOS_REPO_SYNC_PRUNE" in ln for ln in code)

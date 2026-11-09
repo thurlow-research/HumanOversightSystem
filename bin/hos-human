@@ -108,8 +108,11 @@ rm -f "$_t"
   || { echo "Identity guard failed: '${HOS_BOT_LOGIN:-}' != '${HOS_EXPECTED_BOT_LOGIN:-}'"; exit 1; }
 
 # Sync the shared repo at session start (fast-forward only; no-ops if recent).
+# Also prunes local branches whose PR is merged/closed (#2288 S3); set
+# HOS_REPO_SYNC_PRUNE=0 to opt out. Set for this one command only (no export), so
+# the in-session sync stays prune-off.
 # Best-effort -- a sync failure must not block the session.
-bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true
+HOS_REPO_SYNC_PRUNE="${HOS_REPO_SYNC_PRUNE:-1}" bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true
 
 # Per-role disk temp dir (#2054, TD section 2A.3). Deliberately AFTER the token
 # mint above, so the short-lived token temp file stays on the RAM-backed /tmp
