@@ -1315,10 +1315,10 @@ def test_summary_reports_remote_skipped_and_recheck(repo, monkeypatch, capsys):
     git(repo, "remote", "set-url", "origin", "ssh://git@github.com/o/r.git")
     reap(repo, dry_run=True)
     last = lines_of(capsys, "SUMMARY")[-1]
-    assert last.endswith("aborted=0 remote_skipped=1 recheck=skipped")
+    assert "aborted=0 remote_skipped=1 recheck=skipped" in last
     git(repo, "remote", "set-url", "origin", str(repo.parent / "origin.git"))
     reap(repo, remote_heads=lambda pat: [], remote_delete=lambda i: {})
-    assert lines_of(capsys, "SUMMARY")[-1].endswith("remote_skipped=0 recheck=none")
+    assert "remote_skipped=0 recheck=none" in lines_of(capsys, "SUMMARY")[-1]
 
 
 def test_summary_remote_skipped_on_listing_failure(repo, capsys):
@@ -2686,3 +2686,400 @@ def test_dh19_open_pr_from_other_repo_does_not_block_delete(repo, capsys):
     assert dh(repo, make_pr("fix/x", tip), open_pulls_for=lambda b: other) == 0
     assert "DELETED" in capsys.readouterr().out
     assert "refs/heads/fix/x" not in origin_refs(repo)
+
+
+# =============================================================================
+# #2293 archive-before-delete (refs/archive/reap/*) and --list-archives
+# =============================================================================
+
+
+def archive_name(branch: str, tip: str) -> str:
+    return f"refs/archive/reap/{branch}@{tip[:12]}"
+
+
+def d2_branch(repo, name="worker-30-x"):
+    return make_branch(repo, name, "a.txt", "unlanded\n")
+
+
+def test_a1_local_d2_writes_archive_ref_and_reaped_line_carries_it(repo, capsys):
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"})
+    out = lines_of(capsys)
+    ref = archive_name("worker-30-x", tip)
+    assert "worker-30-x" not in branches(repo)
+    assert git(repo, "rev-parse", ref) == tip
+    assert any(
+        ln.startswith("REAPED branch=worker-30-x reason=issue-closed")
+        and ln.endswith(f" tip={tip}")
+        for ln in out
+    )
+    assert not any(ln.startswith(("REAPED", "REAP-FAILED")) and "archive=" in ln for ln in out)
+    archived = f"ARCHIVED branch=worker-30-x where=local ref={ref} tip={tip}"
+    assert archived in out
+    assert out.index(archived) < next(i for i, ln in enumerate(out) if ln.startswith("REAPED"))
+    assert out[-1].endswith("archived=1")
+
+
+def test_a2_archive_at_different_sha_blocks_deletion(repo, capsys):
+    tip = d2_branch(repo)
+    git(repo, "update-ref", archive_name("worker-30-x", tip), "main")
+    reap(repo, issues={30: "closed"})
+    out = lines_of(capsys)
+    assert "worker-30-x" in branches(repo)
+    assert any("KEEP branch=worker-30-x reason=archive-failed" in ln for ln in out)
+    # kept=2: the checked-out main plus the archive-failed branch
+    assert "kept=2" in out[-1] and "failed=0" in out[-1] and "archived=0" in out[-1]
+    assert git(repo, "rev-parse", archive_name("worker-30-x", tip)) != tip
+
+
+def test_a2b_update_ref_failure_blocks_deletion(repo, capsys):
+    tip = d2_branch(repo)
+    flaky = _failing_git(repo, fail_prefix=("update-ref", archive_name("worker-30-x", tip)))
+    reap(repo, issues={30: "closed"}, git=flaky)
+    out = lines_of(capsys)
+    assert "worker-30-x" in branches(repo)
+    assert any("reason=archive-failed" in ln for ln in out)
+    assert "kept=2" in out[-1]
+    assert not git(repo, "for-each-ref", "refs/archive/")
+
+
+def test_a2c_read_back_mismatch_blocks_deletion(repo, capsys):
+    d2_branch(repo)
+    real = readopt.make_git(repo)
+
+    def run(args):
+        if list(args[:3]) == ["rev-parse", "--verify", "-q"]:
+            return 0, "1" * 40
+        return real(args)
+
+    reap(repo, issues={30: "closed"}, git=run)
+    out = lines_of(capsys)
+    assert "worker-30-x" in branches(repo)
+    assert any("reason=archive-failed" in ln for ln in out)
+    assert "kept=2" in out[-1] and "archived=0" in out[-1]
+
+
+def test_a3_existing_archive_at_same_tip_is_idempotent(repo, capsys):
+    tip = d2_branch(repo)
+    git(repo, "update-ref", archive_name("worker-30-x", tip), tip)
+    reap(repo, issues={30: "closed"})
+    out = lines_of(capsys)
+    assert "worker-30-x" not in branches(repo)
+    assert any(ln.startswith("ARCHIVED branch=worker-30-x") for ln in out)
+    assert any(ln.startswith("REAPED branch=worker-30-x") for ln in out)
+    assert git(repo, "rev-parse", archive_name("worker-30-x", tip)) == tip
+
+
+def test_a4_remote_d2_archives_before_delete_and_gates_the_batch(repo, capsys):
+    tips = {}
+    for n in ("a", "b", "c"):
+        name = f"worker-30-{n}"
+        tips[name] = make_branch(repo, name, "a.txt", f"unlanded {n}\n")
+        push_branch(repo, name)
+        git(repo, "branch", "-D", name)
+    order = []
+
+    def rarchive(items):
+        order.append(("archive", list(items)))
+        return {
+            "worker-30-a": True,
+            "worker-30-b": False,
+            "worker-30-c": readopt.PUSH_TIMEOUT,
+        }
+
+    def rdelete(items):
+        order.append(("delete", list(items)))
+        return {b: True for b, _ in items}
+
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=rdelete,
+        remote_archive=rarchive,
+    )
+    out = lines_of(capsys)
+    assert [k for k, _ in order] == ["archive", "delete"]
+    assert order[0][1] == sorted((n, t) for n, t in tips.items())
+    assert order[1][1] == [("worker-30-a", tips["worker-30-a"])]
+    ref_a = archive_name("worker-30-a", tips["worker-30-a"])
+    assert any(ln.startswith("REAPED branch=worker-30-a") for ln in out)
+    assert f"ARCHIVED branch=worker-30-a where=remote ref={ref_a} tip={tips['worker-30-a']}" in out
+    for n in ("b", "c"):
+        want = f"KEEP branch=worker-30-{n} reason=archive-failed where=remote"
+        assert any(want in ln for ln in out)
+    assert not any("REAPED branch=worker-30-b" in ln for ln in out)
+    assert "reaped_remote=1" in out[-1] and "kept=2" in out[-1] and "archived=1" in out[-1]
+    # best-effort local copy exists too
+    assert git(repo, "rev-parse", ref_a) == tips["worker-30-a"]
+
+
+def test_a4b_remote_d2_without_archive_runner_fails_closed(repo, capsys):
+    tip = make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    push_branch(repo, "worker-30-x")
+    git(repo, "branch", "-D", "worker-30-x")
+    deleted = []
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=lambda items: deleted.extend(items) or {},
+    )
+    assert not deleted
+    assert any("KEEP branch=worker-30-x reason=archive-failed" in ln for ln in lines_of(capsys))
+    assert tip
+
+
+def test_a5_non_archive_reasons_write_no_archive_ref(repo, capsys):
+    tip = make_branch(repo, "worker-7-m", "a.txt", "merged work\n")
+    git(repo, "branch", "worker-7-anc", "main")
+    tip2 = make_branch(repo, "worker-8-c", "a.txt", "closed pr work\n")
+    reap(
+        repo,
+        prs=[pr("worker-7-m", tip, merged=True, number=2), pr("worker-8-c", tip2, number=3)],
+        issues={7: "open", 8: "closed"},
+    )
+    out = lines_of(capsys)
+    reasons = {"pr-merged", "landed-ancestor", "pr-closed"}
+    assert {re.search(r"reason=(\S+)", ln).group(1) for ln in out if ln.startswith("REAPED")} == (
+        reasons
+    )
+    assert not any("archive=" in ln for ln in out)
+    assert not git(repo, "for-each-ref", "refs/archive/")
+    assert out[-1].endswith("archived=0")
+
+
+def test_a6_selectors_ignore_archive_refs(repo, capsys):
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"})
+    capsys.readouterr()
+    assert git(repo, "rev-parse", archive_name("worker-30-x", tip)) == tip
+    assert not git(repo, "for-each-ref", "refs/heads/worker-30-*")
+    reap(repo, issues={30: "closed"})
+    out = lines_of(capsys)
+    assert not any("worker-30-x" in ln for ln in out)
+    assert swc._started_stages(str(repo), [30]) == {}
+    readopt.prune_attempts(repo, 30, issue_closed=True, issue_state=lambda n: "closed")
+    assert git(repo, "rev-parse", archive_name("worker-30-x", tip)) == tip
+
+
+def test_a7_restore_recreates_branch_at_old_tip(repo):
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"})
+    assert "worker-30-x" not in branches(repo)
+    git(repo, "branch", "worker-30-x", archive_name("worker-30-x", tip))
+    assert git(repo, "rev-parse", "worker-30-x") == tip
+
+
+def test_a8_dry_run_prints_archive_and_writes_nothing(repo, capsys):
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"}, dry_run=True)
+    out = lines_of(capsys)
+    assert any(
+        ln.startswith("WOULD-REAP branch=worker-30-x reason=issue-closed")
+        and ln.endswith(f"archive={archive_name('worker-30-x', tip)}")
+        for ln in out
+    )
+    assert not git(repo, "for-each-ref", "refs/archive/")
+    assert "worker-30-x" in branches(repo)
+
+
+def test_a9_archive_failure_does_not_consume_deletion_budget(repo, capsys):
+    t1 = make_branch(repo, "worker-30-a", "a.txt", "one\n")
+    make_branch(repo, "worker-30-b", "b.txt", "two\n")
+    git(repo, "update-ref", archive_name("worker-30-a", t1), "main")  # blocks only -a
+    reap(repo, issues={30: "closed"}, max_deletions=1)
+    out = lines_of(capsys)
+    assert any("KEEP branch=worker-30-a reason=archive-failed" in ln for ln in out)
+    assert any(ln.startswith("REAPED branch=worker-30-b") for ln in out)
+    assert not any(ln.startswith("DEFERRED") for ln in out)
+
+
+def test_a10_push_archive_parses_porcelain_and_timeout():
+    items = [("worker-1-a", "a" * 40), ("worker-1-b", "b" * 40)]
+    ref_a = archive_name(*items[0])
+    seen = []
+
+    def run(args, timeout):
+        seen.append(list(args))
+        return 0, f"To x\n*\t{'a' * 40}:{ref_a}\t[new reference]\n!\tb:c\t[rejected]\nDone\n"
+
+    got = readopt._push_archive(run, "u", items)
+    assert got == {"worker-1-a": True, "worker-1-b": False}
+    assert "--force" not in " ".join(seen[0]) and f"{'a' * 40}:{ref_a}" in seen[0]
+    assert readopt._push_archive(lambda a, t: (readopt._RC_TIMEOUT, ""), "u", items) == {
+        "worker-1-a": readopt.PUSH_TIMEOUT,
+        "worker-1-b": readopt.PUSH_TIMEOUT,
+    }
+
+
+def test_a11_list_archives_lists_flags_old_and_deletes_nothing(repo, capsys):
+    old = make_old_branch(repo, "worker-40-old")  # commit dated 2026-01-01
+    git(repo, "checkout", "-q", "main")
+    new = make_branch(repo, "worker-41-new", "b.txt", "n\n")
+    git(repo, "update-ref", archive_name("worker-40-old", old), old)
+    git(repo, "update-ref", archive_name("worker-41-new", new), new)
+    before = ref_snapshot(repo)
+    calls = readopt.github.gh_call_count()
+    far = int(time.time()) + 30 * 86400
+    assert readopt.list_archives(repo, now=far, age_days=45) == 0
+    out = lines_of(capsys)
+    assert readopt.github.gh_call_count() == calls
+    assert ref_snapshot(repo) == before
+    old_ln = next(ln for ln in out if "worker-40-old" in ln)
+    new_ln = next(ln for ln in out if "worker-41-new" in ln)
+    prefix = f"ARCHIVE ref={archive_name('worker-40-old', old)} tip={old} age_days="
+    assert old_ln.startswith(prefix)
+    assert old_ln.endswith("older-than=45d")
+    assert "older-than" not in new_ln
+    assert out[-1] == "ARCHIVES total=2 older=1 threshold_days=45"
+
+
+def test_a12_cli_list_archives_never_reaps(repo, capsys):
+    tip = d2_branch(repo)
+    git(repo, "update-ref", archive_name("worker-30-x", tip), tip)
+    assert readopt.main(["--repo", str(repo), "reap-orphans", "--list-archives"]) == 0
+    out = lines_of(capsys)
+    assert out[-1] == "ARCHIVES total=1 older=0 threshold_days=90"
+    assert "worker-30-x" in branches(repo)
+
+
+def test_a13_check_ref_format_failure_blocks_deletion(repo, capsys):
+    d2_branch(repo)
+    reap(
+        repo,
+        issues={30: "closed"},
+        git=_failing_git(repo, fail_prefix=("check-ref-format",), rc=1),
+    )
+    out = lines_of(capsys)
+    assert "worker-30-x" in branches(repo)
+    assert any("KEEP branch=worker-30-x reason=archive-failed" in ln for ln in out)
+    assert not any(ln.startswith("REAPED") for ln in out)
+    assert not git(repo, "for-each-ref", "refs/archive/")
+
+
+def test_a14_remote_archive_raising_keeps_ref_and_skips_delete(repo, capsys):
+    make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    push_branch(repo, "worker-30-x")
+    git(repo, "branch", "-D", "worker-30-x")
+    deleted = []
+
+    def boom(items):
+        raise RuntimeError("network down")
+
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=lambda items: deleted.extend(items) or {},
+        remote_archive=boom,
+    )
+    out = lines_of(capsys)
+    assert not deleted
+    assert any(ln.startswith("WARN: remote archive failed") for ln in out)
+    assert any("KEEP branch=worker-30-x reason=archive-failed where=remote" in ln for ln in out)
+    assert "worker-30-x" in remote_heads_of(repo)
+
+
+def test_a15_remote_archive_failure_still_uses_budget_so_later_ref_is_deferred(repo, capsys):
+    for n in ("a", "b"):
+        make_branch(repo, f"worker-30-{n}", "a.txt", f"unlanded {n}\n")
+        push_branch(repo, f"worker-30-{n}")
+        git(repo, "branch", "-D", f"worker-30-{n}")
+    reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        max_deletions=1,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=lambda items: {b: True for b, _ in items},
+        remote_archive=lambda items: {b: False for b, _ in items},
+    )
+    out = lines_of(capsys)
+    assert any("KEEP branch=worker-30-a reason=archive-failed" in ln for ln in out)
+    assert any(ln.startswith("DEFERRED branch=worker-30-b") for ln in out)
+
+
+def test_a16_reaped_lines_match_hos_cron_event_regex(repo, capsys):
+    """bin/hos-cron audits REAPED lines with an END-ANCHORED regex; an archived reap must
+    still match it (#2293 regression). The literal is read from the file, not copied."""
+    text = (Path(__file__).resolve().parents[2] / "bin" / "hos-cron").read_text()
+    found = re.findall(r"^\s*_RB_EVENT_RE='([^']+)'$", text, re.MULTILINE)
+    assert len(found) == 1
+    event_re = re.compile(found[0])
+    tip = d2_branch(repo)
+    reap(repo, issues={30: "closed"})
+    reaped = lines_of(capsys, "REAPED")
+    assert len(reaped) == 1
+    m = event_re.match(reaped[0])
+    assert m and m.group(2) == "worker-30-x" and m.group(7) == tip
+
+
+def _real_push_runner(repo: Path):
+    def run(args, timeout):
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *IDENT, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout
+
+    return run
+
+
+def test_a17_push_archive_real_bare_repo_creates_ref_at_tip_and_is_idempotent(repo, tmp_path):
+    tip = make_branch(repo, "worker-50-a", "a.txt", "unlanded\n")
+    origin = str(tmp_path / "origin.git")
+    run = _real_push_runner(repo)
+    items = [("worker-50-a", tip)]
+    ref = readopt._archive_ref("worker-50-a", tip)
+    assert readopt._push_archive(run, origin, items) == {"worker-50-a": True}
+    assert git(tmp_path / "origin.git", "rev-parse", ref) == tip
+    # Second push: porcelain "=" (up to date) still counts as archived.
+    assert readopt._push_archive(run, origin, items) == {"worker-50-a": True}
+
+
+def test_a18_push_archive_real_bare_repo_failure_is_false_and_never_forces(repo, tmp_path):
+    tip = make_branch(repo, "worker-50-b", "a.txt", "unlanded\n")
+    run = _real_push_runner(repo)
+    bad = str(tmp_path / "does-not-exist.git")
+    assert readopt._push_archive(run, bad, [("worker-50-b", tip)]) == {"worker-50-b": False}
+    # A ref already at a different sha is rejected, not overwritten.
+    origin = tmp_path / "origin.git"
+    ref = readopt._archive_ref("worker-50-b", tip)
+    # Divergent (not an ancestor of tip) so a non-forced push is a rejected non-ff.
+    other = make_branch(repo, "worker-50-other", "b.txt", "divergent\n")
+    git(repo, "push", "-q", "origin", "worker-50-other")
+    git(origin, "update-ref", ref, other)
+    assert readopt._push_archive(run, str(origin), [("worker-50-b", tip)]) == {"worker-50-b": False}
+    assert git(origin, "rev-parse", ref) == other
+
+
+def test_a19_push_archive_chunks_over_push_chunk(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(readopt, "PUSH_CHUNK", 2)
+    tips = []
+    for i in range(3):
+        name = f"worker-6{i}-c"
+        tips.append((name, make_branch(repo, name, "a.txt", f"w{i}\n")))
+    calls = []
+    inner = _real_push_runner(repo)
+
+    def run(args, timeout):
+        calls.append(args)
+        return inner(args, timeout)
+
+    got = readopt._push_archive(run, str(tmp_path / "origin.git"), tips)
+    assert got == {n: True for n, _ in tips}
+    assert len(calls) == 2
+
+
+def test_a20_list_archives_rc2_when_for_each_ref_fails(repo, capsys):
+    def bad(args):
+        return 1, ""
+
+    assert readopt.list_archives(repo, git=bad) == 2
+    assert "listing archives failed" in capsys.readouterr().err

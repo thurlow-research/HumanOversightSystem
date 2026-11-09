@@ -31,6 +31,7 @@ Usage
   python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7] \\
       [--local-only | --remote-only] [--max-deletions N] \\
       [--remote-scope worker|all] [--no-issue-closed]
+  python3 -m scripts.automation.readopt reap-orphans --list-archives [--archive-age-days 90]
   python3 -m scripts.automation.readopt delete-head --pr <N>
 
 Exit codes
@@ -46,6 +47,22 @@ Exit codes
 
 Safety
 ------
+``reap-orphans`` is archive-before-delete (#2293): a reap whose tip is neither on base nor
+inside a PR head (ARCHIVE_REASONS; today rule D2 ``issue-closed``) first writes the
+recovery ref ``refs/archive/reap/<branch>@<tip12>`` (local, create-only; for a remote head
+it is also pushed to origin) and deletes only if that succeeded; otherwise it prints
+``KEEP ... reason=archive-failed`` and deletes nothing. A successful write is reported on
+its own line, ``ARCHIVED branch=<b> where=<local|remote> ref=<ref> tip=<sha>``, printed
+before the delete; REAPED/REAP-FAILED lines are unchanged (bin/hos-cron audits them with an
+end-anchored regex). WOULD-REAP lines in a dry run carry ``archive=<ref>``. The ref lives
+outside ``refs/heads``
+so no branch selector sees it. ``--list-archives`` lists them with age and NEVER prunes;
+pruning archives is a separate human-authorized step. RESTORE:
+``git fetch origin refs/archive/reap/<name>@<tip12>:refs/archive/reap/<name>@<tip12>``
+(if only on origin), then ``git branch <name> refs/archive/reap/<name>@<tip12>``.
+Remote heads of closed or merged PRs are deleted without an archive: their commits remain
+reachable from ``refs/pull/N/head``.
+
 Only branches that have an ownership record are ever considered by
 ``reap-landed``; unrecorded leftover branches are never touched there (that is
 ``reap-orphans``' job, human-authorized by #2286). The checked-out branch is
@@ -790,6 +807,63 @@ def _push_delete(
     return result
 
 
+# Reap reasons that delete a tip which is neither on base nor contained in a PR head
+# (refs/pull/N/head), i.e. the only copy of the work. Decided by reason so a future
+# unlanded-deleting rule must be added here explicitly (#2293).
+ARCHIVE_REASONS = frozenset({"issue-closed"})
+ARCHIVE_PREFIX = "refs/archive/reap/"
+
+# [(branch, sha)] -> {branch: True | False | PUSH_TIMEOUT}. Never raises for a per-ref failure.
+RemoteArchive = Callable[["list[tuple[str, str]]"], "dict[str, object]"]
+
+
+def _archive_ref(branch: str, tip: str) -> str:
+    return f"{ARCHIVE_PREFIX}{branch}@{tip[:12]}"
+
+
+def _write_local_archive(git: GitRunner, branch: str, tip: str) -> bool:
+    """Create the archive ref create-only (``update-ref <ref> <tip> ""``). An existing
+    ref at the same tip is success (idempotent re-run); anything else, including a
+    read-back mismatch, is failure."""
+    ref = _archive_ref(branch, tip)
+    rc, _ = git(["check-ref-format", ref])
+    if rc != 0:
+        return False
+    rc, _ = git(["update-ref", ref, tip, ""])
+    if rc != 0:
+        rc, out = git(["rev-parse", "--verify", "-q", ref])
+        return rc == 0 and out == tip
+    rc, out = git(["rev-parse", "--verify", "-q", ref])
+    return rc == 0 and out == tip
+
+
+def _push_archive(
+    run: RemoteRunner, url: str, items: "list[tuple[str, str]]"
+) -> "dict[str, object]":
+    """Push ``<tip>:refs/archive/reap/<branch>@<tip12>`` for every (branch, tip), without
+    force (an existing ref at another sha is rejected). Only a porcelain ``*`` (new) or
+    ``=`` (already identical) line for the ref counts as True; a timed-out chunk reports
+    ``PUSH_TIMEOUT``; everything else is False. Auth goes through ``run``'s environment."""
+    result: "dict[str, object]" = {b: False for b, _ in items}
+    dest = {_archive_ref(b, sha): b for b, sha in items}
+    for start in range(0, len(items), PUSH_CHUNK):
+        chunk = items[start : start + PUSH_CHUNK]
+        args = ["push", "--porcelain", "--no-verify", url]
+        args += [f"{sha}:{_archive_ref(b, sha)}" for b, sha in chunk]
+        rc, out = run(args, PUSH_TIMEOUT_SECS)
+        if rc == _RC_TIMEOUT:
+            for b, _ in chunk:
+                result[b] = PUSH_TIMEOUT
+            continue
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[0] in ("*", "="):
+                name = dest.get(parts[1].partition(":")[2])
+                if name is not None and any(b == name for b, _ in chunk):
+                    result[name] = True
+    return result
+
+
 def _slug_from_origin(git: GitRunner) -> "tuple[str, str]":
     try:
         return parse_remote_url(_git_ok(git, "remote", "get-url", "origin"))
@@ -854,12 +928,33 @@ def _printable_name(name: str) -> str:
     return name if _SAFE_NAME_RE.fullmatch(name) else quote(name, safe="")
 
 
-def _fmt(kind: str, d: _Decision, *, reason: Optional[str] = None, with_pr: bool = False) -> str:
+def _fmt(
+    kind: str,
+    d: _Decision,
+    *,
+    reason: Optional[str] = None,
+    with_pr: bool = False,
+    archive: Optional[str] = None,
+) -> str:
     line = f"{kind} branch={_printable_name(d.ref.name)} reason={reason or d.reason}"
     line += f" where={d.ref.where}"
     if with_pr:
         line += f" pr={d.pr}"
-    return f"{line} tip={d.ref.tip}"
+    line += f" tip={d.ref.tip}"
+    if archive:
+        line += f" archive={archive}"
+    return line
+
+
+def _archived_line(d: _Decision) -> str:
+    """Printed after a successful archive write, before the delete. REAPED/REAP-FAILED
+    lines must stay byte-identical to the pre-#2293 shape: bin/hos-cron audits them with an
+    end-anchored regex, so the archive is reported on its own line instead."""
+    ref = _archive_ref(d.ref.name, d.ref.tip)
+    return (
+        f"ARCHIVED branch={_printable_name(d.ref.name)} where={d.ref.where}"
+        f" ref={_printable_name(ref)} tip={d.ref.tip}"
+    )
 
 
 def _github_pulls(slug: "tuple[str, str]") -> PullsLookup:
@@ -940,6 +1035,7 @@ def reap_orphans(
     issue_states: Optional[IssueStatesLookup] = None,
     remote_heads: Optional[RemoteHeads] = None,
     remote_delete: Optional[RemoteDelete] = None,
+    remote_archive: Optional[RemoteArchive] = None,
     now: Optional[float] = None,
     slug: "Optional[tuple[str, str]]" = None,
     grace_days: int = DEFAULT_GRACE_DAYS,
@@ -961,7 +1057,11 @@ def reap_orphans(
     so a WOULD-REAP can still become KEEP open-pr in the real run.
 
     ``issue_closed=False`` (CLI ``--no-issue-closed``, #2288 S3) suppresses rule D2 only:
-    a closed-issue branch that has not landed is KEPT as ``issue-closed-unlanded``."""
+    a closed-issue branch that has not landed is KEPT as ``issue-closed-unlanded``.
+
+    Archive-before-delete (#2293): a decision whose reason is in ``ARCHIVE_REASONS``
+    writes ``refs/archive/reap/<branch>@<tip12>`` first (``remote_archive`` pushes it to
+    origin for remote heads) and is KEPT as ``archive-failed`` when that fails."""
     if remote_scope not in ("worker", "all"):
         raise ValueError(f"remote_scope must be 'worker' or 'all', got {remote_scope!r}")
     git = git or make_git(repo)
@@ -969,7 +1069,14 @@ def reap_orphans(
     calls_before = github.gh_call_count()
     grace_secs = grace_days * 86400
     decisions: "list[_Decision]" = []
-    counts = {"reaped_local": 0, "reaped_remote": 0, "kept": 0, "failed": 0, "deferred": 0}
+    counts = {
+        "reaped_local": 0,
+        "reaped_remote": 0,
+        "kept": 0,
+        "failed": 0,
+        "deferred": 0,
+        "archived": 0,
+    }
     remote_skipped = 0  # 1 when the remote phase could not run (WARN printed)
     recheck = "skipped" if dry_run else "none"  # "done" once the open-PR re-check ran
 
@@ -979,7 +1086,7 @@ def reap_orphans(
             f"SUMMARY reaped_local={counts['reaped_local']} reaped_remote={counts['reaped_remote']}"
             f" kept={counts['kept']} failed={counts['failed']} deferred={counts['deferred']}"
             f" api_calls={github.gh_call_count() - calls_before} aborted={aborted}"
-            f" remote_skipped={remote_skipped} recheck={recheck}"
+            f" remote_skipped={remote_skipped} recheck={recheck} archived={counts['archived']}"
         )
 
     try:
@@ -1006,6 +1113,7 @@ def reap_orphans(
                 url, run = ops
                 remote_heads = remote_heads or (lambda pat: _ls_remote(run, url, pat))
                 remote_delete = remote_delete or (lambda items: _push_delete(run, url, items))
+                remote_archive = remote_archive or (lambda items: _push_archive(run, url, items))
             else:
                 remote_heads = None
                 remote_skipped = 1
@@ -1188,7 +1296,8 @@ def reap_orphans(
     if dry_run:
         for d in ordered:
             if d.reap:
-                print(_fmt("WOULD-REAP", d, with_pr=True))
+                would = _archive_ref(d.ref.name, d.ref.tip) if d.reason in ARCHIVE_REASONS else None
+                print(_fmt("WOULD-REAP", d, with_pr=True, archive=would))
                 counts["reaped_" + d.ref.where] += 1
             else:
                 print(_fmt("KEEP", d))
@@ -1204,16 +1313,56 @@ def reap_orphans(
             print(_fmt("DEFERRED", d))
             counts["deferred"] += 1
             continue
-        attempted += 1
+        needs_archive = d.reason in ARCHIVE_REASONS
         if d.ref.where == "remote":
+            # Budget is reserved at selection, before the batched archive push: a remote
+            # archive failure still uses its slot, so a later remote ref in the same run
+            # may be DEFERRED although nothing was deleted for the failed one. Only ever
+            # keeps more; the cap is never exceeded.
+            attempted += 1
             remote_batch.append(d)
             continue
+        if needs_archive:
+            # An archive-failed decision is never attempted as a delete, so it does not
+            # consume the --max-deletions budget.
+            if _write_local_archive(git, d.ref.name, d.ref.tip):
+                print(_archived_line(d))
+                counts["archived"] += 1
+            else:
+                print(_fmt("KEEP", d, reason="archive-failed"))
+                counts["kept"] += 1
+                continue
+        attempted += 1
         if _delete_branch(git, d.ref.name, recs_by_branch.get(d.ref.name, []), d.ref.tip):
             print(_fmt("REAPED", d, with_pr=True))
             counts["reaped_local"] += 1
         else:
             print(_fmt("REAP-FAILED", d, reason="delete-failed"))
             counts["failed"] += 1
+    archives: "dict[str, str]" = {}
+    to_archive = [d for d in remote_batch if d.reason in ARCHIVE_REASONS]
+    if to_archive:
+        try:
+            if remote_archive is None:
+                raise GitError("no remote archive runner")
+            archived = remote_archive([(d.ref.name, d.ref.tip) for d in to_archive])
+        except Exception as exc:
+            print(f"WARN: remote archive failed: {_one_line(exc)}")
+            archived = {}
+        for d in to_archive:
+            if archived.get(d.ref.name) is True:
+                archives[d.ref.name] = _archive_ref(d.ref.name, d.ref.tip)
+                print(_archived_line(d))
+                counts["archived"] += 1
+                # Best effort only: the remote copy is what gates the delete.
+                if not _write_local_archive(git, d.ref.name, d.ref.tip):
+                    print(f"WARN: local archive ref not written for {_printable_name(d.ref.name)}")
+            else:
+                print(_fmt("KEEP", d, reason="archive-failed"))
+                counts["kept"] += 1
+        remote_batch = [
+            d for d in remote_batch if d.reason not in ARCHIVE_REASONS or d.ref.name in archives
+        ]
     if remote_batch and remote_delete is not None:
         try:
             outcome = remote_delete([(d.ref.name, d.ref.tip) for d in remote_batch])
@@ -1448,6 +1597,45 @@ def delete_head(
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_ARCHIVE_AGE_DAYS = 90
+
+
+def list_archives(
+    repo: Path,
+    *,
+    git: Optional[GitRunner] = None,
+    now: Optional[float] = None,
+    age_days: int = DEFAULT_ARCHIVE_AGE_DAYS,
+) -> int:
+    """#2293: list local ``refs/archive/reap/*``. Read-only: no deletion, no GitHub or
+    network call. Git records no ref creation time, so the age is the tip COMMIT's age
+    (the same accepted limitation as the remote-head grace)."""
+    git = git or make_git(repo)
+    now = time.time() if now is None else now
+    rc, out = git(
+        [
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(committerdate:unix)",
+            ARCHIVE_PREFIX,
+        ]
+    )
+    if rc != 0:
+        print("readopt: listing archives failed", file=sys.stderr)
+        return 2
+    total = older = 0
+    for line in _lines(out):
+        ref, sha, stamp = line.split("\t")
+        age = max(0, int((now - int(stamp)) // 86400)) if stamp.isdigit() else -1
+        flag = ""
+        if age > age_days:
+            flag = f" older-than={age_days}d"
+            older += 1
+        total += 1
+        print(f"ARCHIVE ref={_printable_name(ref)} tip={sha} age_days={age}{flag}")
+    print(f"ARCHIVES total={total} older={older} threshold_days={age_days}")
+    return 0
+
+
 def _positive_int(value: str) -> int:
     try:
         number = int(value)
@@ -1500,6 +1688,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     only.add_argument("--remote-only", action="store_true")
 
     ro.add_argument(
+        "--list-archives",
+        action="store_true",
+        help="#2293: list refs/archive/reap/* with age and exit; deletes nothing. Pruning"
+        " archives is a separate human-authorized step",
+    )
+    ro.add_argument("--archive-age-days", type=_positive_int, default=DEFAULT_ARCHIVE_AGE_DAYS)
+    ro.add_argument(
         "--no-issue-closed",
         action="store_true",
         help="do not evaluate rule D2 (issue-closed); unlanded closed-issue branches are kept",
@@ -1542,6 +1737,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         if args.cmd == "delete-head":
             return delete_head(repo, args.pr, git=git)
+        if args.cmd == "reap-orphans" and args.list_archives:
+            return list_archives(repo, git=git, age_days=args.archive_age_days)
         if args.cmd == "reap-orphans":
             return reap_orphans(
                 repo,
