@@ -109,8 +109,11 @@ case "$PATH_ARG" in
             else
                 MILESTONE_FIELD='{"title":"v0.6.0 — Astro & JS Support"}'
             fi
-            emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\","\
-"\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],"\
+            NUM="${GH_ISSUE_NUMBER:-$NUM}"
+            PR_FIELD=""
+            [[ "${GH_IS_PR:-}" == "1" ]] && PR_FIELD='"pull_request":{"url":"https://example.invalid/pr"},'
+            emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"${GH_ISSUE_STATE:-open}\","\
+"${PR_FIELD}\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],"\
 "\"assignees\":[{\"login\":\"octocat\"}]}"
         fi
         ;;
@@ -119,6 +122,15 @@ case "$PATH_ARG" in
         ;;
 esac
 exit 0
+"""
+
+
+# Stub delete_branch.sh: records argv (and the order relative to the curl revoke
+# via the shared capture file), prints $DELETE_STUB_OUT, exits $DELETE_STUB_RC.
+DELETE_BRANCH_STUB = """#!/usr/bin/env bash
+echo "DELETE_BRANCH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
+[[ -n "${DELETE_STUB_OUT:-}" ]] && echo "$DELETE_STUB_OUT"
+exit "${DELETE_STUB_RC:-0}"
 """
 
 
@@ -136,6 +148,7 @@ class Harness:
         shutil.copy(EDIT_ISSUE_SH, self.script)
         self.script.chmod(0o755)
         _write_exec(self.bootstrap_dir / "get_app_token.sh", GET_APP_TOKEN_STUB)
+        _write_exec(self.bootstrap_dir / "delete_branch.sh", DELETE_BRANCH_STUB)
 
         self.stub_bin = tmp_path / "stub_bin"
         self.stub_bin.mkdir()
@@ -438,3 +451,101 @@ def test_edge_flags_redirect_to_edit_issue_edges(h, extra):
     assert result.returncode != 0
     assert "bootstrap/edit_issue_edges.sh" in result.stderr
     assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()
+
+
+# --------------------------------------------------------------------------- #
+# Delete-on-close for PRs (#2288 item 2)
+# --------------------------------------------------------------------------- #
+
+CLOSED_PR = {"GH_IS_PR": "1", "GH_ISSUE_STATE": "closed"}
+
+
+def test_ec1_closing_a_pr_deletes_its_head_after_revoke(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed"],
+        env_overrides={**CLOSED_PR, "DELETE_STUB_OUT": "DELETED pr=#201 branch=x tip=abc"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "DELETE_BRANCH_CALLED_WITH:--pr 201 --app worker" in cap
+    assert cap.index("CURL_CALLED_WITH") < cap.index("DELETE_BRANCH_CALLED_WITH")
+    assert result.stdout.splitlines()[-1] == "DELETED pr=#201 branch=x tip=abc"
+
+
+def test_ec2_keep_branch_skips_delete(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed", "--keep-branch"],
+        env_overrides=CLOSED_PR,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DELETE_BRANCH_CALLED_WITH" not in h.capture()
+
+
+def test_ec3_closing_an_issue_never_deletes_and_output_unchanged(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed"],
+        env_overrides={"GH_ISSUE_STATE": "closed"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DELETE_BRANCH_CALLED_WITH" not in h.capture()
+    assert result.stdout == (
+        "#201 milestone=v0.6.0 — Astro & JS Support state=closed labels=needs-ai "
+        "assignees=octocat Test issue 201\n"
+    )
+
+
+def test_ec4_close_that_did_not_take_never_deletes(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed"],
+        env_overrides={"GH_IS_PR": "1", "GH_ISSUE_STATE": "open"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DELETE_BRANCH_CALLED_WITH" not in h.capture()
+
+
+def test_ec5_reopening_a_pr_never_deletes(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "open"],
+        env_overrides={"GH_IS_PR": "1", "GH_ISSUE_STATE": "open"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DELETE_BRANCH_CALLED_WITH" not in h.capture()
+
+
+def test_ec6_kept_is_passed_through_with_warning_exit_0(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed"],
+        env_overrides={
+            **CLOSED_PR,
+            "DELETE_STUB_RC": "3",
+            "DELETE_STUB_OUT": "KEPT pr=#201 branch=x reason=open-pr",
+        },
+    )
+    assert result.returncode == 0
+    assert result.stdout.splitlines()[-1] == "KEPT pr=#201 branch=x reason=open-pr"
+    assert "KEPT" in result.stderr
+
+
+def test_ec7_delete_failure_exits_4_with_recovery_command(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--state", "closed"],
+        env_overrides={**CLOSED_PR, "DELETE_STUB_RC": "2"},
+    )
+    assert result.returncode == 4
+    assert "bash bootstrap/delete_branch.sh --pr 201 --app worker" in result.stderr
+
+
+def test_ec8_keep_branch_without_close_is_usage_error_before_mint(h):
+    result = h.run(["--number", "201", "--app", "worker", "--title", "t", "--keep-branch"])
+    assert result.returncode == 1
+    assert "--keep-branch" in result.stderr
+    assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()
+
+
+def test_ec9_delete_gets_the_verified_pr_number(h):
+    result = h.run(
+        ["--number", "0042", "--app", "worker", "--state", "closed"],
+        env_overrides={**CLOSED_PR, "GH_ISSUE_NUMBER": "42"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DELETE_BRANCH_CALLED_WITH:--pr 42 --app worker" in h.capture()

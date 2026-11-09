@@ -31,6 +31,7 @@ Usage
   python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7] \\
       [--local-only | --remote-only] [--max-deletions N] \\
       [--remote-scope worker|all]
+  python3 -m scripts.automation.readopt delete-head --pr <N>
 
 Exit codes
 ----------
@@ -39,6 +40,9 @@ Exit codes
   2 — git / usage error. For ``review-path`` a caller MUST treat exit 2 as
       ``full`` (fail closed: never skip review on uncertainty). For
       ``reap-orphans`` a failed listing also exits 2, having deleted nothing.
+      ``delete-head``: 0 = head is gone (DELETED or ALREADY-GONE), 2 = error or
+      uncertainty (nothing deleted, or outcome unknown after a push timeout),
+      3 = refused by a safety rule (KEPT; a valid outcome, not a failure).
 
 Safety
 ------
@@ -795,6 +799,16 @@ DEFAULT_GRACE_DAYS = 7
 PER_ISSUE_READ_LIMIT = 20  # at or below this many issue numbers, read them one by one
 
 _SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._/@+-]+")
+
+# The never-touch list, shared by reap-orphans (rule N2) and delete-head.
+PROTECTED_BRANCH_NAMES = ("main", "audit-log")
+PROTECTED_BRANCH_PREFIXES = ("release/", "audit/")
+
+
+def is_protected_branch(name: str) -> bool:
+    return name in PROTECTED_BRANCH_NAMES or name.startswith(PROTECTED_BRANCH_PREFIXES)
+
+
 _WORKER_RE = re.compile(r"worker-(\d+)-")
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
 
@@ -1003,7 +1017,7 @@ def reap_orphans(
         if not _SAFE_NAME_RE.fullmatch(name) or name.startswith("-"):
             keep(ref, "unsafe-name")
             continue
-        if name in ("main", "audit-log") or name.startswith(("release/", "audit/")):
+        if is_protected_branch(name):
             keep(ref, "protected-name")
             continue
         if ref.where == "local":
@@ -1240,8 +1254,132 @@ def _decide_rest(
 
 
 # ---------------------------------------------------------------------------
+# #2288 delete-head (delete the remote head of one closed PR)
+# ---------------------------------------------------------------------------
+
+
+def _full_name(repo_obj: object) -> str:
+    name = repo_obj.get("full_name") if isinstance(repo_obj, dict) else None
+    return name.lower() if isinstance(name, str) else ""
+
+
+def delete_head(
+    repo: Path,
+    pr_number: int,
+    *,
+    git: GitRunner,
+    get_pull: "Optional[Callable[[int], Optional[dict]]]" = None,
+    open_pulls_for: "Optional[Callable[[str], list]]" = None,
+    open_pulls_based_on: "Optional[Callable[[str], list]]" = None,
+    remote_heads: Optional[RemoteHeads] = None,
+    remote_delete: Optional[RemoteDelete] = None,
+    slug: "Optional[tuple[str, str]]" = None,
+) -> int:
+    """Delete the remote head of closed PR ``pr_number``. Prints exactly one
+    result line last on stdout and returns 0 (gone), 2 (error) or 3 (KEPT).
+    Fails closed: every exception becomes ERROR with nothing deleted."""
+
+    def result(code: int, line: str) -> int:
+        print(line)
+        return code
+
+    def error(reason: str) -> int:
+        return result(2, f"ERROR pr=#{pr_number} reason={reason}")
+
+    branch_shown = "-"
+
+    def kept(reason: str) -> int:
+        return result(3, f"KEPT pr=#{pr_number} branch={branch_shown} reason={reason}")
+
+    try:
+        owner, name = slug or _slug_from_origin(git)
+        pr = (get_pull or (lambda n: github.get_pull(owner, name, n)))(pr_number)
+        if not isinstance(pr, dict):
+            return error(f"PR #{pr_number} not found")
+        raw_base = pr.get("base")
+        base: dict = raw_base if isinstance(raw_base, dict) else {}
+        raw_head = pr.get("head")
+        head: dict = raw_head if isinstance(raw_head, dict) else {}
+        raw_base_repo = base.get("repo")
+        base_repo: dict = raw_base_repo if isinstance(raw_base_repo, dict) else {}
+        if _full_name(base_repo) != f"{owner}/{name}".lower():
+            return error("PR is not in this repository")
+        ref = head.get("ref")
+        if isinstance(ref, str):
+            branch_shown = _printable_name(ref)
+        if pr.get("state") != "closed":
+            return kept("pr-open")
+        if _full_name(head.get("repo")) != f"{owner}/{name}".lower():
+            return kept("fork")
+        if not isinstance(ref, str) or not _SAFE_NAME_RE.fullmatch(ref) or ref.startswith("-"):
+            return kept("unsafe-name")
+        if is_protected_branch(ref) or ref == base_repo.get("default_branch"):
+            return kept("protected-name")
+        sha = head.get("sha")
+        if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+            return error("PR head SHA unreadable")
+
+        if remote_heads is None or remote_delete is None:
+            ops = _remote_ops(git, repo)
+            if ops is None:
+                return error("remote phase unavailable")
+            url, run = ops
+            remote_heads = remote_heads or (lambda pat: _ls_remote(run, url, pat))
+            remote_delete = remote_delete or (lambda items: _push_delete(run, url, items))
+
+        def tips() -> "dict[str, str]":
+            return {b: s for b, s in remote_heads(f"refs/heads/{ref}") if b == ref}
+
+        listed = tips()
+        if ref not in listed:
+            return result(0, f"ALREADY-GONE pr=#{pr_number} branch={branch_shown}")
+        if listed[ref] != sha:
+            return result(
+                3,
+                f"KEPT pr=#{pr_number} branch={branch_shown} reason=moved"
+                f" expected={sha} tip={listed[ref]}",
+            )
+        others = (
+            open_pulls_for
+            or (lambda b: github.list_pulls(owner, name, head=f"{owner}:{b}", state="open"))
+        )(ref)
+        for other in others:
+            other_head = other.get("head") if isinstance(other, dict) else None
+            if _full_name(other_head.get("repo") if isinstance(other_head, dict) else None) == (
+                f"{owner}/{name}".lower()
+            ):
+                return kept("open-pr")
+        # Deleting a branch auto-closes any open PR that uses it as its base.
+        stacked = (
+            open_pulls_based_on or (lambda b: github.list_pulls(owner, name, state="open", base=b))
+        )(ref)
+        if stacked:
+            return kept("base-of-open-pr")
+        got = remote_delete([(ref, sha)]).get(ref)
+        if got is True:
+            return result(0, f"DELETED pr=#{pr_number} branch={branch_shown} tip={sha}")
+        if got == PUSH_TIMEOUT:
+            return error("outcome unknown (push timed out)")
+        if ref not in tips():
+            return result(0, f"ALREADY-GONE pr=#{pr_number} branch={branch_shown}")
+        return error("push rejected (CAS lost or branch protection)")
+    except Exception as exc:
+        return error(_one_line(_redact(exc)))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return number
 
 
 def _non_negative_int(value: str) -> int:
@@ -1293,6 +1431,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         " never-touch list stays fixed (main, audit-log, release/*, audit/*)",
     )
 
+    dh = sub.add_parser("delete-head", help="#2288: delete the remote head of one closed PR")
+    dh.add_argument("--pr", type=_positive_int, required=True)
+
     args = ap.parse_args(argv)
     if args.cmd == "reap-orphans" and args.local_only and args.remote_scope is not None:
         ap.error("--remote-scope cannot be combined with --local-only")
@@ -1318,6 +1459,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 max_lookups=args.max_lookups,
             )
             return 0
+        if args.cmd == "delete-head":
+            return delete_head(repo, args.pr, git=git)
         if args.cmd == "reap-orphans":
             return reap_orphans(
                 repo,

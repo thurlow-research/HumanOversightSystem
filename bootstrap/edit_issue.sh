@@ -14,9 +14,25 @@
 #     [--add-label <a,b>] [--remove-label <a,b>] \
 #     [--milestone <title-prefix>|none] [--title <text>] \
 #     [--state open|closed] [--assignee <user,user>] \
-#     [--set-assignee <user,user|none>] [--body-file <path>]
+#     [--set-assignee <user,user|none>] [--body-file <path>] [--keep-branch]
 #
 # At least one edit flag is required.
+#
+# --state closed on a PULL REQUEST also deletes the PR's head branch (#2288
+# item 2): after the close is verified, this script calls
+# bootstrap/delete_branch.sh --pr <N> --app <role>, which mints its own token
+# and deletes the remote head behind safety checks. This is the default;
+# --keep-branch opts out and is valid only with --state closed. For an ISSUE
+# the delete step never runs (no extra call, no extra output).
+# NOTE: a closed PR whose head was deleted cannot be reopened until the branch
+# is restored (GitHub "Restore branch" on the PR). Use --keep-branch when the
+# PR will be reopened or its head reused. The old commits stay at
+# refs/pull/<N>/head either way.
+# The delete result line is the LAST stdout line. Exit codes: 0 = done (a KEPT
+# refusal by delete_branch.sh also exits 0, with a stderr warning); 4 = the
+# close succeeded but the head delete failed (a stderr warning gives the
+# recovery command; re-running the close and the delete is safe, both are
+# idempotent); 1 = any other error.
 #
 # Sub-issue links and blocked_by edges are NOT edited here: use
 # bootstrap/edit_issue_edges.sh (one edge per call, read-back verified).
@@ -73,6 +89,7 @@ STATE=""
 ASSIGNEES=""
 SET_ASSIGNEES=""
 BODY_FILE=""
+KEEP_BRANCH=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -86,10 +103,11 @@ while [[ $# -gt 0 ]]; do
         --assignee)     ASSIGNEES="$2"; shift 2 ;;
         --set-assignee) SET_ASSIGNEES="$2"; shift 2 ;;
         --body-file)    BODY_FILE="$2"; shift 2 ;;
+        --keep-branch)  KEEP_BRANCH=1; shift ;;
         --parent|--remove-parent|--add-parent|--add-blocked-by|--remove-blocked-by|--sub-issue|--sub-issues)
             err "sub-issue links and blocked_by edges are edited with bootstrap/edit_issue_edges.sh --number <N> --app <role> (--add-parent|--remove-parent|--add-blocked-by|--remove-blocked-by) <M> — see its header" ;;
         --body)         err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
-        *) err "Usage: $0 --number <N> --app <worker|overseer|human> [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>|none] [--title <text>] [--state open|closed] [--assignee <user,user>] [--set-assignee <user,user|none>] [--body-file <path>]" ;;
+        *) err "Usage: $0 --number <N> --app <worker|overseer|human> [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>|none] [--title <text>] [--state open|closed] [--assignee <user,user>] [--set-assignee <user,user|none>] [--body-file <path>] [--keep-branch]" ;;
     esac
 done
 
@@ -107,6 +125,9 @@ if [[ -n "$STATE" ]]; then
         open|closed) ;;
         *) err "--state must be 'open' or 'closed'" ;;
     esac
+fi
+if [[ "$KEEP_BRANCH" -eq 1 && "$STATE" != "closed" ]]; then
+    err "--keep-branch is valid only together with --state closed"
 fi
 if [[ -z "$ADD_LABELS$REMOVE_LABELS$MILESTONE_ARG$TITLE$STATE$ASSIGNEES$SET_ASSIGNEES$BODY_FILE" ]]; then
     err "at least one edit flag is required (--add-label, --remove-label, --milestone, --title, --state, --assignee, --set-assignee, --body-file)"
@@ -220,9 +241,38 @@ if [[ -n "$ASSIGNEES" ]]; then
 fi
 
 # ── verify and print the resulting state — never assume the write took ───────
-RESULT="$(gh api "repos/${REPO_SLUG}/issues/${NUMBER}" --jq \
-    '"#\(.number) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) assignees=\(.assignees | map(.login) | join(",")) \(.title)"')" \
+# Fetched once (no --jq); RESULT, IS_PR and the PR number all come from this JSON.
+ISSUE_JSON="$(gh api "repos/${REPO_SLUG}/issues/${NUMBER}")" \
     || fail "edit(s) applied but failed to verify resulting state for issue #${NUMBER}"
+RESULT="$(jq -r \
+    '"#\(.number) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) assignees=\(.assignees | map(.login) | join(",")) \(.title)"' \
+    <<<"$ISSUE_JSON")" \
+    || fail "edit(s) applied but failed to verify resulting state for issue #${NUMBER}"
+
+# Delete the head only for a PR whose close is VERIFIED (never on a no-op close
+# that did not take). PR_NUMBER is the verified .number: --number accepts 0 and
+# leading zeros, delete_branch.sh does not.
+DELETE_HEAD=0
+PR_NUMBER=""
+if [[ "$STATE" == "closed" && "$KEEP_BRANCH" -eq 0 ]]; then
+    if [[ "$(jq -r '(.pull_request != null) and (.state == "closed")' <<<"$ISSUE_JSON")" == "true" ]]; then
+        PR_NUMBER="$(jq -r '.number' <<<"$ISSUE_JSON")"
+        DELETE_HEAD=1
+    fi
+fi
 
 revoke_token
 echo "$RESULT"
+
+if [[ "$DELETE_HEAD" -eq 1 ]]; then
+    rc=0
+    bash "$SCRIPT_DIR/delete_branch.sh" --pr "$PR_NUMBER" --app "$APP_ROLE" || rc=$?
+    case "$rc" in
+        0) ;;
+        3) warn "PR #${PR_NUMBER} closed; its head branch was KEPT by a safety rule (see the KEPT line above)" ;;
+        *)
+            warn "PR #${PR_NUMBER} is closed but deleting its head branch failed (delete_branch.sh exit ${rc}); recover with: bash bootstrap/delete_branch.sh --pr ${PR_NUMBER} --app ${APP_ROLE}"
+            exit 4
+            ;;
+    esac
+fi
