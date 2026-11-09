@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"bbf4d832833f507bc09ccf8a6885525ff4dbf196","pr":2300,"reason":"same head, no new commits/reviews/comments since 05:59Z HUMAN_REQUIRED verdict; matrix re-run HUMAN_REQUIRED; submit-verdict skipped interim_signoff_on_head","timestamp":"2026-11-09T06:13:04Z"}
