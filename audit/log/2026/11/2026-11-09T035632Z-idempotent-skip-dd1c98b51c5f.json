@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"7df7e4fae744f87e13b89486e332ee0f50cce904","pr":2296,"reason":"No change since the 03:43Z PROPOSE_ONLY interim sign-off (expected APPROVE, LOW): same head, ScottThurlow review requested, no human review or comment since. No new verdict or comment."}
