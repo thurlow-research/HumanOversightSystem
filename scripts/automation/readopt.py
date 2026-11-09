@@ -542,7 +542,7 @@ def prune_attempts(
     names = [n for _, n in attempts]
 
     if issue_closed:
-        doomed = _closed_issue_survivors(git, names, tips, issue, base, issue_states, slug)
+        doomed = _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug)
     else:
         if keep is not None:
             if keep not in names:
@@ -582,7 +582,7 @@ def prune_attempts(
     return deleted
 
 
-def _closed_issue_survivors(git, names, tips, issue, base, issue_states, slug) -> "list[str]":
+def _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug) -> "list[str]":
     """The attempts of a closed ``issue`` that are safe to delete (#2291): those
     whose commits reference no issue other than ``issue`` that is not closed."""
     others: "dict[str, set[int]]" = {}
@@ -604,12 +604,18 @@ def _closed_issue_survivors(git, names, tips, issue, base, issue_states, slug) -
         states = (issue_states or _github_issue_states(slug or _slug_from_origin(git)))(needed)
     except Exception as exc:  # never delete on uncertainty
         for name in others:
-            print(f"WARN: '{name}' kept — cannot verify its other referenced issues: {_one_line(exc)}")
+            print(
+                f"WARN: '{name}' kept — cannot verify its other referenced issues: {_one_line(exc)}"
+            )
         return safe
     for name, extra in others.items():
-        bad = [f"#{n} ({states.get(n, 'unknown')})" for n in sorted(extra) if states.get(n) != "closed"]
+        bad = [
+            f"#{n} ({states.get(n, 'unknown')})" for n in sorted(extra) if states.get(n) != "closed"
+        ]
         if bad:
-            print(f"WARN: '{name}' kept — its commits reference issue(s) not closed: {', '.join(bad)}")
+            print(
+                f"WARN: '{name}' kept — its commits reference issue(s) not closed: {', '.join(bad)}"
+            )
         else:
             safe.append(name)
     return safe
