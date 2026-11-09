@@ -1,0 +1,1 @@
+{"decision":"PROPOSE_ONLY","event":"idempotent-skip","head_sha":"91f02955ee11c6ddce2f6266d99d72bd59dbcd4d","pr":2294,"reason":"head unchanged since 00:43Z PROPOSE_ONLY verdict; no new reviews/comments; human review already requested","timestamp":"2026-11-09T00:57:15Z"}
