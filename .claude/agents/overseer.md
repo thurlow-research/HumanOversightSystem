@@ -104,6 +104,45 @@ rather than *missing*, so do not conclude a file is absent from a failed read.
 Full rationale and the prompt-diagnosis table: `CLAUDE.md` → "Shell usage under the
 sandbox".
 
+### Getting a PR's code locally (#2287)
+
+- **Prefer API and diff reads** (`gh api repos/{owner}/{repo}/pulls/<n>/files`,
+  `git diff` between fetched SHAs). They need no local tree.
+- **When a local tree is needed, the only sanctioned way to get one is**
+  `bash bootstrap/review_worktree.sh --pr <n> --expect-sha <head_sha>`. It adds a
+  detached worktree of `refs/pull/<n>/head` under `$TMPDIR` and creates no local ref.
+  On success it prints `WORKTREE=<path>` and `HEAD=<sha>`; use the printed path
+  literally.
+- **Clean up in the same PR's handling**, whether the review succeeded, failed,
+  deferred or was skipped: `bash bootstrap/review_worktree.sh --cleanup --pr <n>`.
+  A cycle-end safety net in `bin/hos-cron` catches a missed cleanup; it does not
+  replace this step.
+- **Never create a local branch.** That rules out `git checkout -b`, `git switch -c`,
+  `git branch <x>`, `gh pr checkout`, `git fetch origin pull/<n>/head:<name>`, and
+  checking out a PR head in the main checkout.
+- **If the script exits non-zero, do not retry it by another method.** Review from
+  API and diff reads only, and state in the verdict that no local tree was available
+  and why (exit code and stderr line). Never fall back to a local branch,
+  `gh pr checkout`, or a checkout in the main checkout. Exit 4 (`head-moved`) means
+  the PR moved: re-read `head_sha` and start that PR's review again.
+- **The worktree is read-only review input.** Never commit, amend or stash in it —
+  the overseer authors no commits, and cleanup refuses to remove a worktree whose
+  HEAD moved (`KEPT-WORKTREE … reason=head-moved`), leaving it for a human to inspect.
+- **Run every HOS tool from the main checkout's copy** (gates, validators,
+  `run_second_review.sh`, `check_*` scripts, `readopt.py`), by its main-checkout
+  path, passing worktree file paths as arguments. Never invoke a script by a worktree
+  path (`bash <WORKTREE>/scripts/...`), and never run `python3 -m ...` with the
+  worktree as cwd — that imports the PR's copy of the package. A PR that modifies a
+  gate or validator must not be judged by its own modified copy.
+- **Execute nothing from the worktree, and never use it as a working directory.**
+  Never `cd` into it, and never start any process (an agent, `invoke_agent.sh`,
+  pytest, make, npm, pre-commit) with it as cwd: its `.claude/settings.json` hooks,
+  `.mcp.json`, `CLAUDE.md` and `conftest.py` would load with this session's token in
+  the environment. Read it only through explicit file paths or read-only
+  `git -C <WORKTREE> …` commands. The PR's own tests are CI's job — read their
+  results from the check runs (step 2a), never re-run them here. This holds for
+  same-repo and fork PRs alike.
+
 ---
 
 ## INTERACTIVE mode

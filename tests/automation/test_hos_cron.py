@@ -4142,6 +4142,166 @@ class TestBranchReap:
         assert cron.branch_exists(branch), "reap sweep must never run for role=overseer"
 
 
+# ──────────────── Overseer branch hygiene wiring (#2287, H1-H6) ────────────────
+SHA7 = "ab" * 20
+
+
+class TestOverseerBranchHygiene:
+    """The overseer cycle runs `readopt reap-orphans --local-only` once a day (dry-run by
+    default, mode set by the operator) and, at cycle end, sweeps stale review worktrees."""
+
+    def _stubs(self, cron, out="", rc=0):
+        """Stub readopt and review_worktree.sh: each records its argv; readopt prints `out`."""
+        cron.readopt_log = cron.repo.parent / "readopt_argv.log"
+        cron.cleanup_log = cron.repo.parent / "cleanup_argv.log"
+        out_file = cron.repo.parent / "readopt_out.txt"
+        out_file.write_text(out)
+        stub = cron.repo / "scripts" / "automation" / "readopt.py"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            "import sys\n"
+            f"open({str(cron.readopt_log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+            f"sys.stdout.write(open({str(out_file)!r}).read())\n"
+            f"sys.exit({rc})\n"
+        )
+        _write_exec(
+            cron.repo / "bootstrap" / "review_worktree.sh",
+            "#!/usr/bin/env bash\n"
+            f'echo "$*" >> "{cron.cleanup_log}"\n'
+            'echo "REMOVED-WORKTREE pr=7 path=/x/hos-review-pr7.abcdef/wt"\n'
+            'echo "KEPT-WORKTREE pr=8 path=/x/hos-review-pr8.abcdef/wt reason=head-moved" >&2\n',
+        )
+        cron.install_cycle_log()
+        cron.git_init_main_repo()
+
+    def _run(self, cron, **env):
+        env.setdefault("HOS_TEST_OPEN_PR_NUMS", "123")
+        return cron.run(role="overseer", env_overrides=env)
+
+    def _invocations(self, cron):
+        log = cron.readopt_log
+        return log.read_text().splitlines() if log.exists() else []
+
+    def stamp(self, cron):
+        return cron.state / "branch-reap" / "overseer-hos.last"
+
+    def test_h1_default_mode_is_dry_run_local_only_and_stamps(self, cron):
+        self._stubs(cron)
+        r = self._run(cron)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._invocations(cron) == [
+            "reap-orphans --local-only --max-deletions 100 --dry-run"
+        ]
+        assert self.stamp(cron).exists()
+
+    @pytest.mark.parametrize(
+        "mode,expect",
+        [
+            ("on", ["reap-orphans --local-only --max-deletions 100"]),
+            ("off", []),
+            ("bogus", []),
+        ],
+    )
+    def test_h2_modes(self, cron, mode, expect):
+        self._stubs(cron)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP=mode)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._invocations(cron) == expect
+        invalid = cron.audit_records("cycle-branch-reap-config-invalid")
+        if mode == "bogus":
+            assert "unrecognized overseer_branch_reap value 'bogus'" in r.stdout
+            assert len(invalid) == 1 and invalid[0]["value"] == "bogus"
+            assert invalid[0]["role"] == "overseer"
+        else:
+            assert not invalid
+
+    def test_h2_projects_conf_value_is_read_and_env_wins(self, cron):
+        self._stubs(cron)
+        with (cron.home / ".config" / "hos" / "projects.conf").open("a") as f:
+            f.write("hos_overseer_branch_reap=on\n")
+        self._run(cron)
+        assert self._invocations(cron) == ["reap-orphans --local-only --max-deletions 100"]
+        self.stamp(cron).unlink()
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="off")
+        assert len(self._invocations(cron)) == 1
+
+    def test_h3_stamp_younger_than_24h_skips_and_older_runs(self, cron):
+        self._stubs(cron)
+        self.stamp(cron).parent.mkdir(parents=True)
+        self.stamp(cron).touch()
+        self._run(cron)
+        assert self._invocations(cron) == []
+        old = time.time() - 25 * 3600
+        os.utime(self.stamp(cron), (old, old))
+        self._run(cron)
+        assert len(self._invocations(cron)) == 1
+
+    def test_h3_failing_run_still_stamps(self, cron):
+        self._stubs(cron, rc=2)
+        r = self._run(cron)
+        assert "readopt reap-orphans (overseer) failed (rc=2)" in r.stdout
+        assert self.stamp(cron).exists()
+
+    def test_h4_worker_role_never_runs_the_overseer_block(self, cron):
+        self._stubs(cron)
+        r = cron.run(role="worker")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not any("--local-only" in ln for ln in self._invocations(cron))
+        assert not cron.cleanup_log.exists()
+        assert "readopt-overseer" not in r.stdout
+        assert not self.stamp(cron).exists()
+
+    @pytest.mark.parametrize("claude_exit", ["0", "1"])
+    def test_h5_cycle_end_sweeps_review_worktrees_even_when_claude_fails(self, cron, claude_exit):
+        self._stubs(cron)
+        r = self._run(cron, HOS_TEST_CLAUDE_EXIT=claude_exit)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.cleanup_log.read_text().splitlines() == [
+            f"--repo {cron.repo} --cleanup-all --older-than-mins 60"
+        ]
+        assert "review-worktree: REMOVED-WORKTREE pr=7" in r.stdout
+        assert "review-worktree: KEPT-WORKTREE pr=8" in r.stdout
+        (rec,) = cron.audit_records("cycle-review-worktree-cleanup")
+        assert (rec["removed"], rec["kept"]) == (1, 1)
+        assert rec["role"] == "overseer"
+        assert "WARN: 1 review worktree(s) kept" in r.stdout
+        assert "human must inspect (#2287)" in r.stdout
+
+    def test_h2_invalid_config_value_is_sanitised_and_capped(self, cron):
+        self._stubs(cron)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="x\x07y" + "z" * 200)
+        assert "\x07" not in r.stdout
+        (rec,) = cron.audit_records("cycle-branch-reap-config-invalid")
+        assert rec["value"].startswith("xyz") and len(rec["value"]) == 64
+
+    def test_h5_sweep_runs_before_the_audit_sync_in_the_launcher(self):
+        text = HOS_CRON.read_text()
+        sweep = text.index("--cleanup-all --older-than-mins 60")
+        assert sweep < text.index('\n_sync_audit_logs "$REPO_ROOT"\n')
+
+    def test_h6_reaped_lines_are_audited_even_when_the_run_times_out(self, cron):
+        line = f"REAPED branch=pr-7-review reason=review-pr-done where=local pr=#7 tip={SHA7}"
+        self._stubs(cron, out=line + "\nnot a REAPED line\n", rc=124)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "failed (rc=124 timeout)" in r.stdout
+        (rec,) = cron.audit_records("cycle-branch-reap")
+        assert rec["role"] == "overseer" and rec["branch"] == "pr-7-review"
+        assert (rec["reason"], rec["where"], rec["pr"], rec["tip"]) == (
+            "review-pr-done",
+            "local",
+            "#7",
+            SHA7,
+        )
+
+    def test_h6_reap_failed_line_audits_with_dash_pr(self, cron):
+        self._stubs(
+            cron, out=f"REAP-FAILED branch=pr-7 reason=delete-failed where=local tip={SHA7}\n"
+        )
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (rec,) = cron.audit_records("cycle-branch-reap-failed")
+        assert rec["pr"] == "-" and rec["reason"] == "delete-failed"
+
+
 # ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
 class TestTimeoutBreaker:
     """A claude session killed at the wall-clock cap (exit=124) becomes a

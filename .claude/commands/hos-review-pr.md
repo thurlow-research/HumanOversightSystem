@@ -35,6 +35,7 @@ When invoked, the overseer should:
 
 1. **Identity check**: verify `$HOS_BOT_LOGIN` equals `hos-overseer-hos[bot]` (GitHub App tokens cannot call `GET /user` — use the env var set by `bootstrap/get_app_token.sh --app overseer`)
 2. Read the PR: `gh pr view <number>`
+   - If you need the PR's code on disk, use `bash bootstrap/review_worktree.sh --pr <number> --expect-sha <head_sha>` (detached worktree, no local branch; use the printed `WORKTREE=` path), and when done run `bash bootstrap/review_worktree.sh --cleanup --pr <number>` — see `overseer.md` §"Getting a PR's code locally (#2287)"
 3. Check for `panel-context.md`: `.claudetmp/oversight/step<N>-panel-context.md`
 4. If panel hasn't run: run `./scripts/run_panel.sh <number>`
 5. Wait for panel to complete; read the verdict from the panel output
@@ -51,4 +52,7 @@ When invoked, the overseer should:
 - **Never** merge above OVERSEER_CEILING (check `scripts/framework/machine-accounts.env`)
 - **Never** merge when `hos-halt` label is present on any open issue
 - **Never** operate outside the repo established at session start
+- **Never** create a local branch to review a PR (no `git checkout -b`, `gh pr checkout`, or `git fetch origin pull/<n>/head:<name>`) — use `bootstrap/review_worktree.sh` (#2287)
+- **Never** run HOS tooling from the PR worktree — run it from the main checkout, passing worktree paths as arguments (#2287)
+- **Never** `cd` into the PR worktree, start any process with it as cwd, or execute anything from it — read it by explicit paths or read-only `git -C` only (#2287)
 - Batch merge: serialize one at a time, re-check approval before each (dismiss_stale_reviews)

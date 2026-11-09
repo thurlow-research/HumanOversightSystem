@@ -1857,6 +1857,267 @@ def test_remote_head_with_unreadable_commit_date_is_kept_as_git_error(repo, caps
 
 
 # =============================================================================
+# #2287: D4 review-named branches, N2a audit-branch names, N6 audit-record guard
+# =============================================================================
+
+# Copied from bin/hos-cron (_RB_EVENT_RE, the overseer reap-orphans audit hook).
+# Group indices (A10): 1 kind, 2 branch, 3 reason, 4 where, 6 pr, 7 tip.
+RB_EVENT_RE = re.compile(
+    r"^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)"
+    r"( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$"
+)
+REVIEW_NAMES = ["pr-7-review", "pr7", "pr7-check", "pr-7-new", "pr7-12"]
+
+
+def ref_snapshot(repo):
+    return git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+
+
+def review_copies(repo, names, sha):
+    for n in names:
+        git(repo, "branch", n, sha)
+
+
+def make_record_branch(repo, name, relpath="audit/log/2026/06/rec.json", text="{}\n"):
+    git(repo, "checkout", "-q", "-b", name, "main")
+    (repo / relpath).parent.mkdir(parents=True, exist_ok=True)
+    tip = commit(repo, relpath, text, f"record on {name}")
+    git(repo, "checkout", "-q", "main")
+    return tip
+
+
+def test_r1_review_copies_of_merged_pr_are_reaped(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, REVIEW_NAMES, tip)
+    assert reap(repo, prs=[pr("worker-x", tip, merged=True, number=7)]) == 0
+    out = lines_of(capsys)
+    for n in REVIEW_NAMES:
+        assert f"REAPED branch={n} reason=review-pr-done where=local pr=#7 tip={tip}" in out
+    assert not (set(REVIEW_NAMES) & branches(repo))
+
+
+def test_r2_closed_unmerged_and_non_main_base_review_copies_are_reaped(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, ["pr-7-review"], tip)
+    reap(repo, prs=[pr("worker-x", tip, number=7)])
+    assert (
+        "REAPED branch=pr-7-review reason=review-pr-done where=local pr=#7 " + f"tip={tip}"
+        in lines_of(capsys)
+    )
+    review_copies(repo, ["pr7"], tip)
+    reap(repo, prs=[pr("worker-x", tip, merged=True, number=7, base="release-x")])
+    assert "REAPED branch=pr7 reason=review-pr-done where=local pr=#7 " + f"tip={tip}" in lines_of(
+        capsys
+    )
+
+
+def test_r3_open_pr_review_copy_is_stale_after_grace_only(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, ["pr-7-review"], tip)
+    prs = [pr("worker-x", tip, state="open", number=7)]
+    reap(repo, prs=prs, now=time.time() + 60, dry_run=True)
+    assert any("KEEP branch=pr-7-review reason=grace" in ln for ln in lines_of(capsys))
+    assert "pr-7-review" in branches(repo)
+    reap(repo, prs=prs)
+    assert f"REAPED branch=pr-7-review reason=review-stale where=local pr=#7 tip={tip}" in lines_of(
+        capsys
+    )
+    assert "pr-7-review" not in branches(repo)
+
+
+def test_r4_mismatch_unknown_and_non_review_names(repo, capsys):
+    git(repo, "checkout", "-q", "-b", "src", "main")
+    first = commit(repo, "a.txt", "one\n", "first")
+    second = commit(repo, "a.txt", "two\n", "second")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "branch", "pr-7-review", second)
+    git(repo, "branch", "pr-9-review", first)
+    git(repo, "branch", "pr-7-foo", first)
+    reap(repo, prs=[pr("worker-x", first, merged=True, number=7)], dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "KEEP branch=pr-7-review reason=review-pr-sha-mismatch" in out
+    assert "KEEP branch=pr-9-review reason=review-pr-unknown" in out
+    assert "KEEP branch=pr-7-foo reason=unlanded-no-pr" in out
+
+
+R5_NAMES = ["audit/x", "chore/audit-overseer-cycle-x", "chore/overseer-audit-x"]
+
+
+@pytest.mark.parametrize("mode", ["real", "capped", "dry"])
+@pytest.mark.parametrize("scenario", ["ancestor", "content", "merged-pr", "closed-pr", "aged"])
+def test_r5_audit_patterns_are_never_touched(repo, capsys, scenario, mode):
+    prs = []
+    for i, name in enumerate(R5_NAMES):
+        if scenario == "ancestor":
+            git(repo, "branch", name, "main")
+        elif scenario == "content":
+            make_branch(repo, name, "c.txt", "x\n")
+        else:
+            tip = make_branch(repo, name, "a.txt", f"edit {i}\n")
+            if scenario in ("merged-pr", "closed-pr"):
+                prs.append(pr(name, tip, merged=scenario == "merged-pr", number=10 + i))
+    if scenario == "content":
+        advance_main(repo, "c.txt", "x\n")
+    before = ref_snapshot(repo)
+    kw = {"dry_run": True} if mode == "dry" else {}
+    if mode == "capped":
+        kw["max_deletions"] = 1
+    assert reap(repo, prs=prs, **kw) == 0
+    out = "\n".join(lines_of(capsys))
+    assert ref_snapshot(repo) == before
+    for name in R5_NAMES:
+        reason = "protected-name" if name.startswith("audit/") else "audit-branch"
+        if mode == "dry":
+            assert f"KEEP branch={name} reason={reason} where=local" in out
+        assert f"WOULD-REAP branch={name} " not in out and f"REAPED branch={name} " not in out
+
+
+def test_r6_audit_content_guard(repo, capsys):
+    t_fix_x = make_record_branch(repo, "fix/x")
+    t_fix_y = make_record_branch(repo, "fix/y", "audit/oversight-log.jsonl", '{"a":1}\n')
+    make_record_branch(repo, "worker-5-x")
+    t_rev = make_record_branch(repo, "pr-7-review", "audit/log/2026/06/rev.json")
+    t_ok = make_record_branch(repo, "fix/z", "audit/log/2026/06/ok.json")
+    prs = [
+        pr("fix/x", t_fix_x, number=3),
+        pr("fix/y", t_fix_y, number=4),
+        pr("worker-r", t_rev, number=7),
+        pr("fix/z", t_ok, merged=True, number=6),
+    ]
+    reap(repo, prs=prs, issues={5: "closed"}, dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    for n in ("fix/x", "fix/y", "worker-5-x", "pr-7-review"):
+        assert f"KEEP branch={n} reason=audit-content where=local" in out
+    assert re.search(r"WOULD-REAP branch=fix/z reason=pr-merged where=local pr=#6", out)
+    reap(repo, prs=prs, issues={5: "closed"})
+    assert branches(repo) >= {"fix/x", "fix/y", "worker-5-x", "pr-7-review"}
+    assert "fix/z" not in branches(repo)
+
+
+def test_r6_guard_git_error_keeps(repo, capsys):
+    tip = make_old_branch(repo, "pr-7-review")
+    real = readopt.make_git(repo)
+
+    def failing(args):
+        return (
+            (128, "") if args[:1] == ["merge-base"] and "--is-ancestor" not in args else real(args)
+        )
+
+    reap(repo, prs=[pr("worker-x", tip, number=7)], git=failing, dry_run=True)
+    assert any("KEEP branch=pr-7-review reason=git-error" in ln for ln in lines_of(capsys))
+
+
+def test_r7_dry_run_reports_review_candidates(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, ["pr-7-review"], tip)
+    before = ref_snapshot(repo)
+    reap(repo, prs=[pr("worker-x", tip, merged=True, number=7)], dry_run=True)
+    assert (
+        f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=local pr=#7 tip={tip}"
+        in lines_of(capsys)
+    )
+    assert ref_snapshot(repo) == before
+
+
+def test_r8_pulls_failure_aborts_with_zero_deletions(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, ["pr-7-review"], tip)
+    before = ref_snapshot(repo)
+
+    def boom(state):
+        raise RuntimeError("api down")
+
+    assert (
+        readopt.reap_orphans(repo, slug=SLUG, now=FAR, pulls=boom, issue_states=lambda n: {}) == 2
+    )
+    assert "aborted=1" in "\n".join(lines_of(capsys))
+    assert ref_snapshot(repo) == before
+
+
+def test_r10_event_regex_and_group_indices(repo, capsys):
+    tip = make_old_branch(repo, "src")
+    review_copies(repo, ["pr-7-review"], tip)
+    reap(repo, prs=[pr("worker-x", tip, merged=True, number=7)])
+    line = next(ln for ln in lines_of(capsys) if ln.startswith("REAPED branch=pr-7-review"))
+    m = RB_EVENT_RE.match(line)
+    assert m and (m[1], m[2], m[3], m[4], m[6], m[7]) == (
+        "REAPED",
+        "pr-7-review",
+        "review-pr-done",
+        "local",
+        "#7",
+        tip,
+    )
+    failed = RB_EVENT_RE.match(
+        f"REAP-FAILED branch=pr-7-review reason=delete-failed where=local tip={tip}"
+    )
+    assert failed and failed[6] is None and failed[7] == tip and failed[3] == "delete-failed"
+
+
+def test_r11_real_pr_head_named_like_a_review_copy_is_not_d4(repo, capsys):
+    git(repo, "checkout", "-q", "-b", "src", "main")
+    p456 = commit(repo, "a.txt", "one\n", "first")
+    beyond = commit(repo, "a.txt", "two\n", "second")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "branch", "pr-123-review", beyond)
+    git(repo, "branch", "pr-7", p456)
+    prs = [
+        pr("pr-123-review", p456, number=456),
+        pr("worker-y", beyond, merged=True, number=123),
+        pr("pr-7", p456, state="open", number=9),
+    ]
+    reap(repo, prs=prs, dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "KEEP branch=pr-123-review reason=unlanded-pr-sha-mismatch" in out
+    assert "review-pr-done" not in out
+    assert "KEEP branch=pr-7 reason=open-pr" in out
+
+
+def test_r6_diff_failure_in_guard_keeps_as_git_error(repo, capsys):
+    tip = make_record_branch(repo, "fix/x")
+    real = readopt.make_git(repo)
+
+    def failing(args):
+        return (128, "") if args[:1] == ["diff"] and "--name-only" in args else real(args)
+
+    reap(repo, prs=[pr("fix/x", tip, number=3)], git=failing, dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "KEEP branch=fix/x reason=git-error where=local" in out
+    assert "WOULD-REAP branch=fix/x" not in out
+
+
+def test_r6_guard_does_not_block_landed_ancestor_with_records(repo, capsys):
+    # N6 (design 4.2) is not applied to D3: records that are on main are safe to reap.
+    make_record_branch(repo, "fix/landed")
+    git(repo, "merge", "-q", "--ff-only", "fix/landed")
+    git(repo, "push", "-q", "origin", "main")
+    git(repo, "fetch", "-q", "origin")
+    reap(repo, prs=[], dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "WOULD-REAP branch=fix/landed reason=landed-" in out
+    assert "reason=audit-content" not in out
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["worker-1517-audit-sync-x", "chore/audit-sync", "chore/overseer-x", "fix/overseer-audit"],
+)
+def test_n2a_matches_exact_prefixes_not_the_substring_audit(repo, capsys, name):
+    tip = make_branch(repo, name, "a.txt", "edit\n")
+    reap(repo, prs=[pr(name, tip, number=21)], issues={1517: "closed"}, dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert f"WOULD-REAP branch={name} reason=pr-closed" in out
+    assert "reason=audit-branch" not in out
+
+
+def test_n2a_audit_branch_kept_even_when_current_or_checked_out(repo, capsys):
+    git(repo, "checkout", "-q", "-b", "chore/overseer-audit-9", "main")
+    reap(repo, prs=[], dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "KEEP branch=chore/overseer-audit-9 reason=audit-branch where=local" in out
+
+
+# =============================================================================
 # #2288 S1: reap-orphans --remote-scope all (remote janitor for non-worker heads)
 # =============================================================================
 

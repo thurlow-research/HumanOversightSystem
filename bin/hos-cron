@@ -1738,6 +1738,62 @@ if [[ "$ROLE" == "worker" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]]; t
   fi
 fi
 
+# #2287 (slice 2 of #2285): the overseer's own branch hygiene. Once per 24 h,
+# reap local review copies of PR heads (pr-N, pr-N-review ...) and orphans that
+# readopt.py proves safe; audit-record branches are never touched. LOCAL ONLY:
+# remote heads belong to the worker (#2286). Mode comes from the operator, never an
+# agent: HOS_OVERSEER_BRANCH_REAP env, then <project>_overseer_branch_reap in
+# projects.conf, then "dry-run" (reports WOULD-REAP, deletes nothing). A human sets
+# "on" only after reviewing the dry run and an attended first real run (TD-2287 6.4).
+# Fail-open: hygiene, never correctness-critical.
+if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]]; then
+  _RB_MODE="${HOS_OVERSEER_BRANCH_REAP:-$(_conf_val overseer_branch_reap)}"
+  _RB_MODE="${_RB_MODE:-dry-run}"
+  case "$_RB_MODE" in
+    off|dry-run|on) ;;
+    *)
+      _RB_MODE="$(printf '%s' "$_RB_MODE" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-64)"   # operator-supplied: no control bytes, capped
+      echo "$LOG_PREFIX WARN: unrecognized overseer_branch_reap value '${_RB_MODE}' — treating as off (#2287)"
+      _audit cycle-branch-reap-config-invalid "role=overseer" "value=${_RB_MODE}"
+      _RB_MODE="off"
+      ;;
+  esac
+  _RB_STAMP="$_HOS_DIR/branch-reap/overseer-${PROJECT}.last"
+  if [[ "$_RB_MODE" != "off" && -z "$(find "$_RB_STAMP" -mmin -1440 2>/dev/null)" ]]; then
+    _RB_BOUND=()
+    if command -v timeout >/dev/null 2>&1; then _RB_BOUND=(timeout --kill-after=10 300)
+    elif command -v gtimeout >/dev/null 2>&1; then _RB_BOUND=(gtimeout --kill-after=10 300); fi
+    _RB_ARGS=(reap-orphans --local-only --max-deletions 100)
+    [[ "$_RB_MODE" == "on" ]] || _RB_ARGS+=(--dry-run)
+    # Anchored: only a line that fully matches is audited (CWE-117 log-forging guard).
+    # Groups: 1 kind, 2 branch, 3 reason, 4 where, 6 pr (absent on REAP-FAILED), 7 tip.
+    _RB_EVENT_RE='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
+    _rb_rc=0
+    _rb_out="$(cd "$REPO_ROOT" && ${_RB_BOUND[@]+"${_RB_BOUND[@]}"} python3 -u -m scripts.automation.readopt "${_RB_ARGS[@]}" 2>&1)" || _rb_rc=$?
+    # Process the output on BOTH paths so REAPED audit events survive a kill/crash:
+    # the audited tip= is the recovery handle for a deleted branch.
+    while IFS= read -r _rb_line; do
+      [[ -z "$_rb_line" ]] && continue
+      echo "$LOG_PREFIX readopt-overseer: $_rb_line"
+      if [[ "$_rb_line" =~ $_RB_EVENT_RE ]]; then
+        _rb_event="cycle-branch-reap"
+        [[ "${BASH_REMATCH[1]}" == "REAPED" ]] || _rb_event="cycle-branch-reap-failed"
+        _audit "$_rb_event" "role=overseer" "branch=${BASH_REMATCH[2]}" "reason=${BASH_REMATCH[3]}" \
+          "where=${BASH_REMATCH[4]}" "pr=${BASH_REMATCH[6]:--}" "tip=${BASH_REMATCH[7]}"
+      fi
+    done <<< "$_rb_out"
+    if [[ "$_rb_rc" -ne 0 ]]; then
+      _rb_why="rc=$_rb_rc"
+      if [[ "$_rb_rc" -eq 124 || "$_rb_rc" -eq 137 ]]; then _rb_why="$_rb_why timeout"; fi
+      echo "$LOG_PREFIX WARN: readopt reap-orphans (overseer) failed ($_rb_why) — continuing (#2287)"
+    fi
+    # Stamped after EVERY attempt (failures too) so a failing API cannot cost ~35 calls per cycle.
+    if ! { mkdir -p "$_HOS_DIR/branch-reap" && touch "$_RB_STAMP"; } 2>/dev/null; then
+      echo "$LOG_PREFIX WARN: could not write the overseer branch-reap stamp $_RB_STAMP — will retry next cycle (#2287)"
+    fi
+  fi
+fi
+
 # #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
 # between a session's commit and push can strand a stray commit on main; from
 # then on every fast-forward fails and silently discarding it would let the
@@ -2603,6 +2659,36 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
     echo "$LOG_PREFIX outcome: did-work — self-wakeup dropped"
   else
     echo "$LOG_PREFIX outcome: idle"
+  fi
+fi
+# #2287: cycle-end safety net for review worktrees (bootstrap/review_worktree.sh). Runs
+# after a failed or timed-out Claude run too. The 60-minute floor protects a concurrent
+# interactive overseer session in the same clone. A KEPT worktree means a commit was made
+# in it, which the overseer must never do; a human inspects it. Fail-open hygiene.
+if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/bootstrap/review_worktree.sh" ]]; then
+  _WT_BOUND=()
+  if command -v timeout >/dev/null 2>&1; then _WT_BOUND=(timeout --kill-after=10 60)
+  elif command -v gtimeout >/dev/null 2>&1; then _WT_BOUND=(gtimeout --kill-after=10 60); fi
+  _wt_rc=0
+  _wt_out="$(${_WT_BOUND[@]+"${_WT_BOUND[@]}"} bash "$REPO_ROOT/bootstrap/review_worktree.sh" --repo "$REPO_ROOT" --cleanup-all --older-than-mins 60 2>&1)" || _wt_rc=$?
+  _wt_removed=0
+  _wt_kept=0
+  while IFS= read -r _wt_line; do
+    [[ -z "$_wt_line" ]] && continue
+    echo "$LOG_PREFIX review-worktree: $_wt_line"
+    case "$_wt_line" in
+      "REMOVED-WORKTREE "*) _wt_removed=$((_wt_removed + 1)) ;;
+      "KEPT-WORKTREE "*)    _wt_kept=$((_wt_kept + 1)) ;;
+    esac
+  done <<< "$_wt_out"
+  if [[ "$_wt_rc" -ne 0 ]]; then
+    echo "$LOG_PREFIX WARN: review-worktree cleanup failed (rc=$_wt_rc) — continuing (#2287)"
+  fi
+  if (( _wt_removed + _wt_kept > 0 )); then
+    _audit cycle-review-worktree-cleanup "role=overseer" "removed=${_wt_removed}" "kept=${_wt_kept}"
+  fi
+  if (( _wt_kept > 0 )); then
+    echo "$LOG_PREFIX WARN: ${_wt_kept} review worktree(s) kept — HEAD moved; a commit was made in a review worktree, human must inspect (#2287)"
   fi
 fi
 _sync_audit_logs "$REPO_ROOT"

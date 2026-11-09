@@ -49,6 +49,11 @@ bootstrap/lib/hos_tmp_root.py
 # run this copy. HOS never installs the crontab entry.
 bootstrap/tmp_reaper.py
 
+# ── bootstrap/ — branchless PR-head review worktree (#2287) ──────────────────────
+# overseer.md and the generated overseer cron prompt instruct the overseer to run
+# this to review a PR head as a detached worktree; self-contained (git only).
+bootstrap/review_worktree.sh
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,
