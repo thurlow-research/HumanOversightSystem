@@ -359,6 +359,36 @@ def test_payment_path_floors_critical():
     assert floor == "CRITICAL"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "bootstrap/checkout_pr_head.sh",
+        "prompts/bootstrap/checkout_pr_head.md",
+        "scripts/checkout_branch.py",
+        "tools/checkout_worktree.sh",
+    ],
+)
+def test_git_checkout_paths_do_not_floor_critical(path):
+    floor, ev = cc.detect_tier_floor([("M", path)], {})
+    assert floor != "CRITICAL"
+    assert not any("payment/financial path" in str(e.get("rule", "")) for e in ev)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "app/checkout/views.py",
+        "checkout.py",
+        "src/checkout_service.ts",
+        "checkout_flow.py",
+    ],
+)
+def test_payment_checkout_paths_floor_critical(path):
+    floor, ev = cc.detect_tier_floor([("M", path)], {})
+    assert floor == "CRITICAL"
+    assert any("payment/financial path" in str(e.get("rule", "")) for e in ev)
+
+
 def test_migration_path_floors_high():
     floor, _ = cc.detect_tier_floor([("A", "app/migrations/0007_add_field.py")], {})
     assert floor == "HIGH"

@@ -250,11 +250,15 @@ def _tier_rank(tier: str) -> int:
 # Each: (tier, compiled regex over the path, short pattern label).
 TIER_FLOOR_PATH_RULES: list[tuple[str, re.Pattern, str]] = [
     # CRITICAL — payment / financial paths. Sibling: composite financial signals.
+    # 'checkout' requires a segment/extension delimiter or non-git suffix (e.g.
+    # checkout/, checkout.py, checkout_service.ts) so git tooling like
+    # bootstrap/checkout_pr_head.sh does not false-floor CRITICAL (#2301).
     (
         "CRITICAL",
         re.compile(
-            r"(^|/)(payment|billing|financial|checkout|subscription|invoice|"
-            r"stripe|braintree|paypal)",
+            r"(^|/)(payment|billing|financial|subscription|invoice|"
+            r"stripe|braintree|paypal|"
+            r"checkout(?=[/.]|$|[-_](?!(?:pr|branch|head|worktree|commit|tag|ref)(?:[-_.\W]|$))))",
             re.IGNORECASE,
         ),
         "payment/financial path",
