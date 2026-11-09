@@ -491,11 +491,14 @@ show a completed review is an orphan, not a stalled branch: re-run the full chai
    That authorization is #2286: `readopt reap-orphans` (always `--dry-run` first) also covers
    unrecorded local branches and remote `worker-*` heads, by PR, issue and content state, after
    a 7-day grace; it never deletes an open-PR head or a local branch with unlanded work on an
-   open issue. The same rules apply to local branches and remote heads. A branch is deleted
-   when its PR is merged or closed (a closed PR's commits stay reachable at
-   `refs/pull/<N>/head`), when its content has landed on `origin/main`, or, under rule D2,
-   when its issue and every issue its commits reference are closed. Before deleting a branch whose tip is neither on `origin/main` nor in
-   a PR head (rule D2 `issue-closed`), `reap-orphans` writes the recovery ref
+   open issue. A local branch or remote head can be deleted in three cases:
+   - its PR is merged or closed. A closed PR's commits stay reachable at `refs/pull/<N>/head`.
+     A local branch whose PR is closed but whose issue is still open is kept.
+   - its content has landed on `origin/main`.
+   - under rule D2, its issue and every issue its commits reference are closed.
+   An unlanded branch whose diff touches audit records is never deleted. Before deleting a
+   branch whose tip is neither on `origin/main` nor in a PR head (rule D2 `issue-closed`),
+   `reap-orphans` writes the recovery ref
    `refs/archive/reap/<branch>@<tip12>`, locally and pushed to origin for a remote head. If
    that write fails, the branch is kept (`reason=archive-failed`). Restore with
    `git branch <branch> refs/archive/reap/<branch>@<tip12>`, after
