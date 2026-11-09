@@ -971,6 +971,82 @@ def test_t6_closed_issue_reaps_unlanded_but_legacy_branch_is_kept(repo, capsys):
     )
 
 
+def test_ni1_no_issue_closed_keeps_unlanded_closed_issue_branch(repo, capsys):
+    make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    reap(repo, issues={30: "closed"}, dry_run=True, issue_closed=False)
+    assert any(
+        ln.startswith("KEEP branch=worker-30-x reason=issue-closed-unlanded where=local")
+        for ln in lines_of(capsys)
+    )
+    reap(repo, issues={30: "closed"}, issue_closed=False)
+    assert "worker-30-x" in branches(repo)
+    reap(repo, issues={30: "closed"})
+    assert "worker-30-x" not in branches(repo)
+
+
+def test_ni2_no_issue_closed_still_reaps_landed_content(repo, capsys):
+    make_branch(repo, "worker-31-x", "c.txt", "x\n")
+    advance_main(repo, "c.txt", "x\n")
+    reap(repo, issues={31: "closed"}, issue_closed=False)
+    assert any(
+        ln.startswith("REAPED branch=worker-31-x reason=landed-content") for ln in lines_of(capsys)
+    )
+    assert "worker-31-x" not in branches(repo)
+
+
+def test_ni3_no_issue_closed_keeps_a1_and_pr_merged(repo, capsys):
+    tip32 = make_branch(repo, "worker-32-x", "a.txt", "closed pr\n")
+    tipy = make_branch(repo, "fix/y", "b.txt", "merged\n")
+    reap(
+        repo,
+        prs=[
+            pr("worker-32-x", tip32, number=32),
+            pr("fix/y", tipy, merged=True, number=33),
+        ],
+        issues={32: "open"},
+        issue_closed=False,
+    )
+    out = lines_of(capsys)
+    assert any(
+        f"REAPED branch=fix/y reason=pr-merged where=local pr=#33 tip={tipy}" in ln for ln in out
+    )
+    assert "worker-32-x" in branches(repo)
+    reap(
+        repo,
+        prs=[pr("worker-32-x", tip32, number=32)],
+        issues={32: "open"},
+        issue_closed=False,
+        dry_run=True,
+    )
+    assert any(
+        "KEEP branch=worker-32-x reason=closed-pr-open-issue" in ln for ln in lines_of(capsys)
+    )
+
+
+def test_ni4_no_issue_closed_does_not_look_up_commit_refs(repo):
+    git(repo, "checkout", "-q", "-b", "worker-33-x", "main")
+    commit(repo, "a.txt", "w\n", "work, see #99")
+    git(repo, "checkout", "-q", "main")
+    seen = []
+
+    def states(needed):
+        seen.append(set(needed))
+        return {33: "closed"}
+
+    reap(repo, issue_states=states, issue_closed=False, dry_run=True)
+    reap(repo, issue_states=states, dry_run=True)
+    assert seen == [{33}, {33, 99}]
+
+
+def test_ni5_cli_plumbs_no_issue_closed(repo, monkeypatch):
+    seen = []
+    monkeypatch.setattr(readopt, "reap_orphans", lambda r, **kw: seen.append(kw) or 0)
+    base = ["--repo", str(repo), "reap-orphans", "--local-only", "--dry-run"]
+    assert readopt.main([*base, "--no-issue-closed"]) == 0
+    assert readopt.main(base) == 0
+    assert [kw["issue_closed"] for kw in seen] == [False, True]
+
+
 def test_t7_tip_beyond_merged_pr_head_is_kept(repo, capsys):
     git(repo, "checkout", "-q", "-b", "worker-40-x", "main")
     first = commit(repo, "a.txt", "one\n", "first")

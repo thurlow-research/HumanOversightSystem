@@ -6,6 +6,9 @@
 #   bootstrap/hos_repo_sync.sh              # uses 900s (15 min) default interval
 #   bootstrap/hos_repo_sync.sh 300           # custom interval in seconds
 #   HOS_REPO_SYNC_STATE_DIR=... bootstrap/hos_repo_sync.sh   # override state dir
+#   HOS_REPO_SYNC_PRUNE=1 HOS_TOKEN_APP_ROLE=human bootstrap/hos_repo_sync.sh
+#                                            # also prune merged/closed local branches
+#   HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS=90      # bound on the prune step (positive integer)
 #
 # Intended for a human (or a human-proxy interactive session) working against
 # an HOS-managed repo whose autonomous worker/overseer cron roles can move
@@ -25,6 +28,16 @@
 #     which git only permits as a fast-forward.
 #   - If the default branch is checked out: only via `pull --ff-only`, and
 #     only when the working tree is clean. A dirty tree gets fetch-only.
+#
+# Local-branch prune (#2288 S3, TECHNICAL-DESIGN-2288-S3-repo-sync-prune.md):
+# off unless HOS_REPO_SYNC_PRUNE=1; bin/hos-human turns it on for its own
+# session-start call (HOS_REPO_SYNC_PRUNE=0 opts out). Human clone only: it also
+# requires HOS_TOKEN_APP_ROLE=human, the script's own clone, and a clone that is
+# not a registered worker/overseer root (gates P2, P4, P4b). It runs
+# `readopt reap-orphans --local-only --no-issue-closed`, so a local branch is
+# deleted only when its PR is merged or closed, or its content is already on main
+# (pr-merged, pr-closed, landed-ancestor, landed-content). The prune runs after
+# the state write and never changes this script's exit status.
 
 # -e intentionally omitted: the cmd; status=$? capture pattern requires it absent.
 set -uo pipefail
@@ -183,4 +196,75 @@ cat > "$_tmpf" <<JSON
   "last_sync_epoch": $now
 }
 JSON
-mv "$_tmpf" "$state_file"
+mv "$_tmpf" "$state_file"; sync_rc=$?
+
+# --- Local-branch prune (#2288 S3). Gate order P1..P6 per the TD; the first
+# failing gate decides. Nothing in here may change the exit status.
+_prune_skip() { echo "hos-repo-sync: prune skipped — $1"; }
+
+# P4b: is $1 (physical path) a registered worker/overseer root in projects.conf?
+_is_registered_cron_root() {
+  local conf="${HOME:-}/.config/hos/projects.conf" line val phys
+  [ -f "$conf" ] && [ -r "$conf" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^[A-Za-z0-9_]+_(worker|overseer)_root=(.*)$ ]]; then
+      val="${BASH_REMATCH[2]}"
+      val="${val%"${val##*[![:space:]]}"}"  # trailing CR / whitespace
+      val="${val%/}"
+      [ -n "$val" ] || continue
+      if [ -d "$val" ]; then
+        phys="$(cd "$val" 2>/dev/null && pwd -P)" && val="$phys"
+      fi
+      [ "$val" = "$1" ] && return 0
+    fi
+  done < "$conf"
+  return 1
+}
+
+_prune_local_branches() {
+  [ "${HOS_REPO_SYNC_PRUNE:-}" = "1" ] || return 0
+  if [ "${HOS_TOKEN_APP_ROLE:-}" != "human" ]; then
+    _prune_skip "not the human role"; return 0
+  fi
+  local script_root root_phys
+  script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)"
+  if [ -z "$script_root" ] || [ ! -f "$script_root/scripts/automation/readopt.py" ]; then
+    _prune_skip "scripts/automation/readopt.py not present"; return 0
+  fi
+  root_phys="$(cd "$repo_root" 2>/dev/null && pwd -P)"
+  if [ "$root_phys" != "$script_root" ]; then
+    _prune_skip "not this script's own clone"; return 0
+  fi
+  if _is_registered_cron_root "$root_phys"; then
+    _prune_skip "clone is a registered worker/overseer root"; return 0
+  fi
+  if [ "$default_branch" != "main" ] || ! git rev-parse --verify -q refs/remotes/origin/main >/dev/null; then
+    _prune_skip "default branch is not main"; return 0
+  fi
+  local tbin
+  tbin="$(command -v timeout || command -v gtimeout || true)"
+  if [ -z "$tbin" ]; then
+    _prune_skip "no timeout(1) available"; return 0
+  fi
+  local secs="${HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS:-}"
+  if ! [[ "$secs" =~ ^[0-9]+$ ]] || [ "$secs" -le 0 ]; then
+    secs=90
+  fi
+  local rc note=""
+  "$tbin" --kill-after=10 "$secs" python3 -u -m scripts.automation.readopt \
+      --repo "$root_phys" reap-orphans --local-only --grace-days 1 --max-deletions 25 \
+      --no-issue-closed </dev/null 2>&1 \
+    | awk -v p="hos-repo-sync: prune: " '
+        /^REAPED / { reaped = 1 }
+        { print p $0; fflush() }
+        END { if (reaped) print p "recover a deleted branch with: git branch <name> <tip>  (or git fetch origin pull/<N>/head:<name>)" }'
+  rc="${PIPESTATUS[0]}"
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then note=" (timeout)"; fi
+    echo "hos-repo-sync: prune: WARN: readopt reap-orphans exited ${rc}${note} — branches were deleted only where a REAPED line appears above; sync result unaffected" >&2
+  fi
+  return 0
+}
+
+_prune_local_branches
+exit "$sync_rc"

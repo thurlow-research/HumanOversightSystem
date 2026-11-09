@@ -30,7 +30,7 @@ Usage
       [--keep <branch>] [--issue-closed] [--dry-run]
   python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7] \\
       [--local-only | --remote-only] [--max-deletions N] \\
-      [--remote-scope worker|all]
+      [--remote-scope worker|all] [--no-issue-closed]
   python3 -m scripts.automation.readopt delete-head --pr <N>
 
 Exit codes
@@ -923,6 +923,7 @@ def reap_orphans(
     max_deletions: int = 0,
     base: str = "origin/main",
     remote_scope: str = "worker",
+    issue_closed: bool = True,
 ) -> int:
     """#2286: delete orphaned local branches and remote ``worker-*`` heads
     (``remote_scope="all"``: every remote head, #2288) by PR, issue and content
@@ -931,7 +932,10 @@ def reap_orphans(
     the process exit code. See TECHNICAL-DESIGN-2286 for the decision table.
 
     ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
-    so a WOULD-REAP can still become KEEP open-pr in the real run."""
+    so a WOULD-REAP can still become KEEP open-pr in the real run.
+
+    ``issue_closed=False`` (CLI ``--no-issue-closed``, #2288 S3) suppresses rule D2 only:
+    a closed-issue branch that has not landed is KEPT as ``issue-closed-unlanded``."""
     if remote_scope not in ("worker", "all"):
         raise ValueError(f"remote_scope must be 'worker' or 'all', got {remote_scope!r}")
     git = git or make_git(repo)
@@ -1106,9 +1110,10 @@ def reap_orphans(
                     "refs": None,
                 }
                 if plan["issue"] is not None:
-                    plan["refs"] = _commit_issue_refs(git, base, ref.tip)
                     needed.add(plan["issue"])
-                    needed |= plan["refs"] or set()
+                    if issue_closed:
+                        plan["refs"] = _commit_issue_refs(git, base, ref.tip)
+                        needed |= plan["refs"] or set()
                 plans[id(ref)] = plan
 
             states: "dict[int, str]" = {}
@@ -1122,7 +1127,9 @@ def reap_orphans(
             for ref in pending:
                 found = plans.get(id(ref))
                 if found is not None:
-                    decisions.append(_decide_rest(git, ref, found, states, base, base_tree))
+                    decisions.append(
+                        _decide_rest(git, ref, found, states, base, base_tree, issue_closed)
+                    )
 
         # ---- open-PR re-check right before the deletion phase
         if not dry_run and any(d.reap for d in decisions):
@@ -1201,7 +1208,13 @@ def reap_orphans(
 
 
 def _decide_rest(
-    git: GitRunner, ref: _Ref, plan: dict, states: "dict[int, str]", base: str, base_tree: str
+    git: GitRunner,
+    ref: _Ref,
+    plan: dict,
+    states: "dict[int, str]",
+    base: str,
+    base_tree: str,
+    issue_closed: bool = True,
 ) -> _Decision:
     """Rules D1' through the KEEP table for one non-open-PR, non-D1 ref."""
     issue: Optional[int] = plan["issue"]
@@ -1216,7 +1229,7 @@ def _decide_rest(
             return _Decision(ref, True, "pr-closed", f"#{closed_cover[0].get('number')}")
 
     d2_blocked = d2_git_error = False
-    if issue is not None and state == "closed":
+    if issue_closed and issue is not None and state == "closed":
         refs = plan["refs"]
         if refs is None:
             d2_git_error = True
@@ -1244,6 +1257,8 @@ def _decide_rest(
         reason = "git-error"
     elif d2_blocked:
         reason = "issue-closed-batch-open"
+    elif issue is not None and state == "closed":
+        reason = "issue-closed-unlanded"  # only reachable when D2 was suppressed
     elif issue is not None and state is None:
         reason = "issue-unknown"
     elif issue is not None and state == "open":
@@ -1424,6 +1439,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     only.add_argument("--remote-only", action="store_true")
 
     ro.add_argument(
+        "--no-issue-closed",
+        action="store_true",
+        help="do not evaluate rule D2 (issue-closed); unlanded closed-issue branches are kept",
+    )
+    ro.add_argument(
         "--remote-scope",
         choices=("worker", "all"),
         default=None,
@@ -1471,6 +1491,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 do_remote=not args.local_only,
                 max_deletions=args.max_deletions,
                 remote_scope=args.remote_scope or "worker",
+                issue_closed=not args.no_issue_closed,
             )
         prune_attempts(
             repo,
