@@ -2089,3 +2089,263 @@ def test_s17_cli_remote_scope_default_and_explicit_plumbing(repo, monkeypatch):
     assert readopt.main([*base, "--remote-scope", "worker"]) == 0
     assert readopt.main([*base, "--local-only"]) == 0
     assert [kw["remote_scope"] for kw in seen] == ["worker", "all", "worker", "worker"]
+
+
+# ---------------------------------------------------------------------------
+# #2288 delete-head
+# ---------------------------------------------------------------------------
+
+DH_SLUG = ("acme", "proj")
+
+
+def push_head(repo: Path, ref: str, rev: str = "main~1") -> str:
+    git(repo, "push", "-q", "origin", f"{rev}:refs/heads/{ref}")
+    return git(repo, "rev-parse", rev)
+
+
+def origin_refs(repo: Path) -> str:
+    return git(repo, "ls-remote", "--heads", "origin")
+
+
+def make_pr(ref, sha, *, state="closed", merged=False, head_repo="acme/proj", default="main"):
+    return {
+        "state": state,
+        "merged_at": "2026-01-01T00:00:00Z" if merged else None,
+        "base": {"repo": {"full_name": "Acme/Proj", "default_branch": default}},
+        "head": {
+            "ref": ref,
+            "sha": sha,
+            "repo": None if head_repo is None else {"full_name": head_repo},
+        },
+    }
+
+
+def dh(repo, pr, **kw):
+    kw.setdefault("open_pulls_for", lambda b: [])
+    kw.setdefault("open_pulls_based_on", lambda b: [])
+    return readopt.delete_head(
+        repo, 7, git=readopt.make_git(repo), get_pull=lambda n: pr, slug=DH_SLUG, **kw
+    )
+
+
+def test_dh1_closed_pr_head_deleted_on_origin(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip)) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == f"DELETED pr=#7 branch=fix/x tip={tip}"
+    assert "refs/heads/fix/x" not in origin_refs(repo)
+
+
+def test_dh2_second_run_already_gone(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip)) == 0
+    assert dh(repo, make_pr("fix/x", tip)) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "ALREADY-GONE pr=#7 branch=fix/x"
+
+
+def test_dh3_never_pushed_no_delete_attempted(repo, capsys):
+    tip = git(repo, "rev-parse", "main")
+    calls = []
+    assert dh(repo, make_pr("fix/x", tip), remote_delete=lambda i: calls.append(i) or {}) == 0
+    assert calls == []
+    assert "ALREADY-GONE" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "ref", ["main", "audit-log", "release/0.5.x", "audit/overseer-cycle-x", "trunk"]
+)
+def test_dh4_protected_names_kept(repo, capsys, ref):
+    tip = push_head(repo, ref) if ref != "main" else git(repo, "rev-parse", "main")
+    boom = lambda *a: pytest.fail("remote must not be touched")  # noqa: E731
+    pr = make_pr(ref, tip, default="trunk" if ref == "trunk" else "main")
+    assert dh(repo, pr, remote_heads=boom, remote_delete=boom) == 3
+    assert f"KEPT pr=#7 branch={ref} reason=protected-name" in capsys.readouterr().out
+    assert ref == "main" or f"refs/heads/{ref}" in origin_refs(repo)
+
+
+def test_dh5_open_pr_kept(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip, state="open")) == 3
+    assert "reason=pr-open" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh6_other_open_pr_on_same_head_kept(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    other = [{"head": {"repo": {"full_name": "ACME/proj"}}}]
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_for=lambda b: other) == 3
+    assert "reason=open-pr" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh7_moved_tip_kept(repo, capsys):
+    old = push_head(repo, "fix/x", "main~1")
+    git(repo, "push", "-q", "origin", "main:refs/heads/fix/x")
+    assert dh(repo, make_pr("fix/x", old)) == 3
+    now = git(repo, "rev-parse", "main")
+    last = capsys.readouterr().out.splitlines()[-1]
+    assert last == f"KEPT pr=#7 branch=fix/x reason=moved expected={old} tip={now}"
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh7b_base_of_open_pr_kept(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    asked = []
+
+    def based(b):
+        asked.append(b)
+        return [{"number": 9}]
+
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_based_on=based) == 3
+    assert asked == ["fix/x"]
+    assert "KEPT pr=#7 branch=fix/x reason=base-of-open-pr" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh7c_base_lookup_failure_fails_closed(repo, capsys):
+    tip = push_head(repo, "fix/x")
+
+    def boom(b):
+        raise readopt.github.GitHubError("api down")
+
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_based_on=boom) == 2
+    assert "ERROR pr=#7" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+@pytest.mark.parametrize("head_repo", [None, "other/proj"])
+def test_dh8_fork_kept(repo, capsys, head_repo):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip, head_repo=head_repo)) == 3
+    assert "reason=fork" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh8b_unsafe_name_printed_encoded(repo, capsys):
+    tip = git(repo, "rev-parse", "main")
+    assert dh(repo, make_pr("fix/x\x1b[31m", tip)) == 3
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "reason=unsafe-name" in out
+
+
+def test_dh9_missing_pr_and_github_error_fail_closed(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, None) == 2
+    assert "ERROR pr=#7 reason=PR #7 not found" in capsys.readouterr().out
+
+    def boom(n):
+        raise readopt.github.GitHubError("api down")
+
+    rc = readopt.delete_head(
+        repo,
+        7,
+        git=readopt.make_git(repo),
+        get_pull=boom,
+        slug=DH_SLUG,
+        open_pulls_for=lambda b: [],
+    )
+    assert rc == 2
+    assert capsys.readouterr().out.splitlines()[-1].startswith("ERROR pr=#7")
+    assert "refs/heads/fix/x" in origin_refs(repo)
+    assert tip
+
+
+def test_dh9b_foreign_repo_pr_is_error(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    pr = make_pr("fix/x", tip)
+    pr["base"]["repo"]["full_name"] = "other/proj"
+    assert dh(repo, pr) == 2
+    assert "not in this repository" in capsys.readouterr().out
+
+
+def test_dh9c_unreadable_sha_is_error(repo, capsys):
+    push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", "nothex")) == 2
+    assert "SHA unreadable" in capsys.readouterr().out
+
+
+def test_dh10_open_pr_lookup_failure_fails_closed(repo, capsys):
+    tip = push_head(repo, "fix/x")
+
+    def boom(b):
+        raise readopt.github.GitHubError("api down")
+
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_for=boom) == 2
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh11_push_timeout_is_error(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    rc = dh(repo, make_pr("fix/x", tip), remote_delete=lambda i: {"fix/x": readopt.PUSH_TIMEOUT})
+    assert rc == 2
+    assert "outcome unknown" in capsys.readouterr().out
+
+
+def test_dh12_rejected_push_then_gone_is_already_gone(repo, capsys):
+    tip = push_head(repo, "fix/x")
+
+    def lose_race(items):
+        git(repo, "push", "-q", "origin", ":refs/heads/fix/x")
+        return {"fix/x": False}
+
+    assert dh(repo, make_pr("fix/x", tip), remote_delete=lose_race) == 0
+    assert "ALREADY-GONE" in capsys.readouterr().out
+
+
+def test_dh12b_rejected_push_still_present_is_error(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip), remote_delete=lambda i: {"fix/x": False}) == 2
+    assert "push rejected" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh13_tail_match_noise_ignored(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    push_head(repo, "x/refs/heads/fix/x")
+    assert dh(repo, make_pr("fix/x", tip)) == 0
+    refs = origin_refs(repo)
+    assert "refs/heads/x/refs/heads/fix/x" in refs
+    assert not any(ln.endswith("\trefs/heads/fix/x") for ln in refs.splitlines())
+
+
+def test_dh14_is_protected_branch():
+    for name in ("main", "audit-log", "release/0.5.x", "audit/overseer-cycle-x"):
+        assert readopt.is_protected_branch(name)
+    for name in ("mainline", "release", "audit-logs", "fix/release/x"):
+        assert not readopt.is_protected_branch(name)
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "abc"])
+def test_dh15_cli_rejects_bad_pr(repo, bad):
+    with pytest.raises(SystemExit) as exc:
+        readopt.main(["--repo", str(repo), "delete-head", "--pr", bad])
+    assert exc.value.code == 2
+
+
+def test_dh16_merged_pr_head_deleted(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip, merged=True)) == 0
+    assert "DELETED" in capsys.readouterr().out
+    assert "refs/heads/fix/x" not in origin_refs(repo)
+
+
+def test_dh17_cli_plumbs_pr_number(repo, monkeypatch):
+    seen = []
+    monkeypatch.setattr(readopt, "delete_head", lambda r, n, **kw: seen.append(n) or 3)
+    assert readopt.main(["--repo", str(repo), "delete-head", "--pr", "12"]) == 3
+    assert seen == [12]
+
+
+def test_dh18_remote_phase_unavailable_is_error_and_deletes_nothing(repo, monkeypatch, capsys):
+    tip = push_head(repo, "fix/x")
+    monkeypatch.setattr(readopt, "_remote_ops", lambda git, r: None)
+    assert dh(repo, make_pr("fix/x", tip)) == 2
+    assert "reason=remote phase unavailable" in capsys.readouterr().out
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh19_open_pr_from_other_repo_does_not_block_delete(repo, capsys):
+    tip = push_head(repo, "fix/x")
+    other = [{"head": {"repo": {"full_name": "stranger/proj"}}}]
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_for=lambda b: other) == 0
+    assert "DELETED" in capsys.readouterr().out
+    assert "refs/heads/fix/x" not in origin_refs(repo)

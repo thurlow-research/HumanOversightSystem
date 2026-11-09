@@ -327,16 +327,19 @@ def list_pulls(
     repo: str,
     head: Optional[str] = None,
     state: str = "all",
+    base: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
-    GET /repos/{owner}/{repo}/pulls (filtered by head and state).
+    GET /repos/{owner}/{repo}/pulls (filtered by head, base and state).
 
-    head should be in '{owner}:{branch}' form.
+    head should be in '{owner}:{branch}' form; base is a bare branch name.
     Returns a list of PR objects (may be empty).
     """
     params = f"state={state}"
     if head:
         params += f"&head={quote(head, safe=':')}"
+    if base:
+        params += f"&base={quote(base, safe='')}"
     result = _run_gh([f"/repos/{owner}/{repo}/pulls?{params}"])
     if result is None:
         return []
