@@ -16,7 +16,8 @@ prune-attempts D-8: delete duplicate / superseded / closed-issue attempts for
                one issue, keeping the newest (or an explicitly named) branch,
                and the remote head of each deleted attempt (#2286).
 reap-orphans   #2286: delete orphaned local branches (recorded or not) and
-               remote ``worker-*`` heads by PR, issue and content state, after
+               remote ``worker-*`` heads (``--remote-scope all``: every remote
+               head, #2288) by PR, issue and content state, after
                a grace period. Never touches open-PR heads or unlanded work on
                open issues.
 
@@ -28,7 +29,8 @@ Usage
   python3 -m scripts.automation.readopt prune-attempts --issue <N> \\
       [--keep <branch>] [--issue-closed] [--dry-run]
   python3 -m scripts.automation.readopt reap-orphans [--dry-run] [--grace-days 7] \\
-      [--local-only | --remote-only] [--max-deletions N]
+      [--local-only | --remote-only] [--max-deletions N] \\
+      [--remote-scope worker|all]
 
 Exit codes
 ----------
@@ -906,14 +908,18 @@ def reap_orphans(
     do_remote: bool = True,
     max_deletions: int = 0,
     base: str = "origin/main",
+    remote_scope: str = "worker",
 ) -> int:
-    """#2286: delete orphaned local branches and remote ``worker-*`` heads by PR,
-    issue and content state. Every decision is built before anything is deleted;
+    """#2286: delete orphaned local branches and remote ``worker-*`` heads
+    (``remote_scope="all"``: every remote head, #2288) by PR, issue and content
+    state. Every decision is built before anything is deleted;
     any failed listing aborts the whole run with zero deletions (exit 2). Returns
     the process exit code. See TECHNICAL-DESIGN-2286 for the decision table.
 
     ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
     so a WOULD-REAP can still become KEEP open-pr in the real run."""
+    if remote_scope not in ("worker", "all"):
+        raise ValueError(f"remote_scope must be 'worker' or 'all', got {remote_scope!r}")
     git = git or make_git(repo)
     now = time.time() if now is None else now
     calls_before = github.gh_call_count()
@@ -961,8 +967,9 @@ def reap_orphans(
                 remote_skipped = 1
         if remote_heads is not None:
             try:
-                for name, sha in sorted(remote_heads("refs/heads/worker-*")):
-                    if name.startswith("worker-"):
+                pattern = "refs/heads/*" if remote_scope == "all" else "refs/heads/worker-*"
+                for name, sha in sorted(remote_heads(pattern)):
+                    if remote_scope == "all" or name.startswith("worker-"):
                         remote_refs.append(_Ref(name, "remote", sha))
             except Exception as exc:  # the local phase still runs
                 remote_skipped = 1
@@ -1278,7 +1285,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     only.add_argument("--local-only", action="store_true")
     only.add_argument("--remote-only", action="store_true")
 
+    ro.add_argument(
+        "--remote-scope",
+        choices=("worker", "all"),
+        default=None,
+        help="remote heads to consider: worker-* (default) or every head (#2288); the"
+        " never-touch list stays fixed (main, audit-log, release/*, audit/*)",
+    )
+
     args = ap.parse_args(argv)
+    if args.cmd == "reap-orphans" and args.local_only and args.remote_scope is not None:
+        ap.error("--remote-scope cannot be combined with --local-only")
     repo = Path(args.repo).resolve()
     git = make_git(repo)
 
@@ -1310,6 +1327,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 do_local=not args.remote_only,
                 do_remote=not args.local_only,
                 max_deletions=args.max_deletions,
+                remote_scope=args.remote_scope or "worker",
             )
         prune_attempts(
             repo,
