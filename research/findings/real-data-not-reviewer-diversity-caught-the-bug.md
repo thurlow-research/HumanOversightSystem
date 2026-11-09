@@ -79,7 +79,7 @@ The defect was **visible the whole time**. The overseer's own cycle log printed 
    - a spec-grounded filter drops wrong expectations (v2 shows the filter is mandatory);
    - the output is advisory and never suppresses a finding.
 
-   On this benchmark the commercial models did the same job better and needed no filter, so the local option's advantage is cost alone.
+   On this benchmark the commercial models did the same job better and rarely needed the filter (2 of 30 commercial runs had a false alarm), so the local option's advantage is cost alone.
 4. **Benchmarks of reviewers need executed ground truth.** The author's "known safe" controls were wrong twice. Verify by execution, and expect the best reviewers to catch the author.
 5. **Pick a review model by measured behaviour, not by tier name.** A vendor's "high" tier made more dangerous calls than its default.
 
