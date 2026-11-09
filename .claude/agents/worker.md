@@ -460,7 +460,10 @@ show a completed review is an orphan, not a stalled branch: re-run the full chai
 1. **Prune first.** If the issue is closed, or several `worker-<N>-*` attempts exist, run
    `python3 -m scripts.automation.readopt prune-attempts --issue <N>` (`--issue-closed` when
    the issue is closed — the script confirms the closed state with GitHub and refuses
-   otherwise; then stop, there is nothing to adopt). When the latest escalation comment names
+   otherwise; then stop, there is nothing to adopt). A batched attempt whose commits also
+   reference an issue that is still open, or whose state cannot be read, is kept with a
+   `WARN` naming that issue (#2291): its work belongs to that issue, not to this pruning.
+   When the latest escalation comment names
    a head, pass it as `--keep <branch>`; only without one does it fall back to keeping the
    newest attempt.
 2. **Rebuild check.** A branch more than ~200 commits behind `origin/main` whose merge
