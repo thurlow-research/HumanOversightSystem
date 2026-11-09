@@ -1778,3 +1778,314 @@ def test_remote_head_with_unreadable_commit_date_is_kept_as_git_error(repo, caps
         "branch=worker-73-x reason=git-error where=remote" in ln for ln in lines_of(capsys, "KEEP")
     )
     assert pushed == []
+
+
+# =============================================================================
+# #2288 S1: reap-orphans --remote-scope all (remote janitor for non-worker heads)
+# =============================================================================
+
+
+def remote_only_branch(repo, name):
+    """An old branch pushed to origin whose local copy is dropped: a remote-only head."""
+    tip = make_old_branch(repo, name)
+    push_branch(repo, name)
+    git(repo, "branch", "-D", name)
+    return tip
+
+
+def recording_heads(repo, seen):
+    def heads(pattern):
+        seen.append(pattern)
+        return list(remote_heads_of(repo, pattern).items())
+
+    return heads
+
+
+def reap_all(repo, **kw):
+    kw.setdefault("do_local", False)
+    return reap(repo, remote_scope="all", **kw)
+
+
+def test_s1_closed_unmerged_pr_non_worker_remote_head_is_reaped(repo, capsys):
+    tip = remote_only_branch(repo, "fix/foo")
+    assert reap_all(repo, prs=[pr("fix/foo", tip, number=3)]) == 0
+    assert f"REAPED branch=fix/foo reason=pr-closed where=remote pr=#3 tip={tip}" in lines_of(
+        capsys
+    )
+    assert "fix/foo" not in remote_heads_of(repo)
+
+
+def test_s2_merged_pr_non_worker_remote_head_is_reaped(repo, capsys):
+    tip = remote_only_branch(repo, "feat/bar")
+    reap_all(repo, prs=[pr("feat/bar", tip, merged=True, number=4)])
+    assert f"REAPED branch=feat/bar reason=pr-merged where=remote pr=#4 tip={tip}" in lines_of(
+        capsys
+    )
+    assert "feat/bar" not in remote_heads_of(repo)
+
+
+def test_s3_protected_remote_names_are_kept(repo, capsys):
+    names = ("audit-log", "release/0.5.x", "audit/x")
+    for name in names:
+        git(repo, "push", "-q", "origin", f"main:refs/heads/{name}")
+    reap_all(repo, dry_run=True)
+    out = lines_of(capsys)
+    for name in ("main", *names):
+        assert any(
+            ln.startswith(f"KEEP branch={name} reason=protected-name where=remote") for ln in out
+        )
+    assert {"main", *names} <= set(remote_heads_of(repo))
+    assert "REAPED" not in "\n".join(out)
+
+
+def test_s4_unlanded_no_pr_remote_head_is_kept(repo, capsys):
+    remote_only_branch(repo, "docs/wip")
+    reap_all(repo, dry_run=True)
+    assert any(
+        ln.startswith("KEEP branch=docs/wip reason=unlanded-no-pr where=remote")
+        for ln in lines_of(capsys)
+    )
+    assert "docs/wip" in remote_heads_of(repo)
+
+
+def test_s5_landed_remote_heads_are_reaped_by_ancestor_and_content(repo, capsys):
+    git(repo, "push", "-q", "origin", "main~1:refs/heads/docs/done-anc")
+    make_branch(repo, "docs/done-content", "c.txt", "x\n")
+    push_branch(repo, "docs/done-content")
+    git(repo, "branch", "-D", "docs/done-content")
+    advance_main(repo, "c.txt", "x\n")
+    reap_all(repo)
+    out = "\n".join(lines_of(capsys))
+    assert "REAPED branch=docs/done-anc reason=landed-ancestor where=remote" in out
+    assert "REAPED branch=docs/done-content reason=landed-content where=remote" in out
+    assert not ({"docs/done-anc", "docs/done-content"} & set(remote_heads_of(repo)))
+
+
+def test_s6_default_scope_ignores_non_worker_remote_heads(repo, capsys):
+    fix_tip = remote_only_branch(repo, "fix/foo")
+    w_tip = remote_only_branch(repo, "worker-5-x")
+    seen = []
+    prs = [pr("fix/foo", fix_tip, number=3), pr("worker-5-x", w_tip, merged=True, number=7)]
+    reap(repo, prs=prs, do_local=False, remote_heads=recording_heads(repo, seen))
+    out = lines_of(capsys)
+    assert seen == ["refs/heads/worker-*"]
+    assert f"REAPED branch=worker-5-x reason=pr-merged where=remote pr=#7 tip={w_tip}" in out
+    assert not any("fix/foo" in ln for ln in out)
+    assert "fix/foo" in remote_heads_of(repo) and "worker-5-x" not in remote_heads_of(repo)
+
+
+def test_s7_dry_run_all_scope_reports_and_deletes_nothing(repo, capsys):
+    closed_tip = remote_only_branch(repo, "fix/foo")
+    merged_tip = remote_only_branch(repo, "feat/bar")
+    remote_only_branch(repo, "docs/wip")
+    git(repo, "push", "-q", "origin", "main~1:refs/heads/docs/done")
+    before = git(repo, "ls-remote", "origin")
+
+    def forbidden(items):
+        raise AssertionError("remote_delete must not be called in a dry run")
+
+    prs = [pr("fix/foo", closed_tip, number=3), pr("feat/bar", merged_tip, merged=True, number=4)]
+    assert reap_all(repo, prs=prs, dry_run=True, remote_delete=forbidden) == 0
+    out = lines_of(capsys)
+    assert any(ln.startswith("WOULD-REAP branch=fix/foo reason=pr-closed") for ln in out)
+    assert any(ln.startswith("WOULD-REAP branch=feat/bar reason=pr-merged") for ln in out)
+    assert any(ln.startswith("WOULD-REAP branch=docs/done reason=landed-ancestor") for ln in out)
+    assert any(ln.startswith("KEEP branch=docs/wip reason=unlanded-no-pr") for ln in out)
+    assert not any(ln.startswith(("REAPED", "REAP-FAILED")) for ln in out)
+    assert git(repo, "ls-remote", "origin") == before
+
+
+def test_s8_open_pr_wins_for_non_worker_remote_heads(repo, capsys):
+    tip = remote_only_branch(repo, "fix/open")
+    git(repo, "push", "-q", "origin", "main~1:refs/heads/fix/open-landed")
+    anc = git(repo, "rev-parse", "main~1")
+    prs = [
+        pr("fix/open", tip, number=1),
+        pr("fix/open", tip, state="open", number=2),
+        pr("fix/open-landed", anc, merged=True, number=3),
+        pr("fix/open-landed", anc, state="open", number=4),
+    ]
+    reap_all(repo, prs=prs, dry_run=True)
+    out = lines_of(capsys)
+    assert f"KEEP branch=fix/open reason=open-pr where=remote tip={tip}" in out
+    assert f"KEEP branch=fix/open-landed reason=open-pr where=remote tip={anc}" in out
+    assert {"fix/open", "fix/open-landed"} <= set(remote_heads_of(repo))
+
+
+def test_s9_pre_delete_recheck_open_pr_keeps_non_worker_head(repo, capsys):
+    tip = remote_only_branch(repo, "fix/x")
+    closed_pr = pr("fix/x", tip, number=1)
+    opened = pr("fix/x", tip, state="open", number=2)
+    pulls = lambda state: [pr("unrelated-x", OTHER_SHA, merged=True, number=999)] + (  # noqa: E731
+        [opened] if state == "open" else [closed_pr]
+    )
+    reap_all(repo, pulls=pulls)
+    out = lines_of(capsys)
+    assert not any(ln.startswith("REAP") for ln in out)
+    assert "kept=2" in out[-1] and "recheck=done" in out[-1]
+    assert "fix/x" in remote_heads_of(repo)
+
+
+def test_s10_non_worker_heads_never_read_issue_states(repo, capsys):
+    tip = remote_only_branch(repo, "fix/foo")
+    remote_only_branch(repo, "fix/worker-12-x")
+    git(repo, "push", "-q", "origin", "main~1:refs/heads/docs/done")
+    reads = []
+
+    def counting(needed):
+        reads.append(set(needed))
+        return {}
+
+    prs = [pr("fix/foo", tip, number=3)]
+    reap_all(repo, prs=prs, issue_states=counting, dry_run=True)
+    out = "\n".join(lines_of(capsys))
+    assert "WOULD-REAP branch=fix/foo" in out and "WOULD-REAP branch=docs/done" in out
+    assert "KEEP branch=fix/worker-12-x reason=unlanded-no-pr" in out
+    reap_all(repo, prs=prs, issue_states=counting)
+    assert "fix/foo" not in remote_heads_of(repo) and "docs/done" not in remote_heads_of(repo)
+    assert reads == []
+
+
+def test_s11_all_scope_lists_every_head_pattern(repo, capsys):
+    remote_only_branch(repo, "a/b/c")
+    seen = []
+    reap_all(repo, remote_heads=recording_heads(repo, seen), dry_run=True)
+    assert seen == ["refs/heads/*"]
+    assert any(
+        ln.startswith("KEEP branch=a/b/c reason=unlanded-no-pr where=remote")
+        for ln in lines_of(capsys)
+    )
+
+
+def test_s12_scope_usage_errors(repo):
+    git(repo, "branch", "keep-me", "main")
+    before = branches(repo)
+    base = ["--repo", str(repo), "reap-orphans"]
+    for argv in (
+        [*base, "--local-only", "--remote-scope", "all"],
+        [*base, "--remote-scope", "bogus"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            readopt.main(argv)
+        assert exc.value.code == 2
+    with pytest.raises(ValueError):
+        readopt.reap_orphans(repo, slug=SLUG, now=FAR, remote_scope="x")
+    assert branches(repo) == before
+
+
+def test_s13_all_scope_leaves_worker_head_decisions_unchanged(repo, capsys):
+    remote_only_branch(repo, "worker-40-x")
+    remote_only_branch(repo, "worker-41-x")
+    issues = {40: "closed", 41: "open"}
+    worker_lines = {}
+    for scope in ("worker", "all"):
+        reap(repo, issues=issues, do_local=False, remote_scope=scope, dry_run=True)
+        worker_lines[scope] = [ln for ln in lines_of(capsys) if "branch=worker-" in ln]
+    assert worker_lines["worker"] == worker_lines["all"]
+    joined = "\n".join(worker_lines["all"])
+    assert "WOULD-REAP branch=worker-40-x reason=issue-closed where=remote" in joined
+    assert "KEEP branch=worker-41-x reason=unlanded-open-issue where=remote" in joined
+    reap_all(repo, issues=issues)
+    assert any(
+        ln.startswith("REAPED branch=worker-40-x reason=issue-closed where=remote")
+        for ln in lines_of(capsys)
+    )
+    assert "worker-40-x" not in remote_heads_of(repo) and "worker-41-x" in remote_heads_of(repo)
+
+
+def test_s14_unsafe_remote_names_never_reach_git_or_delete(repo, capsys):
+    main_tip = git(repo, "rev-parse", "main")
+    real = readopt.make_git(repo)
+    calls = []
+
+    def spy(args):
+        calls.append(list(args))
+        return real(args)
+
+    deleted = []
+    reap_all(
+        repo,
+        git=spy,
+        remote_heads=lambda pat: [("-x", main_tip), ("é", main_tip)],
+        remote_delete=lambda items: deleted.append(items) or {},
+        dry_run=True,
+    )
+    out = "\n".join(lines_of(capsys))
+    assert f"KEEP branch=-x reason=unsafe-name where=remote tip={main_tip}" in out
+    assert f"KEEP branch=%C3%A9 reason=unsafe-name where=remote tip={main_tip}" in out
+    assert "é" not in out
+    assert not any(a == "-x" or "é" in a for c in calls for a in c)
+    assert deleted == []
+
+
+def test_s14b_unsafe_remote_names_never_deleted_in_a_real_run(repo, capsys):
+    main_tip = git(repo, "rev-parse", "main")
+    real = readopt.make_git(repo)
+    calls = []
+
+    def spy(args):
+        calls.append(list(args))
+        return real(args)
+
+    deleted = []
+    assert (
+        reap_all(
+            repo,
+            git=spy,
+            remote_heads=lambda pat: [("-x", main_tip), ("é", main_tip)],
+            remote_delete=lambda items: deleted.append(list(items)) or {},
+        )
+        == 0
+    )
+    out = "\n".join(lines_of(capsys))
+    assert "kept=2 failed=0" in out and "reaped_remote=0" in out
+    assert not any(ln.startswith(("REAPED", "REAP-FAILED")) for ln in out.splitlines())
+    assert not any(a == "-x" or "é" in a for c in calls for a in c)
+    assert deleted == []
+
+
+def test_s15_zero_unique_commit_non_worker_head_reaped_as_landed_ancestor(repo, capsys):
+    git(repo, "push", "-q", "origin", "main:refs/heads/fix/same-as-main")
+    tip = git(repo, "rev-parse", "main")
+    reap_all(repo)
+    assert f"REAPED branch=fix/same-as-main reason=landed-ancestor where=remote pr=- tip={tip}" in (
+        lines_of(capsys)
+    )
+    assert "fix/same-as-main" not in remote_heads_of(repo)
+
+
+def test_s15b_zero_unique_commit_non_worker_head_within_grace_is_kept(repo, capsys):
+    git(repo, "push", "-q", "origin", "main:refs/heads/fix/same-as-main")
+    tip = git(repo, "rev-parse", "main")
+    committed = int(git(repo, "log", "-1", "--format=%ct", tip))
+    reap_all(repo, now=committed + 3600, dry_run=True)
+    assert any(
+        ln.startswith("KEEP branch=fix/same-as-main reason=grace where=remote")
+        for ln in lines_of(capsys)
+    )
+    assert "fix/same-as-main" in remote_heads_of(repo)
+
+
+def test_s16_worker_scope_filters_non_worker_names_even_if_listing_returns_them(repo, capsys):
+    tip = git(repo, "rev-parse", "main~1")
+    git(repo, "push", "-q", "origin", "main~1:refs/heads/fix/foo")
+    reap(
+        repo,
+        do_local=False,
+        dry_run=True,
+        remote_heads=lambda pat: [("fix/foo", tip), ("worker-9-x", tip)],
+    )
+    out = lines_of(capsys)
+    assert not any("fix/foo" in ln for ln in out)
+    assert any("branch=worker-9-x" in ln for ln in out)
+
+
+def test_s17_cli_remote_scope_default_and_explicit_plumbing(repo, monkeypatch):
+    seen = []
+    monkeypatch.setattr(readopt, "reap_orphans", lambda r, **kw: seen.append(kw) or 0)
+    base = ["--repo", str(repo), "reap-orphans"]
+    assert readopt.main(base) == 0
+    assert readopt.main([*base, "--remote-scope", "all"]) == 0
+    assert readopt.main([*base, "--remote-scope", "worker"]) == 0
+    assert readopt.main([*base, "--local-only"]) == 0
+    assert [kw["remote_scope"] for kw in seen] == ["worker", "all", "worker", "worker"]
