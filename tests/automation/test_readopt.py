@@ -399,6 +399,104 @@ def test_prune_issue_closed_deletes_all_but_not_other_issue(attempts):
     assert "worker-201-other" in branches(attempts)
 
 
+def _no_lookup(needed):
+    raise AssertionError("issue_states must not be called when no commit references another issue")
+
+
+def _ref_attempts(repo, ref_msg="also carries #77 work"):
+    """worker-20-* attempts: 'old' references another issue in a commit message."""
+    git(repo, "checkout", "-q", "worker-20-old")
+    commit(repo, "x.txt", "x\n", ref_msg)
+    git(repo, "checkout", "-q", "main")
+    return repo
+
+
+def test_prune_closed_no_refs_makes_no_lookup(attempts):
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed, issue_states=_no_lookup
+    )
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-new", "worker-20-old"]
+
+
+def test_prune_closed_keeps_attempt_referencing_open_issue(attempts, capsys):
+    _ref_attempts(attempts)
+    calls = []
+
+    def states(needed):
+        calls.append(set(needed))
+        return {77: "open"}
+
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed, issue_states=states
+    )
+    out = capsys.readouterr().out
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-new"]
+    assert "worker-20-old" in branches(attempts)
+    assert "WARN: 'worker-20-old' kept" in out and "#77 (open)" in out
+    assert calls == [{77}]
+
+
+def test_prune_closed_deletes_attempt_whose_other_ref_is_closed(attempts):
+    _ref_attempts(attempts)
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed, issue_states=lambda n: {77: "closed"}
+    )
+    assert "worker-20-old" in deleted
+    assert "worker-20-old" not in branches(attempts)
+
+
+def test_prune_closed_lookup_failure_keeps_attempt(attempts, capsys):
+    _ref_attempts(attempts)
+
+    def boom(needed):
+        raise RuntimeError("api down")
+
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed, issue_states=boom
+    )
+    out = capsys.readouterr().out
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-new"]
+    assert "worker-20-old" in branches(attempts)
+    assert "WARN: 'worker-20-old' kept" in out and "api down" in out
+
+
+def test_prune_closed_unknown_other_issue_keeps_attempt(attempts, capsys):
+    _ref_attempts(attempts)
+    deleted = readopt.prune_attempts(
+        attempts, 20, issue_closed=True, issue_state=closed, issue_states=lambda n: {}
+    )
+    assert "worker-20-old" not in deleted
+    assert "worker-20-old" in branches(attempts)
+    assert "#77 (unknown)" in capsys.readouterr().out
+
+
+def test_prune_closed_dry_run_skips_open_ref_attempt(attempts, capsys):
+    _ref_attempts(attempts)
+    deleted = readopt.prune_attempts(
+        attempts,
+        20,
+        issue_closed=True,
+        dry_run=True,
+        issue_state=closed,
+        issue_states=lambda n: {77: "open"},
+    )
+    out = capsys.readouterr().out
+    assert "WOULD-DELETE branch=worker-20-old" not in out
+    assert "WOULD-DELETE branch=worker-20-new" in out
+    assert "worker-20-old" not in deleted
+
+
+def test_prune_closed_git_error_on_ref_scan_keeps_attempts(attempts, capsys):
+    run = _failing_git(attempts, fail_prefix=("log", "--format=%B"))
+    deleted = readopt.prune_attempts(
+        attempts, 20, git=run, issue_closed=True, issue_state=closed, issue_states=_no_lookup
+    )
+    out = capsys.readouterr().out
+    assert deleted == []
+    assert "WARN: 'worker-20-old' kept" in out and "git error" in out
+    assert {"worker-20-old", "worker-20-mid", "worker-20-new"} <= branches(attempts)
+
+
 def test_prune_never_deletes_checked_out_branch(attempts):
     git(attempts, "checkout", "-q", "worker-20-old")
     deleted = readopt.prune_attempts(attempts, 20, issue_closed=True, issue_state=closed)
