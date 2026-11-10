@@ -598,6 +598,18 @@ def test_list_pulls_url_encodes_head():
     assert url == "/repos/o/r/pulls?state=closed&head=o:feat%2Fa%20b%26x%3D1"
 
 
+@pytest.mark.parametrize(
+    "payload, expected",
+    [(None, None), ({}, None), ({"number": 1}, None), ([], []), ([{"number": 1}], [{"number": 1}])],
+)
+def test_list_pulls_strict_only_trusts_a_genuine_list(payload, expected):
+    from scripts.automation.lib import github
+
+    with patch.object(github, "_run_gh", return_value=payload) as run:
+        assert github.list_pulls_strict("o", "r", head="o:b", state="open", base="m") == expected
+    assert run.call_args[0][0][0] == "/repos/o/r/pulls?state=open&head=o:b&base=m"
+
+
 # ---------------------------------------------------------------------------
 # 401 -> re-mint once -> retry once (#2171)
 # ---------------------------------------------------------------------------

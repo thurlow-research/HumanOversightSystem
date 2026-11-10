@@ -322,6 +322,21 @@ def get_branch(owner: str, repo: str, branch: str) -> Optional[dict[str, Any]]:
     return get_ref(owner, repo, f"heads/{branch}")
 
 
+def _pulls_path(
+    owner: str,
+    repo: str,
+    head: Optional[str],
+    state: str,
+    base: Optional[str],
+) -> str:
+    params = f"state={state}"
+    if head:
+        params += f"&head={quote(head, safe=':')}"
+    if base:
+        params += f"&base={quote(base, safe='')}"
+    return f"/repos/{owner}/{repo}/pulls?{params}"
+
+
 def list_pulls(
     owner: str,
     repo: str,
@@ -335,17 +350,30 @@ def list_pulls(
     head should be in '{owner}:{branch}' form; base is a bare branch name.
     Returns a list of PR objects (may be empty).
     """
-    params = f"state={state}"
-    if head:
-        params += f"&head={quote(head, safe=':')}"
-    if base:
-        params += f"&base={quote(base, safe='')}"
-    result = _run_gh([f"/repos/{owner}/{repo}/pulls?{params}"])
+    result = _run_gh([_pulls_path(owner, repo, head, state, base)])
     if result is None:
         return []
     if isinstance(result, list):
         return result
     return [result]
+
+
+def list_pulls_strict(
+    owner: str,
+    repo: str,
+    head: Optional[str] = None,
+    state: str = "all",
+    base: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """
+    Same request as list_pulls, but an indeterminate answer is not an empty list.
+
+    Returns the list only when the API returned a genuine JSON list (possibly
+    empty); None for a 404/empty body (``_run_gh`` None) or any non-list payload.
+    For callers that must fail closed (#2298).
+    """
+    result = _run_gh([_pulls_path(owner, repo, head, state, base)])
+    return result if isinstance(result, list) else None
 
 
 def list_all_pulls(

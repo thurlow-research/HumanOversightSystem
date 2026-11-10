@@ -79,12 +79,29 @@ revoke_token() {
         || warn "failed to revoke installation token (it will expire naturally within 1 hour)"
 }
 
-# Minimal JSON string escaping (backslash, double-quote), as in submit_pr.sh.
+# JSON string escaping valid for any input: backslash, double quote, \n \r \t, and
+# every other C0 control byte (and DEL) as \u00XX.
 _json_escape() {
-    local s="$1"
+    local s="$1" out="" c i code
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
-    printf '%s' "$s"
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            $'\n') out+='\n' ;;
+            $'\r') out+='\r' ;;
+            $'\t') out+='\t' ;;
+            *)
+                # Numeric test, not a [a-b] range: ranges are locale-dependent.
+                printf -v code '%d' "'$c"
+                if ((code < 32 || code == 127)); then
+                    printf -v c '\\u%04x' "$code"
+                fi
+                out+="$c"
+                ;;
+        esac
+    done
+    printf '%s' "$out"
 }
 
 # _field <result-line> <key>: value of "key=" in the readopt result line (or empty).

@@ -2679,6 +2679,29 @@ def test_dh6_other_open_pr_on_same_head_kept(repo, capsys):
     assert "refs/heads/fix/x" in origin_refs(repo)
 
 
+@pytest.mark.parametrize("payload", [None, {"number": 9}, "x"])
+@pytest.mark.parametrize("seam", ["open_pulls_for", "open_pulls_based_on"])
+def test_dh6b_indeterminate_pr_lookup_kept(repo, capsys, seam, payload):
+    tip = push_head(repo, "fix/x")
+    deletes = []
+    rc = dh(
+        repo,
+        make_pr("fix/x", tip),
+        remote_delete=lambda i: deletes.append(i) or {},
+        **{seam: lambda b: payload},
+    )
+    assert rc == 3
+    assert "KEPT pr=#7 branch=fix/x reason=pr-lookup-indeterminate" in capsys.readouterr().out
+    assert deletes == []
+    assert "refs/heads/fix/x" in origin_refs(repo)
+
+
+def test_dh6c_genuine_empty_lookups_still_delete(repo):
+    tip = push_head(repo, "fix/x")
+    assert dh(repo, make_pr("fix/x", tip), open_pulls_for=lambda b: []) == 0
+    assert "refs/heads/fix/x" not in origin_refs(repo)
+
+
 def test_dh7_moved_tip_kept(repo, capsys):
     old = push_head(repo, "fix/x", "main~1")
     git(repo, "push", "-q", "origin", "main:refs/heads/fix/x")

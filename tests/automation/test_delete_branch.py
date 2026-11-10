@@ -180,3 +180,15 @@ def test_db6_revoke_curl_has_timeouts(h):
     h.run(["--pr", "42", "--app", "worker"])
     curl = next(ln for ln in h.capture().splitlines() if ln.startswith("CURL_CALLED_WITH"))
     assert "--connect-timeout 10 --max-time 30" in curl
+
+
+def test_db7_control_characters_in_reason_still_yield_valid_json(h):
+    reason = "bad\x1b[0m\there\x7f"
+    line = f"ERROR pr=#42 reason={reason}"
+    result = h.run(["--pr", "42", "--app", "worker"], {"PY_RC": "2", "PY_OUT": line})
+    assert result.returncode == 2
+    events = [
+        ln.split(":", 1)[1] for ln in h.capture().splitlines() if ln.startswith("AUDIT_EVENT:")
+    ]
+    assert len(events) == 1
+    assert json.loads(events[0])["reason"] == reason

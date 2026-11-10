@@ -1539,15 +1539,17 @@ def delete_head(
     *,
     git: GitRunner,
     get_pull: "Optional[Callable[[int], Optional[dict]]]" = None,
-    open_pulls_for: "Optional[Callable[[str], list]]" = None,
-    open_pulls_based_on: "Optional[Callable[[str], list]]" = None,
+    open_pulls_for: "Optional[Callable[[str], Optional[list]]]" = None,
+    open_pulls_based_on: "Optional[Callable[[str], Optional[list]]]" = None,
     remote_heads: Optional[RemoteHeads] = None,
     remote_delete: Optional[RemoteDelete] = None,
     slug: "Optional[tuple[str, str]]" = None,
 ) -> int:
     """Delete the remote head of closed PR ``pr_number``. Prints exactly one
     result line last on stdout and returns 0 (gone), 2 (error) or 3 (KEPT).
-    Fails closed: every exception becomes ERROR with nothing deleted."""
+    Fails closed: every exception becomes ERROR with nothing deleted, and an open-PR
+    lookup that is not a genuine list (404, empty body, dict) is KEPT
+    reason=pr-lookup-indeterminate [#2298]."""
 
     def result(code: int, line: str) -> int:
         print(line)
@@ -1611,8 +1613,10 @@ def delete_head(
             )
         others = (
             open_pulls_for
-            or (lambda b: github.list_pulls(owner, name, head=f"{owner}:{b}", state="open"))
+            or (lambda b: github.list_pulls_strict(owner, name, head=f"{owner}:{b}", state="open"))
         )(ref)
+        if not isinstance(others, list):
+            return kept("pr-lookup-indeterminate")
         for other in others:
             other_head = other.get("head") if isinstance(other, dict) else None
             if _full_name(other_head.get("repo") if isinstance(other_head, dict) else None) == (
@@ -1621,8 +1625,11 @@ def delete_head(
                 return kept("open-pr")
         # Deleting a branch auto-closes any open PR that uses it as its base.
         stacked = (
-            open_pulls_based_on or (lambda b: github.list_pulls(owner, name, state="open", base=b))
+            open_pulls_based_on
+            or (lambda b: github.list_pulls_strict(owner, name, state="open", base=b))
         )(ref)
+        if not isinstance(stacked, list):
+            return kept("pr-lookup-indeterminate")
         if stacked:
             return kept("base-of-open-pr")
         got = remote_delete([(ref, sha)]).get(ref)
