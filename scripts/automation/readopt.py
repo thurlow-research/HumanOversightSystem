@@ -502,10 +502,16 @@ def prune_attempts(
     remote_delete: Optional[RemoteDelete] = None,
     slug: "Optional[tuple[str, str]]" = None,
     open_pr: Optional[Callable[[str], bool]] = None,
+    base: str = "origin/main",
+    issue_states: Optional[IssueStatesLookup] = None,
 ) -> "list[str]":
     """Delete local ``worker-<issue>-*`` attempts. Closed issue: delete all,
     but only after the issue's state is verified ``closed`` server-side (an
     open issue or a failed lookup raises GitError and deletes nothing).
+    A batched attempt may also carry unlanded work for another issue (#2291):
+    an attempt is kept, with a WARN, when any other ``#ref`` in its
+    ``base..tip`` commit messages is not verified ``closed`` (open, unknown,
+    lookup failure, or a git error reading the refs).
     Otherwise keep ``keep`` (must exist) or the newest tip, delete the rest.
     The checked-out branch is never deleted. Raises GitError on git failure or
     an unknown ``keep``.
@@ -536,7 +542,7 @@ def prune_attempts(
     names = [n for _, n in attempts]
 
     if issue_closed:
-        doomed = names
+        doomed = _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug)
     else:
         if keep is not None:
             if keep not in names:
@@ -574,6 +580,45 @@ def prune_attempts(
         else:
             print(f"WARN: could not delete '{branch}'")
     return deleted
+
+
+def _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug) -> "list[str]":
+    """The attempts of a closed ``issue`` that are safe to delete (#2291): those
+    whose commits reference no issue other than ``issue`` that is not closed."""
+    others: "dict[str, set[int]]" = {}
+    safe: "list[str]" = []
+    for name in names:
+        refs = _commit_issue_refs(git, base, tips[name])
+        if refs is None:
+            print(f"WARN: '{name}' kept — cannot read its commit refs (git error)")
+            continue
+        extra = refs - {issue}
+        if extra:
+            others[name] = extra
+        else:
+            safe.append(name)
+    if not others:
+        return safe
+    needed = set().union(*others.values())
+    try:
+        states = (issue_states or _github_issue_states(slug or _slug_from_origin(git)))(needed)
+    except Exception as exc:  # never delete on uncertainty
+        for name in others:
+            print(
+                f"WARN: '{name}' kept — cannot verify its other referenced issues: {_one_line(exc)}"
+            )
+        return safe
+    for name, extra in others.items():
+        bad = [
+            f"#{n} ({states.get(n, 'unknown')})" for n in sorted(extra) if states.get(n) != "closed"
+        ]
+        if bad:
+            print(
+                f"WARN: '{name}' kept — its commits reference issue(s) not closed: {', '.join(bad)}"
+            )
+        else:
+            safe.append(name)
+    return safe
 
 
 class _PruneRemote:
