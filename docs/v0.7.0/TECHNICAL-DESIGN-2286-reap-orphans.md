@@ -337,11 +337,11 @@ The issue's **selector check** (a `select_work_candidates` dry run before and af
 ## 9. Residual risk
 
 1. **The first real run deletes about 300 local branches.** It happens the first time a human (or slice 2's cron) runs `reap-orphans` without `--dry-run`. The PR **must** attach the full dry-run output from the Worker clone, every KEEP and WOULD-REAP line, so a human reviews the delete set before merge. Slice 1 does not wire the subcommand into cron.
-2. **D2 can delete local-only unlanded work.** It deletes `worker-<N>-*` branches with unlanded, never-pushed work on a **closed** issue. The issue requires this, and the existing `prune-attempts --issue-closed` already does the same. A2 narrows it to branches whose commits reference no open issue.
+2. **D2 can delete local-only unlanded work.** It deletes `worker-<N>-*` branches with unlanded, never-pushed work on a **closed** issue. The issue requires this, and the existing `prune-attempts --issue-closed` deletes closed-issue attempts in the same way (since #2291 it applies the same A2 `#ref` check). A2 narrows it to branches whose commits reference no open issue.
    - *Correction (architect):* `update-ref -d` deletes the branch's own reflog, so the branch reflog is **not** a recovery path.
    - What remains: the `tip=` SHA in the cycle log (A8), plus `HEAD`'s reflog if the branch was ever checked out (unreachable entries expire after `gc.reflogExpireUnreachable`, default 30 days). `git branch <name> <sha>` recovers the work within that window.
    - The dry run makes every D2 candidate visible before the first real run.
-   - *Known, not fixed here:* `prune-attempts --issue-closed` has the same batched-branch hazard that A2 closes for D2. A follow-up is noted in §10.
+   - *Known, not fixed here (resolved in #2291):* `prune-attempts --issue-closed` had the same batched-branch hazard that A2 closes for D2. The §10 follow-up was filed as #2291, which applies the A2 `#ref` check: an attempt whose `origin/main..tip` commit messages reference any other issue not verified `closed` (open, unknown, failed lookup, or a git error reading the refs) is kept with a WARN naming that issue.
 3. **Recovery for D1 and D1' deletions.** Content deleted under D1 or D1' remains at `refs/pull/<n>/head`.
 4. **Protected surfaces.** `.claude/agents/worker.md` puts this PR on a protected surface, so it gets human review at merge.
 5. **Acceptance item 1 is not fully met by design (architect ruling A10).** #2286's acceptance says the clone ends with only `main`, the current branch and open-PR heads. Its own never-delete rule protects unlanded work on open issues, which is about 30 parked or escalated branches, and the safety rule wins. The PR therefore:
@@ -383,7 +383,7 @@ No open question needs a human ruling for slice 1.
 
 **Slice split:** coherent. Slice 1 delivers the deletion engine plus the `prune-attempts` close-path delete, and runs nothing automatically. Slice 2 owns everything that runs unattended: cron wiring with its own bound and cadence, bounce close-path deletion, item 4's root cause and the metric. Do not merge slice 2's cron wiring before a human has reviewed slice 1's first real run (§9.1).
 
-**Follow-up to file (worker, not this reviewer):** `prune-attempts --issue-closed` has the A2 batched-branch hazard. Either apply the same `#ref` check there, or document the hazard in `worker.md`.
+**Follow-up to file (worker, not this reviewer):** `prune-attempts --issue-closed` has the A2 batched-branch hazard. Either apply the same `#ref` check there, or document the hazard in `worker.md`. [Filed and resolved as #2291: the same `#ref` check is applied in `readopt.py prune-attempts --issue-closed`.]
 
 **No human ruling required.**
 
