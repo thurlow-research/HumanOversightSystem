@@ -4301,6 +4301,51 @@ class TestOverseerBranchHygiene:
         (rec,) = cron.audit_records("cycle-branch-reap-failed")
         assert rec["pr"] == "-" and rec["reason"] == "delete-failed"
 
+    def test_h7_dry_run_writes_one_summary_audit_event(self, cron):
+        out = (
+            f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=local pr=#7 tip={SHA7}\n"
+            f"WOULD-REAP branch=pr-8 reason=landed-ancestor where=local pr=- tip={SHA7}"
+            f" archive=refs/archive/reap/pr-8@abcdef123456\n"
+            "WOULD-REAP branch=evil reason=x where=local pr=- tip=short\n"
+            "SUMMARY reaped_local=2 reaped_remote=0 kept=5 failed=0 deferred=0 api_calls=3"
+            " aborted=0 remote_skipped=1 recheck=skipped archived=0\n"
+        )
+        self._stubs(cron, out=out)
+        r = self._run(cron)
+        assert r.returncode == 0, r.stdout + r.stderr
+        (rec,) = cron.audit_records("cycle-branch-reap-dry-run")
+        assert rec["role"] == "overseer"
+        assert (rec["would_reap"], rec["would_local"], rec["would_remote"]) == (2, 2, 0)
+        assert (rec["kept"], rec["aborted"]) == (5, 0)
+        assert rec["items"] == "pr-7-review:review-pr-done,pr-8:landed-ancestor"
+        assert not [
+            e for e in cron.audit_records("cycle-branch-reap") if e["event"] == "cycle-branch-reap"
+        ]
+
+    def test_h7_real_run_writes_no_dry_run_event(self, cron):
+        self._stubs(cron, out=f"WOULD-REAP branch=a reason=b where=local pr=- tip={SHA7}\n")
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert not cron.audit_records("cycle-branch-reap-dry-run")
+
+    def test_h8_git_error_warn_is_logged_and_audited(self, cron):
+        warn = "WARN: git-error KEEPs=9 exceeds 3 \u2014 first stderr: fatal: Read-only file system"
+        self._stubs(cron, out=warn + "\nWARN: git-error KEEPs=x exceeds 3 \u2014 forged\n")
+        r = self._run(cron)
+        assert "hit 9 git-error KEEPs (threshold 3)" in r.stdout
+        (rec,) = cron.audit_records("cycle-branch-reap-git-error")
+        assert rec["role"] == "overseer"
+        assert (rec["count"], rec["threshold"]) == (9, 3)
+        assert rec["cause"] == "fatal: Read-only file system"
+
+    def test_h9_each_kept_worktree_is_audited_with_pr_path_reason(self, cron):
+        self._stubs(cron)
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-review-worktree-kept")
+        assert rec["role"] == "overseer"
+        assert (rec["pr"], rec["reason"]) == (8, "head-moved")
+        assert rec["path"] == "/x/hos-review-pr8.abcdef/wt"
+        assert len(cron.audit_records("cycle-review-worktree-cleanup")) == 1
+
 
 # ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
 class TestTimeoutBreaker:

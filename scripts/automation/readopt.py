@@ -121,6 +121,9 @@ IssueStateLookup = Callable[[int], str]
 DEFAULT_MAX_LOOKUPS = 20
 # Circuit breaker: stop PR lookups for the run after this many consecutive failures.
 MAX_CONSECUTIVE_LOOKUP_FAILURES = 2
+# reap-orphans prints a WARN when more than this many KEEPs in one run are
+# ``git-error`` (e.g. a read-only .git makes every git call fail; #2313).
+GIT_ERROR_WARN_THRESHOLD = 3
 
 
 def _one_line(exc: object) -> str:
@@ -135,6 +138,10 @@ class GitError(RuntimeError):
 
 
 def make_git(repo: Path) -> GitRunner:
+    """Runner returning ``(rc, stdout)``. ``run.first_error`` keeps the first non-empty
+    stderr of a failing call (raw; sanitize with ``_one_line`` before printing) so
+    reap-orphans can name the cause when many decisions end in ``git-error`` (#2313)."""
+
     def run(args: Sequence[str]) -> "tuple[int, str]":
         proc = subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -142,8 +149,11 @@ def make_git(repo: Path) -> GitRunner:
             text=True,
             check=False,
         )
+        if proc.returncode != 0 and not run.first_error and proc.stderr.strip():
+            run.first_error = proc.stderr.strip().splitlines()[0]
         return proc.returncode, proc.stdout.strip()
 
+    run.first_error = ""  # type: ignore[attr-defined]
     return run
 
 
@@ -1110,6 +1120,14 @@ def reap_orphans(
     ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
     so a WOULD-REAP can still become KEEP open-pr in the real run.
 
+    Rule D4 (review copies ``pr-N``/``pr-N-review``) is name-based and is NOT limited to
+    local refs: with ``remote_scope="all"`` a remote head with a review-copy name and no
+    PR of its own is decided by D4 too (#2313). The overseer's ``--local-only`` run never
+    reaches remote heads.
+
+    More than ``GIT_ERROR_WARN_THRESHOLD`` ``git-error`` KEEPs in one run print
+    ``WARN: git-error KEEPs=<n> exceeds <t> — first stderr: <line>``.
+
     ``issue_closed=False`` (CLI ``--no-issue-closed``, #2288 S3) suppresses rule D2 only:
     a closed-issue branch that has not landed is KEPT as ``issue-closed-unlanded``.
 
@@ -1346,6 +1364,13 @@ def reap_orphans(
     ]
     counts["kept"] = sum(1 for d in ordered if not d.reap)
     budget = max_deletions if max_deletions > 0 else None
+    git_errors = sum(1 for d in ordered if not d.reap and d.reason == "git-error")
+    if git_errors > GIT_ERROR_WARN_THRESHOLD:
+        cause = _one_line(getattr(git, "first_error", "") or "(none)")
+        print(
+            f"WARN: git-error KEEPs={git_errors} exceeds {GIT_ERROR_WARN_THRESHOLD}"
+            f" — first stderr: {cause}"
+        )
 
     if dry_run:
         for d in ordered:

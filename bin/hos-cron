@@ -51,6 +51,8 @@
 #   HOS_WORKTREE_HYGIENE        override <project>_worktree_hygiene (off|preserve)
 #   HOS_WORKTREE_HYGIENE_MAX_BYTES  quarantine size ceiling in bytes before hygiene
 #                               refuses to sweep (default 268435456 = 256 MiB)
+#   HOS_OVERSEER_BRANCH_REAP    override <project>_overseer_branch_reap (off|dry-run|on;
+#                               default dry-run; overseer-only, local branches; #2287)
 #   HOS_DIVERGED_MAIN_MAX_ATTEMPTS  consecutive cycles a diverged local main
 #                               (#996) may fail-close silently before a
 #                               needs-human issue is filed (default 3; #1510)
@@ -1768,6 +1770,12 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     # Anchored: only a line that fully matches is audited (CWE-117 log-forging guard).
     # Groups: 1 kind, 2 branch, 3 reason, 4 where, 6 pr (absent on REAP-FAILED), 7 tip.
     _RB_EVENT_RE='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
+    # WOULD-REAP (dry run only; #2313): same shape as REAPED plus an optional archive= ref.
+    _RB_WOULD_RE='^WOULD-REAP branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote) pr=(#[0-9]+|-) tip=([0-9a-f]{40})( archive=[A-Za-z0-9._/@+-]+)?$'
+    _RB_SUMMARY_RE='^SUMMARY reaped_local=[0-9]+ reaped_remote=[0-9]+ kept=([0-9]+) failed=[0-9]+ deferred=[0-9]+ api_calls=[0-9]+ aborted=([01])( [a-z_]+=[A-Za-z0-9_-]+)*$'
+    # Loud signal (#2313): many git-error KEEPs in one run, e.g. a read-only .git.
+    _RB_GITERR_RE='^WARN: git-error KEEPs=([0-9]+) exceeds ([0-9]+) — first stderr: (.*)$'
+    _rb_would=0; _rb_would_local=0; _rb_would_remote=0; _rb_kept=-; _rb_aborted=-; _rb_items=""
     _rb_rc=0
     _rb_out="$(cd "$REPO_ROOT" && ${_RB_BOUND[@]+"${_RB_BOUND[@]}"} python3 -u -m scripts.automation.readopt "${_RB_ARGS[@]}" 2>&1)" || _rb_rc=$?
     # Process the output on BOTH paths so REAPED audit events survive a kill/crash:
@@ -1780,8 +1788,24 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
         [[ "${BASH_REMATCH[1]}" == "REAPED" ]] || _rb_event="cycle-branch-reap-failed"
         _audit "$_rb_event" "role=overseer" "branch=${BASH_REMATCH[2]}" "reason=${BASH_REMATCH[3]}" \
           "where=${BASH_REMATCH[4]}" "pr=${BASH_REMATCH[6]:--}" "tip=${BASH_REMATCH[7]}"
+      elif [[ "$_rb_line" =~ $_RB_WOULD_RE ]]; then
+        _rb_would=$((_rb_would + 1))
+        if [[ "${BASH_REMATCH[3]}" == "local" ]]; then _rb_would_local=$((_rb_would_local + 1)); else _rb_would_remote=$((_rb_would_remote + 1)); fi
+        _rb_items="${_rb_items:+${_rb_items},}${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+      elif [[ "$_rb_line" =~ $_RB_SUMMARY_RE ]]; then
+        _rb_kept="${BASH_REMATCH[1]}"; _rb_aborted="${BASH_REMATCH[2]}"
+      elif [[ "$_rb_line" =~ $_RB_GITERR_RE ]]; then
+        _rb_cause="$(printf '%s' "${BASH_REMATCH[3]}" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)"
+        echo "$LOG_PREFIX WARN: readopt (overseer) hit ${BASH_REMATCH[1]} git-error KEEPs (threshold ${BASH_REMATCH[2]}) — is .git read-only? first stderr: ${_rb_cause} (#2313)"
+        _audit cycle-branch-reap-git-error "role=overseer" "count=${BASH_REMATCH[1]}" "threshold=${BASH_REMATCH[2]}" "cause=${_rb_cause}"
       fi
     done <<< "$_rb_out"
+    # A dry run leaves a durable record (#2313): one summary event per run; items capped.
+    if [[ "$_RB_MODE" == "dry-run" && ( "$_rb_would" -gt 0 || "$_rb_kept" != "-" ) ]]; then
+      _audit cycle-branch-reap-dry-run "role=overseer" "would_reap=${_rb_would}" \
+        "would_local=${_rb_would_local}" "would_remote=${_rb_would_remote}" \
+        "kept=${_rb_kept}" "aborted=${_rb_aborted}" "items=$(printf '%s' "$_rb_items" | cut -c1-500)"
+    fi
     if [[ "$_rb_rc" -ne 0 ]]; then
       _rb_why="rc=$_rb_rc"
       if [[ "$_rb_rc" -eq 124 || "$_rb_rc" -eq 137 ]]; then _rb_why="$_rb_why timeout"; fi
@@ -2673,12 +2697,20 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/bootstrap/review_worktree.sh" ]]; 
   _wt_out="$(${_WT_BOUND[@]+"${_WT_BOUND[@]}"} bash "$REPO_ROOT/bootstrap/review_worktree.sh" --repo "$REPO_ROOT" --cleanup-all --older-than-mins 60 2>&1)" || _wt_rc=$?
   _wt_removed=0
   _wt_kept=0
+  _WT_KEPT_RE='^KEPT-WORKTREE pr=([0-9]+) path=([^ ]+) reason=([a-z-]+)$'
   while IFS= read -r _wt_line; do
     [[ -z "$_wt_line" ]] && continue
     echo "$LOG_PREFIX review-worktree: $_wt_line"
     case "$_wt_line" in
       "REMOVED-WORKTREE "*) _wt_removed=$((_wt_removed + 1)) ;;
-      "KEPT-WORKTREE "*)    _wt_kept=$((_wt_kept + 1)) ;;
+      "KEPT-WORKTREE "*)
+        _wt_kept=$((_wt_kept + 1))
+        # Anchored (CWE-117): only a fully matching line is audited; path sanitized and capped.
+        if [[ "$_wt_line" =~ $_WT_KEPT_RE ]]; then
+          _wt_path="$(printf '%s' "${BASH_REMATCH[2]}" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)"
+          _audit cycle-review-worktree-kept "role=overseer" "pr=${BASH_REMATCH[1]}" "path=${_wt_path}" "reason=${BASH_REMATCH[3]}"
+        fi
+        ;;
     esac
   done <<< "$_wt_out"
   if [[ "$_wt_rc" -ne 0 ]]; then
