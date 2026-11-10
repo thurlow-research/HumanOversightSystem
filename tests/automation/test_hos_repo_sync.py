@@ -608,6 +608,32 @@ class TestPrune:
         assert r.returncode == 0, r.stdout + r.stderr
         assert len(_calls(prune_repo.tmp)) == 1
 
+    def test_h5_matching_root_then_dangling_entry_still_fails_closed(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp)
+        self._write_conf(
+            env,
+            f"x_worker_root={prune_repo.clone}\ny_overseer_root={prune_repo.tmp / 'gone'}\n",
+        )
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "registry entry y_overseer_root does not resolve to a directory" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
+    def test_h6_dangling_entry_then_existing_nonmatching_root_fails_closed(
+        self, prune_repo, state_dir
+    ):
+        other = prune_repo.tmp / "elsewhere"
+        other.mkdir()
+        env = _prune_env(prune_repo.tmp)
+        self._write_conf(
+            env,
+            f"y_overseer_root={prune_repo.tmp / 'gone'}\nx_worker_root={other}\n",
+        )
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "registry entry y_overseer_root does not resolve to a directory" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
 
 def _install_audit_lib(clone):
     lib = clone / "scripts" / "oversight" / "lib"
