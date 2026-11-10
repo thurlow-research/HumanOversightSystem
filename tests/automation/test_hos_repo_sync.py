@@ -281,7 +281,9 @@ class TestPerRepoStateIsolation:
 STUB_READOPT = """\
 import json, os, sys, time
 with open(os.environ["PRUNE_CAPTURE"], "a") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
+    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(),
+                         "has_pythonpath": "PYTHONPATH" in os.environ,
+                         "has_role": "HOS_TOKEN_APP_ROLE" in os.environ}) + "\\n")
 for line in os.environ.get("PRUNE_STUB_OUT", "").splitlines():
     print(line, flush=True)
 time.sleep(float(os.environ.get("PRUNE_STUB_SLEEP", "0")))
@@ -539,6 +541,7 @@ class TestPrune:
         self, prune_repo, state_dir, line_fmt, expect_skip
     ):
         env = _prune_env(prune_repo.tmp)
+        (prune_repo.tmp / "elsewhere").mkdir()  # a dangling root now fails closed (#2299)
         conf = Path(env["HOME"]) / ".config" / "hos" / "projects.conf"
         conf.parent.mkdir(parents=True)
         conf.write_text(
@@ -551,3 +554,125 @@ class TestPrune:
             assert _calls(prune_repo.tmp) == []
         else:
             assert len(_calls(prune_repo.tmp)) == 1
+
+    def test_h1_child_env_scrubbed_and_python_isolated(self, prune_repo, state_dir, tmp_path):
+        real = shutil.which("python3")
+        shims = tmp_path / "pyshims"
+        shims.mkdir()
+        log = tmp_path / "python-argv.log"
+        shim = shims / "python3"
+        shim.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        shim.chmod(0o755)
+        env = _prune_env(prune_repo.tmp, PYTHONPATH=str(tmp_path / "evil"))
+        r = _run_prune(
+            prune_repo.clone, state_dir, env, path=f"{shims}{os.pathsep}{os.environ['PATH']}"
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        calls = _calls(prune_repo.tmp)
+        assert len(calls) == 1
+        assert calls[0]["has_pythonpath"] is False
+        assert calls[0]["has_role"] is False
+        assert "-E -s -u -m scripts.automation.readopt" in log.read_text()
+
+    def _write_conf(self, env, text):
+        conf = Path(env["HOME"]) / ".config" / "hos" / "projects.conf"
+        conf.parent.mkdir(parents=True)
+        conf.write_text(text)
+
+    def test_h2_quoted_registry_value_fails_closed_naming_key(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp)
+        self._write_conf(env, f'x_worker_root="{prune_repo.clone}"\n')
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (
+            "prune skipped — registry entry x_worker_root does not resolve to a directory"
+            in r.stdout
+        )
+        assert str(prune_repo.clone) not in r.stdout.split("prune skipped")[1]
+        assert _calls(prune_repo.tmp) == []
+
+    def test_h3_nonexistent_registry_dir_fails_closed(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp)
+        self._write_conf(env, f"y_overseer_root={prune_repo.tmp / 'gone'}\n")
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "registry entry y_overseer_root does not resolve to a directory" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
+    def test_h4_existing_nonmatching_root_still_prunes(self, prune_repo, state_dir):
+        other = prune_repo.tmp / "elsewhere"
+        other.mkdir()
+        env = _prune_env(prune_repo.tmp)
+        self._write_conf(env, f"x_worker_root={other}\n")
+        r = _run_prune(prune_repo.clone, state_dir, env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert len(_calls(prune_repo.tmp)) == 1
+
+
+def _install_audit_lib(clone):
+    lib = clone / "scripts" / "oversight" / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    src = SCRIPT.parent.parent / "scripts" / "oversight" / "lib"
+    shutil.copy(src / "audit_log.sh", lib / "audit_log.sh")
+    shutil.copy(src / "audit_log.py", lib / "audit_log.py")
+
+
+def _audit_events(clone):
+    return [json.loads(f.read_text()) for f in sorted((clone / "audit" / "log").rglob("*.json"))]
+
+
+class TestPruneAudit:
+    TIP = "b" * 40
+
+    def _run(self, prune_repo, state_dir, out):
+        return _run_prune(
+            prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, PRUNE_STUB_OUT=out)
+        )
+
+    def test_a1_reaped_local_writes_one_event(self, prune_repo, state_dir):
+        _install_audit_lib(prune_repo.clone)
+        line = f"REAPED branch=human/x-1 reason=pr-merged where=local pr=#5 tip={self.TIP}"
+        r = self._run(prune_repo, state_dir, line)
+        assert r.returncode == 0, r.stdout + r.stderr
+        events = _audit_events(prune_repo.clone)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "repo-sync-branch-reap"
+        assert ev["role"] == "human"
+        assert (ev["branch"], ev["reason"], ev["where"], ev["pr"], ev["tip"]) == (
+            "human/x-1", "pr-merged", "local", "#5", self.TIP,
+        )  # fmt: skip
+
+    def test_a2_reap_failed_writes_failed_event(self, prune_repo, state_dir):
+        _install_audit_lib(prune_repo.clone)
+        line = f"REAP-FAILED branch=human/y reason=landed-ancestor where=local tip={self.TIP}"
+        r = self._run(prune_repo, state_dir, line)
+        assert r.returncode == 0, r.stdout + r.stderr
+        events = _audit_events(prune_repo.clone)
+        assert [e["event"] for e in events] == ["repo-sync-branch-reap-failed"]
+        assert events[0]["pr"] == "-"
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            f"REAPED branch=human/x reason=pr-merged where=local pr=#5 tip={'b' * 40} junk",
+            f"REAPED branch=human/x reason=pr-merged where=remote pr=#5 tip={'b' * 40}",
+            f"  REAPED branch=human/x reason=pr-merged where=local tip={'b' * 40}",
+            f"REAPED branch=x;rm reason=pr-merged where=local tip={'b' * 40}",
+        ],
+    )
+    def test_a3_forged_or_remote_line_writes_no_event(self, prune_repo, state_dir, line):
+        _install_audit_lib(prune_repo.clone)
+        r = self._run(prune_repo, state_dir, line)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert f"hos-repo-sync: prune: {line}" in r.stdout
+        assert _audit_events(prune_repo.clone) == []
+
+    def test_a4_missing_audit_lib_does_not_change_output_or_exit(self, prune_repo, state_dir):
+        line = f"REAPED branch=human/x reason=pr-merged where=local pr=#5 tip={self.TIP}"
+        r = self._run(prune_repo, state_dir, line)
+        assert r.returncode == 0, r.stdout + r.stderr
+        lines = r.stdout.splitlines()
+        a = lines.index(f"hos-repo-sync: prune: {line}")
+        assert lines[a + 1].startswith("hos-repo-sync: prune: recover a deleted branch")
+        assert not (prune_repo.clone / "audit").exists()

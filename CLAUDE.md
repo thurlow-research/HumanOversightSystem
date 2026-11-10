@@ -360,7 +360,7 @@ T4.1 for the enforced, current exemption set.
 | Recording a human wait (question comment, then needs-human, idempotent) | `bootstrap/escalate_to_human.sh` |
 | Adding or removing one sub-issue link or blocked_by dependency edge (numbers in, internal ids resolved, idempotent, read-back verified; removal can unblock work — until T3.3's edge check lands, remove an edge only on a human's instruction) | `bootstrap/edit_issue_edges.sh` |
 | Posting an overseer PR verdict, or requesting the CODEOWNERS human reviewer | `bootstrap/pr_review.sh` |
-| Repo sync (fetch + fast-forward the default branch) | `bootstrap/hos_repo_sync.sh` |
+| Repo sync (fetch + fast-forward the default branch; with `HOS_REPO_SYNC_PRUNE=1`, Human clone only, also prunes merged or closed local branches) | `bootstrap/hos_repo_sync.sh` |
 | Dependency/environment health check | `scripts/oversight/smoke_test.sh` |
 | Running the PR-required test suite | `scripts/framework/run_tests_inner_loop.sh` |
 | Running blocking pre-review gates | `scripts/oversight/run_gates.sh` |
@@ -517,7 +517,7 @@ matters most, not least. File the issue first.
    _t="$(mktemp)"; bootstrap/get_app_token.sh --app human > "$_t" && source "$_t" && rm -f "$_t"
    ```
 3. Identity guard: abort if `HOS_BOT_LOGIN != HOS_EXPECTED_BOT_LOGIN` (both exported by `get_app_token.sh`)
-4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session, but a residual behind-count is always reported loudly on stderr, with the cause classified structural — e.g. sandbox write-protection, will not resolve by retrying — or transient/benign — e.g. network, dirty tree, retry next session; #1200)
+4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session, but a residual behind-count is always reported loudly on stderr, with the cause classified structural — e.g. sandbox write-protection, will not resolve by retrying — or transient/benign — e.g. network, dirty tree, retry next session; #1200; it also runs an opt-in prune of merged or closed local branches when `HOS_REPO_SYNC_PRUNE=1`, which `bin/hos-human` sets. Human clone only)
 5. Orient: read the handoff the SessionStart hook already printed above (from
    this clone's `HANDOFF_DIR`, configured in `.claude/settings.local.json` —
    see `docs/SANDBOX-POLICY.md` §5) before acting. Do not read
