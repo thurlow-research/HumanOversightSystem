@@ -1860,6 +1860,37 @@ def test_t14_prune_open_pr_keeps_remote(attempts, capsys):
     assert "worker-20-old" in remote_heads_of(repo)
 
 
+def test_t14_prune_indeterminate_open_pr_seam_keeps_remote(attempts, capsys):
+    repo = attempts
+    push_branch(repo, "worker-20-old")
+    deletes = []
+    readopt.prune_attempts(
+        repo,
+        20,
+        slug=SLUG,
+        open_pr=lambda b: None,
+        remote_delete=lambda items: deletes.append(items) or {},
+    )
+    out = capsys.readouterr().out
+    assert "WARN: remote head 'worker-20-old' open-PR lookup indeterminate" in out
+    assert "remote head kept" in out
+    assert deletes == []
+    assert "worker-20-old" in remote_heads_of(repo)
+
+
+def test_t14_prune_default_lookup_indeterminate_keeps_remote(attempts, capsys, monkeypatch):
+    repo = attempts
+    push_branch(repo, "worker-20-old")
+    monkeypatch.setattr(readopt.github, "list_pulls_strict", lambda *a, **k: None)
+    deletes = []
+    readopt.prune_attempts(
+        repo, 20, slug=SLUG, remote_delete=lambda items: deletes.append(items) or {}
+    )
+    assert "open-PR lookup indeterminate — remote head kept" in capsys.readouterr().out
+    assert deletes == []
+    assert "worker-20-old" in remote_heads_of(repo)
+
+
 def test_t14_prune_dry_run_reads_but_writes_nothing(attempts, capsys):
     repo = attempts
     push_branch(repo, "worker-20-old")

@@ -90,3 +90,7 @@ directly (not the `coder` subagent): the `edit_issue.sh` rows of the script-usag
 PR head-delete default, and the exit-4 recovery note; each table gains a `delete_branch.sh`
 row with its exit codes (0 gone, 3 KEPT incl. `pr-lookup-indeterminate`, 2 error, 1 usage).
 These edits are on the protected surface and need CODEOWNER review.
+
+## Follow-up brief (code review SHOULD_FIX)
+
+The coordinator asked: "scripts/automation/readopt.py `_PruneRemote._has_open_pr` (~L650) default path uses non-strict `github.list_pulls(..., state="open")`, so a 404/empty body reads as "no open PR" and `step()` goes on to delete the remote head — the same fail-open class. Change the default path to `github.list_pulls_strict`; if the result is not a list, `step()` must keep the remote head with a distinct line `WARN: remote head '<branch>' open-PR lookup indeterminate — remote head kept` and never call delete_fn." Implemented with `_has_open_pr` returning Optional[bool] (None = indeterminate), also honoured from the injected `open_pr` seam.

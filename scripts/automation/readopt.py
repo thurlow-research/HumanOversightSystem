@@ -501,7 +501,7 @@ def prune_attempts(
     remote_heads: Optional[RemoteHeads] = None,
     remote_delete: Optional[RemoteDelete] = None,
     slug: "Optional[tuple[str, str]]" = None,
-    open_pr: Optional[Callable[[str], bool]] = None,
+    open_pr: Optional[Callable[[str], Optional[bool]]] = None,
     base: str = "origin/main",
     issue_states: Optional[IssueStatesLookup] = None,
 ) -> "list[str]":
@@ -647,11 +647,13 @@ class _PruneRemote:
             print(f"WARN: remote head lookup failed — remote heads kept: {_one_line(exc)}")
             self.dead = True
 
-    def _has_open_pr(self, branch: str) -> bool:
+    def _has_open_pr(self, branch: str) -> Optional[bool]:
+        """True/False for a genuine answer; None when the lookup is indeterminate (#2298)."""
         if self.open_pr is not None:
             return self.open_pr(branch)
         owner, repo = self.slug or _slug_from_origin(self.git)
-        return bool(github.list_pulls(owner, repo, head=f"{owner}:{branch}", state="open"))
+        pulls = github.list_pulls_strict(owner, repo, head=f"{owner}:{branch}", state="open")
+        return None if pulls is None else bool(pulls)
 
     def step(self, branch: str, tip: str, *, dry_run: bool) -> None:
         if self.dead:
@@ -670,7 +672,14 @@ class _PruneRemote:
             print(f"WOULD-DELETE branch={branch} where=remote")
             return
         try:
-            if self._has_open_pr(branch):
+            has_pr = self._has_open_pr(branch)
+            if has_pr is None:
+                print(
+                    f"WARN: remote head '{branch}' open-PR lookup indeterminate"
+                    " — remote head kept"
+                )
+                return
+            if has_pr:
                 print(f"WARN: remote head '{branch}' has an open PR — remote head kept")
                 return
             got = self.delete_fn([(branch, sha)]).get(branch) if self.delete_fn else False
