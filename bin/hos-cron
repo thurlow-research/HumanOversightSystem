@@ -2697,7 +2697,7 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/bootstrap/review_worktree.sh" ]]; 
   _wt_out="$(${_WT_BOUND[@]+"${_WT_BOUND[@]}"} bash "$REPO_ROOT/bootstrap/review_worktree.sh" --repo "$REPO_ROOT" --cleanup-all --older-than-mins 60 2>&1)" || _wt_rc=$?
   _wt_removed=0
   _wt_kept=0
-  _WT_KEPT_RE='^KEPT-WORKTREE pr=([0-9]+) path=([^ ]+) reason=([a-z-]+)$'
+  _WT_KEPT_RE='^KEPT-WORKTREE pr=([0-9]+) path=(.+) reason=([a-z-]+)$'
   while IFS= read -r _wt_line; do
     [[ -z "$_wt_line" ]] && continue
     echo "$LOG_PREFIX review-worktree: $_wt_line"

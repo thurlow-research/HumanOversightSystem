@@ -138,8 +138,9 @@ class GitError(RuntimeError):
 
 
 def make_git(repo: Path) -> GitRunner:
-    """Runner returning ``(rc, stdout)``. ``run.first_error`` keeps the first non-empty
-    stderr of a failing call (raw; sanitize with ``_one_line`` before printing) so
+    """Runner returning ``(rc, stdout)``. ``run.first_error`` keeps the first ``fatal:``/``error:``
+    stderr line (case-insensitive; ``warning:`` and other noise from benign probes are
+    ignored) of a failing call (raw; sanitize with ``_one_line`` before printing) so
     reap-orphans can name the cause when many decisions end in ``git-error`` (#2313)."""
 
     def run(args: Sequence[str]) -> "tuple[int, str]":
@@ -149,8 +150,11 @@ def make_git(repo: Path) -> GitRunner:
             text=True,
             check=False,
         )
-        if proc.returncode != 0 and not getattr(run, "first_error", "") and proc.stderr.strip():
-            run.first_error = proc.stderr.strip().splitlines()[0]  # type: ignore[attr-defined]
+        if proc.returncode != 0 and not getattr(run, "first_error", ""):
+            for line in proc.stderr.splitlines():
+                if line.strip().lower().startswith(("fatal:", "error:")):
+                    run.first_error = line.strip()  # type: ignore[attr-defined]
+                    break
         return proc.returncode, proc.stdout.strip()
 
     run.first_error = ""  # type: ignore[attr-defined]

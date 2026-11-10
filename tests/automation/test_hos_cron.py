@@ -4337,6 +4337,26 @@ class TestOverseerBranchHygiene:
         assert (rec["count"], rec["threshold"]) == (9, 3)
         assert rec["cause"] == "fatal: Read-only file system"
 
+    def test_h8_cause_is_stripped_of_control_bytes_and_capped(self, cron):
+        cause = "fatal: bad\x01\x1b[31m" + "x" * 300
+        self._stubs(cron, out=f"WARN: git-error KEEPs=9 exceeds 3 \u2014 first stderr: {cause}\n")
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-branch-reap-git-error")
+        assert len(rec["cause"]) == 200
+        assert not any(ord(c) < 32 or ord(c) == 127 for c in rec["cause"])
+        assert rec["cause"].startswith("fatal: bad[31m")
+
+    def test_h10_kept_worktree_path_with_space_is_audited(self, cron):
+        self._stubs(cron)
+        _write_exec(
+            cron.repo / "bootstrap" / "review_worktree.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "KEPT-WORKTREE pr=8 path=/x/my dir/wt reason=head-moved" >&2\n',
+        )
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-review-worktree-kept")
+        assert (rec["pr"], rec["path"], rec["reason"]) == (8, "/x/my dir/wt", "head-moved")
+
     def test_h9_each_kept_worktree_is_audited_with_pr_path_reason(self, cron):
         self._stubs(cron)
         self._run(cron)

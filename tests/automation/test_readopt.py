@@ -3366,3 +3366,34 @@ def test_git_error_keeps_at_threshold_print_no_warn(repo, capsys):
     issues = {80 + i: "open" for i in range(readopt.GIT_ERROR_WARN_THRESHOLD)}
     reap(repo, issues=issues, git=run, dry_run=True)
     assert not any(ln.startswith("WARN: git-error") for ln in lines_of(capsys))
+
+
+def test_make_git_first_error_keeps_first_fatal_only(repo: Path) -> None:
+    run = readopt.make_git(repo)
+    assert run.first_error == ""  # type: ignore[attr-defined]
+    assert run(["status", "--porcelain"])[0] == 0
+    assert run.first_error == ""  # type: ignore[attr-defined]  # rc 0 never records
+    rc, _ = run(["rev-parse", "--verify", "-q", "refs/heads/no-such"])
+    assert rc != 0 and run.first_error == ""  # type: ignore[attr-defined]  # silent failure
+    rc, _ = run(["rev-parse", "--verify", "bogus-ref-one^{commit}"])
+    assert rc != 0
+    first = run.first_error  # type: ignore[attr-defined]
+    assert first.lower().startswith("fatal:") and "single revision" in first
+    run(["rev-parse", "--verify", "bogus-ref-two^{commit}"])
+    assert run.first_error == first  # type: ignore[attr-defined]
+
+
+def test_make_git_first_error_ignores_warning_only_stderr(repo: Path, tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    shim = fake_bin / "git"
+    shim.write_text("#!/bin/sh\necho 'warning: something benign' >&2\nexit 1\n")
+    shim.chmod(0o755)
+    old = os.environ["PATH"]
+    os.environ["PATH"] = f"{fake_bin}:{old}"
+    try:
+        run = readopt.make_git(repo)
+        assert run(["anything"])[0] == 1
+    finally:
+        os.environ["PATH"] = old
+    assert run.first_error == ""  # type: ignore[attr-defined]
