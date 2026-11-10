@@ -3342,7 +3342,9 @@ def test_git_error_keeps_over_threshold_print_warn_with_first_stderr(repo, capsy
 
     def run(args):
         if list(args[:2]) == ["merge-tree", "--write-tree"]:
-            run.first_error = run.first_error or "fatal: Unable to create 'x.lock': Read-only file system"
+            run.first_error = (
+                run.first_error or "fatal: Unable to create 'x.lock': Read-only file system"
+            )
             return 2, ""
         return real(args)
 

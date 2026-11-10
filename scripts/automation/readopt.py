@@ -150,7 +150,7 @@ def make_git(repo: Path) -> GitRunner:
             check=False,
         )
         if proc.returncode != 0 and not getattr(run, "first_error", "") and proc.stderr.strip():
-            setattr(run, "first_error", proc.stderr.strip().splitlines()[0])
+            run.first_error = proc.stderr.strip().splitlines()[0]  # type: ignore[attr-defined]
         return proc.returncode, proc.stdout.strip()
 
     run.first_error = ""  # type: ignore[attr-defined]
