@@ -53,3 +53,11 @@ Do NOT write closes/fixes/resolves followed by an issue number anywhere. Do not 
 ```
 One fix: #2299 item 4 names the audit fields "branch, reason, pr, tip, actor", and bootstrap/delete_branch.sh's branch-delete event uses "actor". In _prune_audit's JSON, rename "role":"human" to "actor":"human" and update the test assertion. Re-run the three test files + run_gates.sh on changed files, and commit with the same trailer block (separate commit is fine). Do not push.
 ```
+
+## Revision 2 (worker → coder, after code-review SHOULD_FIX 1)
+
+```
+Revision 2 (test only): in tests/automation/test_hos_repo_sync.py add a case where projects.conf has an existing directory entry that MATCHES the clone (e.g. x_worker_root=<clone path>) followed by a dangling entry (y_overseer_root=<tmp>/gone), and assert the prune is skipped with the "registry entry y_overseer_root does not resolve to a directory" message and readopt is never called. Also add the reverse order (dangling first, then an existing non-matching root) asserting skip. No change to bootstrap/hos_repo_sync.sh. Run test_hos_repo_sync.py and run_gates.sh on the test file, commit with the same trailer block, do not push. Do not run gen_scripts_index.sh with --check (it writes a file named --check).
+```
+
+Code-review SHOULD_FIX 2 (wrap audit_write_event in env -u PYTHONPATH) declined: audit_write_event is a shell function, which env cannot wrap; item 1 scopes isolation to the readopt child.
