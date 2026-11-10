@@ -59,7 +59,9 @@ source_paths = [
     "scripts/oversight/record_agent_model.py",
     "scripts/oversight/release_artifact_logic.py",
     "scripts/oversight/release_logic.py",
+    "scripts/oversight/retry_rescue_logic.py",
     "scripts/oversight/second_review_logic.py",
+    "scripts/oversight/secret_scan_logic.py",
     "scripts/oversight/signoff_gate.py",
     "scripts/oversight/suspension_manager.py",
     "scripts/oversight/token_tracker.py",
@@ -69,5 +71,8 @@ source_paths = [
     "scripts/framework/require_overseer_approval.py",
     "scripts/framework/require_tier_ceiling.py",
 ]
+# Directories only (file entries break mutmut's copy); just what tests/conftest.py
+# and tests/registry_guard.py load from outside source_paths.
+also_copy = ["bootstrap/"]
 pytest_add_cli_args = ["--no-header"]
 pytest_add_cli_args_test_selection = ["tests/"]
