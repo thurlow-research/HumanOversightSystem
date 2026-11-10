@@ -81,3 +81,12 @@ Supervised-by: ScottThurlow
 Commit subject prefix "fix(2298): ". Do not mention closing keywords for any issue. Report the
 self-flag (RISK/CONFIDENCE/BLAST RADIUS) per AGENTS.md, the commit SHAs, and the test results.
 ```
+
+## Orchestrator-authored edits (not in the coder brief)
+
+Per CLAUDE.md "Agent-definition edits", the top-level worker session authored issue item 4
+directly (not the `coder` subagent): the `edit_issue.sh` rows of the script-usage tables in
+`.claude/agents/worker.md` and `.claude/agents/overseer.md` gain `[--keep-branch]`, the
+PR head-delete default, and the exit-4 recovery note; each table gains a `delete_branch.sh`
+row with its exit codes (0 gone, 3 KEPT incl. `pr-lookup-indeterminate`, 2 error, 1 usage).
+These edits are on the protected surface and need CODEOWNER review.
