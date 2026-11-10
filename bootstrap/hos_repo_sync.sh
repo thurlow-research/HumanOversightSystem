@@ -247,7 +247,7 @@ _prune_audit() {
   # shellcheck disable=SC1090
   source "$audit_lib" 2>/dev/null || return 0
   command -v audit_write_event >/dev/null 2>&1 || return 0
-  json="$(printf '{"event":"%s","role":"human","branch":"%s","reason":"%s","where":"%s","pr":"%s","tip":"%s","timestamp":"%s"}' \
+  json="$(printf '{"event":"%s","actor":"human","branch":"%s","reason":"%s","where":"%s","pr":"%s","tip":"%s","timestamp":"%s"}' \
     "$event" "$branch" "$reason" "$where" "$pr" "$tip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
   audit_write_event "$json" "$script_root" >/dev/null 2>&1 </dev/null || true
   return 0

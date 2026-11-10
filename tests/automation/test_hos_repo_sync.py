@@ -638,7 +638,7 @@ class TestPruneAudit:
         assert len(events) == 1
         ev = events[0]
         assert ev["event"] == "repo-sync-branch-reap"
-        assert ev["role"] == "human"
+        assert ev["actor"] == "human"
         assert (ev["branch"], ev["reason"], ev["where"], ev["pr"], ev["tip"]) == (
             "human/x-1", "pr-merged", "local", "#5", self.TIP,
         )  # fmt: skip
