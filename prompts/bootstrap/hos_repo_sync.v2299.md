@@ -24,7 +24,7 @@
 Dispatched by the autonomous worker to the `coder` subagent (exact text below).
 
 ```
-Implement HOS issue #2299 (follow-up of #2288 S3) in /home/scott/Code/HumanOversightSystem/Worker on branch worker-2299-repo-sync-prune-hardening-261110082001-2984900 (already checked out — do not create or switch branches; do not git stash or git checkout other refs). Read first: bootstrap/hos_repo_sync.sh, docs/v0.7.0/TECHNICAL-DESIGN-2288-S3-repo-sync-prune.md, tests/automation/test_hos_repo_sync.py, bootstrap/delete_branch.sh (_audit_branch_delete), bin/hos-cron lines ~1760-1790 (_RB_EVENT_RE + _audit), scripts/oversight/lib/audit_log.sh, and the worker design decisions in prompts/bootstrap/hos_repo_sync.v2299.md (they bind you).
+Implement HOS issue #2299 (follow-up of #2288 S3) in <Worker clone root> (machine path redacted for the portability gate) on branch worker-2299-repo-sync-prune-hardening-261110082001-2984900 (already checked out — do not create or switch branches; do not git stash or git checkout other refs). Read first: bootstrap/hos_repo_sync.sh, docs/v0.7.0/TECHNICAL-DESIGN-2288-S3-repo-sync-prune.md, tests/automation/test_hos_repo_sync.py, bootstrap/delete_branch.sh (_audit_branch_delete), bin/hos-cron lines ~1760-1790 (_RB_EVENT_RE + _audit), scripts/oversight/lib/audit_log.sh, and the worker design decisions in prompts/bootstrap/hos_repo_sync.v2299.md (they bind you).
 
 Changes, all in bootstrap/hos_repo_sync.sh unless noted:
 1. Prune invocation: run `env -u PYTHONPATH -u HOS_TOKEN_APP_ROLE python3 -E -s -u -m scripts.automation.readopt ...` (keep all existing args, the timeout wrapper, </dev/null). Do NOT use -P (it drops the cwd that makes -m scripts.* importable). Comment why, briefly.
@@ -46,4 +46,10 @@ Supervised-by: ScottThurlow
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 Do NOT write closes/fixes/resolves followed by an issue number anywhere. Do not push, file issues, edit labels, or post comments. If you will not edit CLAUDE.md or templates/CLAUDE.human.md, say so and leave them; the worker will. End with your AGENTS.md self-flag (RISK/CONFIDENCE/BLAST RADIUS) and the test output summary.
+```
+
+## Revision 1 (worker → coder, same session)
+
+```
+One fix: #2299 item 4 names the audit fields "branch, reason, pr, tip, actor", and bootstrap/delete_branch.sh's branch-delete event uses "actor". In _prune_audit's JSON, rename "role":"human" to "actor":"human" and update the test assertion. Re-run the three test files + run_gates.sh on changed files, and commit with the same trailer block (separate commit is fine). Do not push.
 ```
