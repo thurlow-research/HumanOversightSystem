@@ -150,3 +150,43 @@ def test_usage_pause_files_shipped():
     """#1944: the poller and its library ship to consumer installs."""
     files = set(_consumer_files())
     assert {"bin/hos-usage-poll", "bin/lib/usage_pause.py"} <= files
+
+
+# Files that call another shipped file at runtime: shipping the dependent without
+# the required file makes it fail in a consumer (#2298). edit_issue.sh --state
+# closed on a PR runs delete_branch.sh and exits 4 without it.
+_SHIP_TOGETHER = {"bootstrap/edit_issue.sh": ["bootstrap/delete_branch.sh"]}
+
+
+def _missing_companions(files: list[str]) -> list[str]:
+    present = set(files)
+    return [
+        f"{dependent} requires {req}"
+        for dependent, reqs in _SHIP_TOGETHER.items()
+        if dependent in present
+        for req in reqs
+        if req not in present
+    ]
+
+
+def test_ship_together_files_are_listed_together():
+    assert _missing_companions(_consumer_files()) == []
+
+
+def test_ship_together_helper_rejects_dependent_without_companion():
+    assert _missing_companions(["bootstrap/edit_issue.sh"]) == [
+        "bootstrap/edit_issue.sh requires bootstrap/delete_branch.sh"
+    ]
+    assert _missing_companions(["bootstrap/edit_issue.sh", "bootstrap/delete_branch.sh"]) == []
+
+
+def test_sandbox_template_allows_delete_branch_invocation():
+    import fnmatch
+    import json
+
+    template = ROOT / "contract" / "sandbox-policy.template.json"
+    allow = json.loads(template.read_text())["permissions"]["allow"]
+    rules = [a[len("Bash(") : -1] for a in allow if a.startswith("Bash(") and a.endswith(")")]
+    assert any(
+        fnmatch.fnmatchcase("bash bootstrap/delete_branch.sh --pr 1 --app worker", r) for r in rules
+    ), "sandbox template has no Bash allow rule covering bootstrap/delete_branch.sh"
