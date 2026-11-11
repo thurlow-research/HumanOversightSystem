@@ -3305,20 +3305,20 @@ def test_a20_list_archives_rc2_when_for_each_ref_fails(repo, capsys):
 
 
 # =============================================================================
-# #2313: D4 under --remote-scope all, and the loud git-error WARN
+# #2313/#2329: D4 is local-only under --remote-scope all; the loud git-error WARN
 # =============================================================================
 
 
-def test_d4_review_name_applies_to_remote_heads_under_remote_scope_all(repo, capsys):
-    # D4 is name-based, not local-only: with remote_scope="all" a remote head named like a
-    # review copy (no PR of its own) whose tip a PR head covers is reaped as review-pr-done.
+def test_d4_review_name_does_not_apply_to_remote_heads_under_remote_scope_all(repo, capsys):
+    # D4 is local-only (#2329): a remote head merely named like a review copy is somebody's
+    # real branch, so it is never reaped as review-pr-done.
     tip = remote_only_branch(repo, "pr-7-review")
     prs = [pr("worker-x", tip, merged=True, number=7)]
     assert reap_all(repo, prs=prs, dry_run=True) == 0
-    assert (
-        f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=remote pr=#7 tip={tip}"
-        in lines_of(capsys)
-    )
+    out = lines_of(capsys)
+    assert not any("review-pr-done" in ln or "review-stale" in ln for ln in out)
+    assert not any(ln.startswith("WOULD-REAP branch=pr-7-review") for ln in out)
+    assert any("KEEP branch=pr-7-review reason=unlanded-no-pr where=remote" in ln for ln in out)
 
 
 def test_d4_review_name_remote_head_untouched_by_default_worker_scope(repo, capsys):
