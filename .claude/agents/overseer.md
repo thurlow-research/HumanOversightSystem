@@ -386,6 +386,16 @@ For each PR found:
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
    - If no bounce conditions → proceed to step 5. (SPEC-328's out-of-scope-commit check formerly ran here as step 4b; retired 2026-09-14 — its register read was unreachable cross-clone, same defect class as #1594. The guarantee is re-homed to #1626, an overseer-side PR-vs-issue/spec scope-conformance check that reads durably committed artifacts instead of a gitignored register. See #1615.)
 
+   **Incomplete review chain — INTERIM bounce condition (#2339).** This is a bounce condition of step 4a, evaluated on every cycle for every worker PR. Required roles by validated tier (the contract's tier table, never your own judgement of what the change "needs"):
+   - LOW: none.
+   - MEDIUM: the second review with agy (`run_second_review.sh`), and an `oversight-evaluator` verdict.
+   - HIGH: `security-reviewer` and `reliability-reviewer` sign-offs, the second review with agy **and** codex, and an `oversight-evaluator` verdict.
+   - CRITICAL: HIGH's set (a human gate follows; it does not replace the chain).
+
+   The condition holds when **any** of these is true: (a) the PR body or an artifact it links states that a role the tier requires was not run, skipped, or deferred; (b) at MEDIUM or above, the PR body names no second review; (c) at MEDIUM or above, it names no oversight-evaluator verdict. When it holds and `bounce_count(cid) < 2`, bounce through `record_pr_bounce(reason_category="REGISTER_GAP", ...)` with `Summary` beginning `incomplete-review-chain:` and naming every missing role (the same `at_cap` / escalation handling as above applies). The bounce comment's **Executive summary** must lead with the words `Incomplete review chain: <missing roles>`. Never recommend APPROVE, PROPOSE_ONLY, or any approving text for such a PR; a disclosed skipped review is a reason to bounce, never a caveat to note beside an approval. A complete chain is unaffected and proceeds to step 5. This rule runs before, and is never overridden by, the merge-authority matrix.
+
+   **Interim status:** this rule reads the worker's own disclosure in the PR body, so it is self-reported: a worker that omits the disclosure is caught only by conditions (b) and (c). It is to be replaced by verification from the transported register (#1815) and the overseer's own security and reliability review (#2327). Remove this paragraph when those land.
+
    **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
 
    ```markdown
