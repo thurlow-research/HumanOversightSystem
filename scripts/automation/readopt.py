@@ -1124,10 +1124,9 @@ def reap_orphans(
     ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
     so a WOULD-REAP can still become KEEP open-pr in the real run.
 
-    Rule D4 (review copies ``pr-N``/``pr-N-review``) is name-based and is NOT limited to
-    local refs: with ``remote_scope="all"`` a remote head with a review-copy name and no
-    PR of its own is decided by D4 too (#2313). The overseer's ``--local-only`` run never
-    reaches remote heads.
+    Rule D4 (review copies ``pr-N``/``pr-N-review``) applies to LOCAL refs only (#2329):
+    review copies are only ever created locally, so with ``remote_scope="all"`` a remote
+    head that merely has a review-copy name is decided by the other rules, or KEPT.
 
     More than ``GIT_ERROR_WARN_THRESHOLD`` ``git-error`` KEEPs in one run print
     ``WARN: git-error KEEPs=<n> exceeds <t> — first stderr: <line>``.
@@ -1523,7 +1522,9 @@ def _decide_rest(
     # D4 (#2287): a local copy of a PR head that is no PR's own head.ref. Reaped only
     # when that PR's current head contains every commit of the tip (A1: not for a
     # real PR head, whose name merely looks like a review copy).
-    review = REVIEW_RE.fullmatch(ref.name)
+    # Local refs only (#2329): review copies are created locally, so a remote head with
+    # such a name is somebody's real branch and falls through to the other rules.
+    review = REVIEW_RE.fullmatch(ref.name) if ref.where == "local" else None
     if review and not plan["prs"]:
         number = int(review.group(1))
         target = plan["by_number"].get(number)
