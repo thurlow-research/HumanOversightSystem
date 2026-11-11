@@ -410,7 +410,13 @@ def test_enum_and_single_line_class_bodies_are_listed_with_region_class():
 
 @pytest.mark.parametrize(
     "call",
-    ["sys.exit(main())", "main()", "sys.exit(_main(sys.argv[1:]))"],
+    [
+        "sys.exit(main())",
+        "main()",
+        "sys.exit(_main(sys.argv[1:]))",
+        "raise SystemExit(main())",
+        "raise SystemExit(_main(sys.argv[1:]))",
+    ],
 )
 def test_main_guard_carve_out_passes_exact_shape(call):
     source = f'if __name__ == "__main__":\n    {call}\n'
@@ -423,7 +429,6 @@ def test_main_guard_carve_out_passes_exact_shape(call):
 @pytest.mark.parametrize(
     "source",
     [
-        'if __name__ == "__main__":\n    raise SystemExit(main())\n',
         'if __name__ == "__main__":\n    a()\n    b()\n',
         'if __name__ == "__main__":\n    main()\nelse:\n    other()\n',
         'if "__main__" == __name__:\n    main()\n',
@@ -436,6 +441,32 @@ def test_main_guard_near_misses_fail(source):
     assert any(c.endswith("_level_decision_logic") for c in _codes(source))
     guard_findings = [f for f in _findings(source) if f["carve_out"] == "main_guard"]
     assert guard_findings == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "raise SystemExit()",
+        "raise SystemExit(1)",
+        "raise SystemExit(code)",
+        "raise SystemExit(main(), 1)",
+        "raise SystemExit(main(), code=1)",
+        "raise SystemExit(main()) from None",
+        "raise SystemExit(main()) from err",
+        "raise builtins.SystemExit(main())",
+        "raise KeyboardInterrupt(main())",
+        "raise ValueError(main())",
+        "raise SystemExit",
+        "raise",
+        "raise SystemExit(*main())",
+        "raise SystemExit(**main())",
+        "raise SystemExit(code=main())",
+    ],
+)
+def test_main_guard_raise_near_misses_fail(body):
+    source = f'if __name__ == "__main__":\n    {body}\n'
+    assert "module_level_decision_logic" in _codes(source)
+    assert [f for f in _findings(source) if f["carve_out"] == "main_guard"] == []
 
 
 def test_main_guard_body_logic_is_still_judged():
@@ -700,16 +731,70 @@ def test_unmutatable_gated_lines_lists_body_statements_without_logic():
 # --------------------------------------------------------------------------
 
 
-def test_zero_mutant_reason_names_lines_and_ignores_carve_outs():
-    source = "try:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n"
-    findings = _findings(source)
-    reason = ncg.zero_mutant_reason("pkg/__init__.py", findings)
+CARVED_TRY = "try:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n"
+
+
+def test_zero_mutant_reason_ignores_carve_outs_and_names_uncarved_lines():
+    assert ncg.zero_mutant_reason("pkg/__init__.py", _findings(CARVED_TRY)) is None
+    assert ncg.zero_mutant_reason("x.py", _findings("X = 1\n")) is None
+    assert _codes(CARVED_TRY) == []
+    mixed = CARVED_TRY + "if flag:\n    X = 1\n"
+    reason = ncg.zero_mutant_reason("pkg/__init__.py", _findings(mixed))
     assert reason["code"] == "zero_mutant_decision_logic"
     assert reason["message"] == (
-        "decision logic at pkg/__init__.py:1 — move logic into a function so it can be mutated"
+        "decision logic at pkg/__init__.py:5 — move logic into a function so it can be mutated"
     )
-    assert ncg.zero_mutant_reason("x.py", _findings("X = 1\n")) is None
-    assert _codes(source) == []
+
+
+# --------------------------------------------------------------------------
+# Q8-PRED
+# --------------------------------------------------------------------------
+
+
+def test_is_decision_logic_is_true_only_for_uncarved_findings():
+    source = CARVED_TRY + "if flag:\n    X = 1\n"
+    verdicts = {f["line"]: ncg.is_decision_logic(f) for f in _findings(source)}
+    assert verdicts == {1: False, 5: True}
+    assert ncg.has_decision_logic(CARVED_TRY, ncg.statement_map(CARVED_TRY)[0]) is False
+    assert ncg.has_decision_logic(source, ncg.statement_map(source)[0]) is True
+
+
+def test_unmutatable_gated_lines_has_decision_logic_ignores_carve_outs():
+    source = "class E(Enum):\n    A = 1 == 1\n" + CARVED_TRY
+    got = ncg.unmutatable_gated_lines(source, ncg.statement_map(source)[0])
+    assert [(e["line"], e["has_decision_logic"]) for e in got] == [(2, True)]
+
+
+def _nq1_decision(executed: int):
+    gated = ncg.statement_map(CARVED_TRY)[0]
+    assert ncg.zero_mutant_reason("a.py", _findings(CARVED_TRY)) is None
+    rec = _record(executed_gated=executed, gated_statements=len(gated))
+    return ncg.decide(_records(rec), [], ncg.THRESHOLDS)["files"][0]
+
+
+def test_nq1_passes_carved_only_file_at_full_coverage():
+    got = _nq1_decision(len(ncg.statement_map(CARVED_TRY)[0]))
+    assert got["outcome"] == "pass" and got["fail_reasons"] == []
+
+
+def test_nq1_carved_only_file_under_threshold_fails_on_coverage():
+    got = _nq1_decision(0)
+    assert [r["code"] for r in got["fail_reasons"]] == ["coverage_below_threshold"]
+
+
+def test_only_is_decision_logic_and_findings_builder_read_carve_out():
+    tree = ast.parse((REPO / "scripts/framework/new_code_gate_logic.py").read_text("utf-8"))
+    readers = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, ast.FunctionDef):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.Subscript) and ast.unparse(node.slice) == "'carve_out'":
+                readers.add(func.name)
+    assert readers == {"is_decision_logic"}
+    assert "ncg.is_decision_logic" in SELF_CHECK
+    plugin = (REPO / "tests/framework/test_new_code_gate_plugin.py").read_text("utf-8")
+    assert "ncg.is_decision_logic" in plugin
 
 
 def test_selection_reason_nq1_carve_out():
@@ -1335,7 +1420,7 @@ for rel in sys.argv[1:]:
     findings = ncg.decision_logic_findings(src, ncg.statement_map(src)[0])
     out[rel] = [
         f for f in findings
-        if (f["region"] in ("module", "class") and not f["carve_out"])
+        if (f["region"] in ("module", "class") and ncg.is_decision_logic(f))
         or (f["region"] == "function" and f["unmutatable_reason"])
     ]
 print(json.dumps(out))

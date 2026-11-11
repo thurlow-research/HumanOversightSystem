@@ -133,7 +133,7 @@ src = Path(sys.argv[1]).read_text(encoding="utf-8")
 findings = ncg.decision_logic_findings(src, ncg.statement_map(src)[0])
 print(json.dumps([
     f for f in findings
-    if (f["region"] in ("module", "class") and not f["carve_out"])
+    if (f["region"] in ("module", "class") and ncg.is_decision_logic(f))
     or (f["region"] == "function" and f["unmutatable_reason"])
 ]))
 """

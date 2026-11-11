@@ -674,11 +674,25 @@ def _is_main_guard(stmt: ast.stmt) -> bool:
         and test.comparators[0].value == "__main__"
     )
     only = stmt.body[0]
+    return shape and len(stmt.body) == 1 and (_is_call_statement(only) or _is_system_exit(only))
+
+
+def _is_call_statement(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+
+
+def _is_system_exit(stmt: ast.stmt) -> bool:
+    """`raise SystemExit(<call>)`: the one raise shape accepted as a main-guard body."""
+    if not isinstance(stmt, ast.Raise) or stmt.cause is not None:
+        return False
+    exc = stmt.exc
     return (
-        shape
-        and len(stmt.body) == 1
-        and isinstance(only, ast.Expr)
-        and isinstance(only.value, ast.Call)
+        isinstance(exc, ast.Call)
+        and isinstance(exc.func, ast.Name)
+        and exc.func.id == "SystemExit"
+        and len(exc.args) == 1
+        and isinstance(exc.args[0], ast.Call)
+        and not exc.keywords
     )
 
 
@@ -786,9 +800,14 @@ def decision_logic_findings(source: str, gated_statements: Iterable[int]) -> lis
     return findings
 
 
+def is_decision_logic(finding: Mapping[str, Any]) -> bool:
+    """True unless a Q5 carve-out excuses the finding (the one reader of `carve_out`)."""
+    return finding["carve_out"] is None
+
+
 def has_decision_logic(source: str, gated_statements: Iterable[int]) -> bool:
-    """True iff any gated decision node exists; carve-outs are not applied (NQ-1)."""
-    return bool(decision_logic_findings(source, gated_statements))
+    """True iff any gated decision node is not excused by a carve-out (NQ-1)."""
+    return any(is_decision_logic(f) for f in decision_logic_findings(source, gated_statements))
 
 
 def unmutatable_gated_lines(source: str, gated_statements: Iterable[int]) -> list[dict[str, Any]]:
@@ -797,7 +816,9 @@ def unmutatable_gated_lines(source: str, gated_statements: Iterable[int]) -> lis
     tree = ast.parse(source)
     parents = _parent_map(tree)
     statements = _gated_statements(tree, gated)
-    logic_lines = {f["line"] for f in decision_logic_findings(source, gated)}
+    logic_lines = {
+        f["line"] for f in decision_logic_findings(source, gated) if is_decision_logic(f)
+    }
     entries = {}
     for stmt in statements:
         chain = _chain(stmt, parents)
@@ -832,9 +853,10 @@ def _class_body_reason(stmt: ast.stmt, parents: Mapping[Node, Node]) -> str | No
 
 def decision_fail_reasons(path: str, findings: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
     """The NQ-2 and Q5 fail reasons for a file, in the fixed TD 5.14 order."""
-    nq2 = [f["line"] for f in findings if f["region"] == "function" and f["unmutatable_reason"]]
-    module = [f["line"] for f in findings if f["region"] == "module" and not f["carve_out"]]
-    klass = [f["line"] for f in findings if f["region"] == "class"]
+    logic = [f for f in findings if is_decision_logic(f)]
+    nq2 = [f["line"] for f in logic if f["region"] == "function" and f["unmutatable_reason"]]
+    module = [f["line"] for f in logic if f["region"] == "module"]
+    klass = [f["line"] for f in logic if f["region"] == "class"]
     reasons = []
     if nq2:
         reasons.append(
@@ -865,9 +887,10 @@ def decision_fail_reasons(path: str, findings: Sequence[Mapping[str, Any]]) -> l
 
 def zero_mutant_reason(path: str, findings: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
     """NQ-1: a zero-mutant, empty-selection file may not hold decision logic."""
-    if not findings:
+    logic = [f for f in findings if is_decision_logic(f)]
+    if not logic:
         return None
-    lines = format_lines(f["line"] for f in findings)
+    lines = format_lines(f["line"] for f in logic)
     return fail_reason(
         "zero_mutant_decision_logic",
         f"decision logic at {path}:{lines} — move logic into a function so it can be mutated",
