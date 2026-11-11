@@ -227,3 +227,39 @@ def test_requirements_pin_exactly_the_versions_the_gate_enforces():
     ]
     exact = dict(line.split("==") for line in lines if "==" in line)
     assert {tool: exact.get(tool) for tool in pinned} == pinned
+
+
+RUN_TESTS = FRAMEWORK / "run_tests.sh"
+
+
+def measured_sources_from_source():
+    for node in parse(FRAMEWORK / "new_code_gate_logic.py").body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "MEASURED_SOURCES" for t in node.targets
+        ):
+            return list(ast.literal_eval(node.value))
+    raise AssertionError("MEASURED_SOURCES not found")
+
+
+def test_run_tests_sets_ctrace_contexts_and_split_report():
+    """R-S1a: the exact S1 flags (TD 4.1) and the sidecar roots equal the --cov list."""
+    lines = [line.strip() for line in RUN_TESTS.read_text(encoding="utf-8").splitlines()]
+    text = "\n".join(lines)
+    assert "export COVERAGE_CORE=ctrace" in lines
+    assert [line.rstrip(" \\")[len("--cov=") :] for line in lines if line.startswith("--cov=")] == (
+        measured_sources_from_source()
+    )
+    for flag in ("--cov-context=test \\", "--cov-report= \\"):
+        assert flag in lines
+    assert "--cov-fail-under" not in text
+    assert (
+        "--include='scripts/oversight/*,scripts/automation/lib/*,scripts/framework/*' \\" in lines
+    )
+    assert "--omit='*/test_*,*/__init__.py,*/conftest.py,*/.venv/*,*/__pycache__/*' \\" in lines
+    assert "--fail-under=$COVERAGE_TARGET" in lines
+    assert "--coverage-file .coverage --out coverage-meta.json" in lines
+    assert (
+        text.index("-m pytest")
+        < text.index("-m coverage report")
+        < text.index("-m scripts.framework.new_code_gate meta")
+    )

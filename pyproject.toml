@@ -27,7 +27,9 @@ markers = [
 
 [tool.coverage.run]
 source = ["scripts/oversight", "scripts/automation/lib", "scripts/framework"]
-omit = ["*/test_*", "*/__init__.py", "*/conftest.py", "*/.venv/*", "*/__pycache__/*"]
+# Test/__init__/conftest omits moved to `coverage report --omit` in run_tests.sh (#2304):
+# the new-code gate needs their measurement data, the suite-wide total must not change.
+omit = ["*/.venv/*", "*/__pycache__/*", "mutants/*"]
 branch = true
 
 [tool.coverage.report]

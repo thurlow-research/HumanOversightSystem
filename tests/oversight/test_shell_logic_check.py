@@ -324,7 +324,7 @@ class TestRunTestsShellShape:
     so the test runs the same inside a mutation workspace.
     """
 
-    EXPECTED = [128, 135]
+    EXPECTED = [152, 159]  # [128 + 24, 135 + 24]: S1 added k = 24 lines above the block
 
     def test_run_tests_adds_no_counted_shell_construct(self):
         path = os.path.join(ROOT, "scripts", "framework", "run_tests.sh")

@@ -29,6 +29,11 @@
 # write (see retry_rescue_logic.py). Not going silent about a pass-on-retry
 # is the point — see that hook's docstring for what is and isn't covered yet.
 #
+# New-code gate (#2304): the pytest run records a coverage context per test
+# (COVERAGE_CORE=ctrace, --cov-context=test) over the six measured roots, and the
+# `new_code_gate meta` step writes coverage-meta.json next to .coverage. The gate's
+# measure phase consumes both. See docs/v0.7.0/TECHNICAL-DESIGN-2304-new-code-coverage-mutation-gate.md.
+#
 # Exit codes:
 #   0 — all targets met
 #   1 — coverage or mutant score below target
@@ -67,6 +72,10 @@ fi
 
 cd "$REPO_ROOT"
 
+# #2304: pin the context-capable coverage core (--cov-context=test needs ctrace).
+# It is already the default on Python 3.12; this guards against a future default change.
+export COVERAGE_CORE=ctrace
+
 # ── Phase 1: pytest + coverage ───────────────────────────────────────────────
 if ! $MUTATION_ONLY; then
     echo "=== Unit tests + coverage ==="
@@ -77,10 +86,25 @@ if ! $MUTATION_ONLY; then
         --cov=scripts/oversight \
         --cov=scripts/automation/lib \
         --cov=scripts/framework \
-        --cov-report=term-missing \
-        --cov-fail-under=$COVERAGE_TARGET \
+        --cov=scripts \
+        --cov=bootstrap \
+        --cov=bin \
+        --cov-context=test \
+        --cov-report= \
         -v
     PYTEST_EXIT=$?
+
+    # Suite-wide gate over the three original roots with the old omit list, so
+    # the file set and total match the pre-#2304 report (fail_under is never adjusted).
+    "$VENV_PYTHON" -m coverage report \
+        --include='scripts/oversight/*,scripts/automation/lib/*,scripts/framework/*' \
+        --omit='*/test_*,*/__init__.py,*/conftest.py,*/.venv/*,*/__pycache__/*' \
+        --show-missing \
+        --fail-under=$COVERAGE_TARGET
+
+    # Sidecar describing the coverage data for the new-code gate (#2304).
+    "$VENV_PYTHON" -m scripts.framework.new_code_gate meta \
+        --coverage-file .coverage --out coverage-meta.json
 
     if [[ $PYTEST_EXIT -ne 0 ]]; then
         echo ""
