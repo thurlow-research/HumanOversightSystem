@@ -1378,3 +1378,48 @@ run on an open PR must show `gate_evaluated_as` equal to the overseer login,
 `gate.autonomous_capable true` and `current_user_can_bypass "never"` for every id in
 `gate.evidence`. The worker cannot produce that run, because it needs the overseer's token.
 S1b merges under the old flow: the human merges it.
+
+## 2026-11-11 — New and changed Python must meet 80% coverage and a 75% mutant score, measured by a required CI gate and never declared by an agent (#2304)
+
+**Decision.** A required check, `new-code-gate`, measures every new file and the changed
+lines of existing Python files. It requires line coverage of at least 80% and a mutant score
+of at least 75%, and it writes the numbers itself. The unit-test agent can no longer record
+"not run" or "N/A" for Python, and the evaluator fails a step that does. The ruling
+(ScottThurlow, 2026-11-09) was "stop the bleeding now, fix fully later": this covers new and
+changed code only. Whole-file enforcement and the legacy cleanup are #2305.
+
+**Why now.** Mutation testing never ran in CI, and in the Worker sign-off registers 71
+`Mutant_score_pct` declarations were mostly "not run", "N/A" or a hand-built sample. The
+first finding of this work is that mutation testing could not run in this repo at all:
+mutmut copies only `source_paths` and `tests/` into `mutants/`, so the suite failed at
+collection. Commit 8113f8ba0 fixed the config (`also_copy`, directory entries only).
+
+**Rules the human fixed (do not reopen).**
+- Tests are selected per gated file from the tests that execute its lines (coverage
+  contexts, `COVERAGE_CORE=ctrace`), with the `test_<module>.py` name as a fallback only. An
+  empty selection fails. Tests that copy the repository never run under mutation, and the
+  whole suite never runs per mutant.
+- A module that a test loads by path (or through the `conftest.py` `sys.path` injection)
+  cannot be mutation-tested. The gate fails closed and names the test file and the fix: a
+  canonical `scripts.…` import in the same PR. There is no exemption list. At least 26 and
+  an estimated 40 to 57 of the 95 production `.py` files are in this state today, so most
+  existing modules fail on first touch until #2305 converts their tests.
+- No pragma, "documented equivalent" or exclusion reduces either count. A per-mutant test
+  timeout counts as killed. The whole-gate timeout fails.
+- New decision logic in shell fails; move it into tested Python. Module- and class-level
+  decision logic in gated lines, and decision logic in lines mutmut cannot mutate, fail
+  ("move the logic into a function so it can be mutated"). The only carve-outs are a
+  `__main__` guard whose body is a single call (`sys.exit(<call>)`, `raise SystemExit(<call>)`
+  or a bare call), `try: import` / `except ImportError` fallbacks and `if TYPE_CHECKING:`.
+- A human GitHub ruling on a named file covers only that file's thresholds. It is bound to
+  the file's content, not the head SHA. There is no in-gate exception path until #2332
+  (which depends on #2101). Until then the only override is a human admin merge.
+
+**Recorded so a later reader does not reopen them.** The gate gates the merge commit, not
+the PR head, because the `tests` job checks out `github.sha`. The verdict job does not
+check out a trusted base: under `pull_request` the workflow file itself comes from the PR,
+so that would defend nothing. The control is CODEOWNER review of `scripts/framework/**` and
+`.github/workflows/**`. The CI token stays `contents: read`; the gate emits JSON records as
+artifacts kept for the maximum retention, and #2331 ingests them into the audit log
+(it needs `actions: read` on the overseer App, a human decision). Design: SPEC-2304,
+ADR-2304 (with sections 2b to 2d) and TECHNICAL-DESIGN-2304 under `docs/`.
