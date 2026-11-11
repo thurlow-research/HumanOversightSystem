@@ -138,6 +138,7 @@ _HOS_EFFECTIVE_CONTEXTS = (
     "oversight-validator-diff-size",
     "oversight-gate-lint",
     "oversight-gate-type-check",
+    "new-code-gate",
 )
 
 
@@ -186,6 +187,19 @@ def test_known_gate_contexts_present():
     ):
         assert gate in contexts, f"{gate} is no longer a required status check"
         assert gate in produced, f"{gate} has no producing workflow job named {gate!r}"
+
+
+def test_new_code_gate_context_registered_and_job_named():
+    """AC-31 (#2304): `new-code-gate` is a required context produced by a tests.yml
+    job of that exact name, and its upstream `new-code-measure` is not required
+    (the gate fails closed on a non-success upstream result instead)."""
+    contexts = _required_contexts()
+    produced = _workflow_job_names()
+    assert contexts.count("new-code-gate") == 1
+    assert "new-code-gate" in _hos_only_contexts()
+    assert produced.get("new-code-gate") == "tests.yml"
+    assert produced.get("new-code-measure") == "tests.yml"
+    assert "new-code-measure" not in contexts
 
 
 def test_rerun_gate_checks_not_a_required_context():

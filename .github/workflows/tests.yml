@@ -20,7 +20,23 @@ name: Tests
 # Runs the same entry point a human runs locally — scripts/framework/run_tests.sh
 # — so local and CI cannot diverge (AC in #1244). That script runs pytest +
 # coverage only; --mutation is NOT passed here (mutmut re-runs the full suite
-# per mutant and is far too slow for a per-PR gate).
+# per mutant and is far too slow for a per-PR gate). It also records per-test
+# coverage contexts and a sidecar (coverage-meta.json) for the new-code gate
+# below; the `tests` job uploads both as the `coverage-contexts` artifact.
+#
+# New-code gate (#2304; docs/v0.7.0/TECHNICAL-DESIGN-2304-new-code-coverage-mutation-gate.md):
+# two further jobs hold new and changed Python to 80% line coverage and a 75%
+# mutant score (and new shell to the decision-logic guard). `new-code-measure`
+# measures and writes records but never judges; `new-code-gate` applies the
+# thresholds and is the ONLY required context of the pair (declared in
+# scripts/framework/hos_required_contexts.txt). Both run with `if: always()`
+# and pass the result of the job they depend on to the gate as an argument,
+# because a job whose dependency failed is SKIPPED by default and a skipped
+# required check counts as a pass. The gate turns any upstream result other
+# than `success` into exit 3, so a skipped or failed predecessor can never
+# produce a green gate. There is no override other than a human admin merge
+# (#2304 H5); contract/gate-suspension.md does not apply to `new-code-gate`.
+# All three jobs work on github.sha, the pull_request merge commit.
 #
 # Regular `pull_request` (not `pull_request_target`): the job executes the PR's
 # own code (the test suite itself), so it must run with the PR head checked out
@@ -87,3 +103,130 @@ jobs:
           # needs its own write-back design; tracked separately.
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: bash scripts/framework/run_tests.sh
+
+      - name: Upload coverage contexts for the new-code gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-contexts
+          path: |
+            .coverage
+            coverage-meta.json
+          retention-days: 7
+          if-no-files-found: error
+          # .coverage is a dotfile; upload-artifact@v4 skips hidden files by default.
+          include-hidden-files: true
+
+  new-code-measure:
+    name: new-code-measure
+    needs: tests
+    # Not `success()`: a skipped job must still run so the gate can report why.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          # Full history so <gated>^1 (the base) and <gated>^2 (the PR head) resolve.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Download coverage contexts
+        # A missing artifact must surface as exit 3 from the gate (which still
+        # writes records), not as a step error that hides them.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-contexts
+
+      - name: Measure new and changed code
+        run: >-
+          scripts/oversight/.venv/bin/python -m scripts.framework.new_code_gate measure
+          --gated-sha ${{ github.sha }}
+          --pr-head-sha ${{ github.event.pull_request.head.sha }}
+          --pr ${{ github.event.pull_request.number }}
+          --coverage-file .coverage
+          --meta coverage-meta.json
+          --out new-code-records.json
+          --tests-result ${{ needs.tests.result }}
+          --run-id ${{ github.run_id }}
+          --run-attempt ${{ github.run_attempt }}
+
+      - name: Upload new-code records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-code-records
+          path: new-code-records.json
+          # 90 days is the maximum for a public repository. A value above the
+          # repository's Artifact and log retention setting is silently capped,
+          # so a human verifies the artifact's expires_at after the first run
+          # (TD 5.15.3).
+          retention-days: 90
+          if-no-files-found: warn
+
+  new-code-gate:
+    name: new-code-gate
+    needs: new-code-measure
+    # See the header: `always()` plus the explicit --measure-result below.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No pull-requests: read until the exception verifier lands (S5); no write tokens.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download new-code records
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: new-code-records
+
+      # verdict is stdlib-only, so the system python is used and no venv is built.
+      - name: Apply thresholds
+        run: >-
+          python -m scripts.framework.new_code_gate verdict
+          --records new-code-records.json
+          --out new-code-verdict.json
+          --summary new-code-summary.md
+          --measure-result ${{ needs.new-code-measure.result }}
+
+      - name: Publish step summary
+        if: always()
+        run: cat new-code-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload new-code verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-code-verdict
+          path: |
+            new-code-verdict.json
+            new-code-summary.md
+          retention-days: 90
+          if-no-files-found: warn

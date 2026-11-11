@@ -1,17 +1,19 @@
 """Static conditions on the new-code gate that need no real run (#2304, TD 9.3, REQ-35).
 
-Commit 6 adds the workflow-YAML cases to this module. Everything here reads source text or runs a
-fresh interpreter: it imports **no** gate module in process, so these checks neither depend on nor
-earn coverage for the code they guard.
+Includes the static checks of .github/workflows/tests.yml (S2d). Everything here reads source text
+or runs a fresh interpreter: it imports **no** gate module in process, so these checks neither
+depend on nor earn coverage for the code they guard.
 """
 
 import ast
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 FRAMEWORK = ROOT / "scripts" / "framework"
@@ -263,3 +265,191 @@ def test_run_tests_sets_ctrace_contexts_and_split_report():
         < text.index("-m coverage report")
         < text.index("-m scripts.framework.new_code_gate meta")
     )
+
+
+WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
+NEW_JOBS = ("new-code-measure", "new-code-gate")
+ENTRY = "-m scripts.framework.new_code_gate"
+ACTION_PIN = re.compile(r"^actions/[a-z-]+@v\d+$")
+
+
+def workflow_text():
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def workflow_jobs():
+    return yaml.safe_load(workflow_text())["jobs"]
+
+
+def steps_of(job):
+    return workflow_jobs()[job]["steps"]
+
+
+def step_using(job, action):
+    (found,) = [s for s in steps_of(job) if str(s.get("uses", "")).startswith(action)]
+    return found
+
+
+def run_lines(job):
+    """Each `run:` body of the job, folded onto one line with its whitespace collapsed."""
+    return [" ".join(s["run"].split()) for s in steps_of(job) if "run" in s]
+
+
+def test_tests_job_keeps_its_shape_and_uploads_the_coverage_contexts():
+    """S1 (TD 4.3): the required `tests` job is unchanged except for the upload step."""
+    job = workflow_jobs()["tests"]
+    assert job["name"] == "tests"
+    assert job["timeout-minutes"] == 30
+    checkout = job["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert "ref" not in checkout["with"]  # the default checkout IS github.sha (the merge commit)
+    assert any(s.get("run") == "bash scripts/framework/run_tests.sh" for s in job["steps"])
+    upload = job["steps"][-1]
+    assert upload["uses"].startswith("actions/upload-artifact@v4")
+    assert upload["with"]["name"] == "coverage-contexts"
+    assert upload["with"]["path"].split() == [".coverage", "coverage-meta.json"]
+    assert upload["with"]["retention-days"] == 7
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["include-hidden-files"] is True
+
+
+def test_workflow_permissions_stay_read_only_everywhere():
+    """No write token and no pull-requests: read until S5 (TD 5.17)."""
+    data = yaml.safe_load(workflow_text())
+    assert data["permissions"] == {"contents": "read"}
+    for name, job in data["jobs"].items():
+        assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}, name
+
+
+def test_new_jobs_exist_with_the_designed_names_needs_and_timeouts():
+    jobs = workflow_jobs()
+    measure, gate = jobs["new-code-measure"], jobs["new-code-gate"]
+    assert (measure["name"], measure["needs"], measure["timeout-minutes"]) == (
+        "new-code-measure",
+        "tests",
+        30,
+    )
+    assert (gate["name"], gate["needs"], gate["timeout-minutes"]) == (
+        "new-code-gate",
+        "new-code-measure",
+        5,
+    )
+
+
+@pytest.mark.parametrize("job", NEW_JOBS)
+def test_new_jobs_if_always(job):
+    """AC-30: a skipped required check counts as a pass, so neither job may be skipped."""
+    assert workflow_jobs()[job]["if"] == "always()"
+
+
+def test_new_jobs_pass_the_upstream_result_to_the_gate_to_judge():
+    """The needs-result check lives in Python (H1), so a skipped upstream cannot pass."""
+    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
+    assert "--tests-result ${{ needs.tests.result }}" in measure_cmd
+    assert "--measure-result ${{ needs.new-code-measure.result }}" in gate_cmd
+
+
+@pytest.mark.parametrize("job", NEW_JOBS)
+def test_new_jobs_checkout_github_sha_without_credentials(job):
+    """AR-1d: the merge commit is named explicitly, and no token is left in the clone."""
+    checkout = step_using(job, "actions/checkout@")
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["with"]["persist-credentials"] is False
+    assert checkout["with"]["fetch-depth"] == (0 if job == "new-code-measure" else 1)
+
+
+def test_new_jobs_pass_gated_sha_and_pr_head_and_no_base_sha():
+    (cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+    assert "--gated-sha ${{ github.sha }}" in cmd
+    assert "--pr-head-sha ${{ github.event.pull_request.head.sha }}" in cmd
+    assert "--base-sha" not in cmd
+    assert "--base-sha" not in workflow_text()
+
+
+def test_ci_invokes_only_measure_and_verdict_entry_points():
+    """AC-30: no shell wrapper (it would itself be gated shell); only measure and verdict."""
+    phases = {"new-code-measure": "measure", "new-code-gate": "verdict"}
+    for job, phase in phases.items():
+        gate_lines = [c for c in run_lines(job) if "new_code_gate" in c]
+        assert len(gate_lines) == 1, job
+        assert re.search(rf"{ENTRY} {phase}( |$)", gate_lines[0]), gate_lines[0]
+        for other in {"measure", "verdict", "run", "meta", "_enumerate", "_collect"} - {phase}:
+            assert f"{ENTRY} {other}" not in gate_lines[0]
+    text = workflow_text()
+    assert "new_code_gate.sh" not in text
+    assert len(re.findall(r"new_code_gate", text.split("\njobs:\n", 1)[1])) == 2
+
+
+def test_new_jobs_shell_lines_are_only_the_designed_ones():
+    """Only the venv build, the gate call and the one-line summary append run as shell."""
+    allowed = {
+        "new-code-measure": [
+            "bash scripts/oversight/ensure_venv.sh",
+            "scripts/oversight/.venv/bin/python",
+        ],
+        "new-code-gate": [
+            "python -m scripts.framework.new_code_gate verdict",
+            "cat new-code-summary.md",
+        ],
+    }
+    for job, prefixes in allowed.items():
+        lines = run_lines(job)
+        assert len(lines) == len(prefixes), lines
+        assert all(line.startswith(p) for line, p in zip(lines, prefixes)), lines
+    (append,) = [c for c in run_lines("new-code-gate") if c.startswith("cat ")]
+    assert append == 'cat new-code-summary.md >> "$GITHUB_STEP_SUMMARY"'
+    assert "&&" not in append and ";" not in append
+
+
+def test_gate_job_uses_system_python_and_measure_uses_the_venv():
+    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
+    assert measure_cmd.startswith("scripts/oversight/.venv/bin/python " + ENTRY)
+    assert gate_cmd.startswith("python " + ENTRY)
+    assert not any("ensure_venv" in c for c in run_lines("new-code-gate"))
+
+
+def test_summary_step_and_verdict_artifact_run_even_when_the_gate_fails():
+    steps = steps_of("new-code-gate")
+    summary = [s for s in steps if str(s.get("run", "")).startswith("cat ")]
+    upload = step_using("new-code-gate", "actions/upload-artifact@")
+    assert [s["if"] for s in summary] == ["always()"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["name"] == "new-code-verdict"
+    assert upload["with"]["path"].split() == ["new-code-verdict.json", "new-code-summary.md"]
+    assert upload["with"]["retention-days"] == 90
+
+
+def test_records_artifact_is_uploaded_always_and_kept_90_days():
+    upload = step_using("new-code-measure", "actions/upload-artifact@")
+    assert upload["if"] == "always()"
+    assert upload["with"]["name"] == "new-code-records"
+    assert upload["with"]["path"] == "new-code-records.json"
+    assert upload["with"]["retention-days"] == 90
+
+
+@pytest.mark.parametrize(
+    ("job", "name"),
+    [("new-code-measure", "coverage-contexts"), ("new-code-gate", "new-code-records")],
+)
+def test_downloads_tolerate_a_missing_artifact_so_the_gate_reports_it(job, name):
+    download = step_using(job, "actions/download-artifact@")
+    assert download["continue-on-error"] is True
+    assert download["with"]["name"] == name
+
+
+def test_no_cache_in_gate_jobs_or_code():
+    """AC-25: nothing is cached, so a poisoned cache cannot reach the verdict."""
+    assert "actions/cache" not in workflow_text()
+    for path in GATE_MODULES:
+        assert "actions/cache" not in path.read_text(encoding="utf-8")
+
+
+def test_workflow_has_no_privileged_trigger_secrets_or_unpinned_actions():
+    data = yaml.safe_load(workflow_text())
+    triggers = data.get("on", data.get(True))  # YAML 1.1 reads a bare `on` as True
+    assert set(triggers) == {"pull_request"}
+    assert "secrets." not in workflow_text()
+    uses = [s["uses"] for job in workflow_jobs().values() for s in job["steps"] if "uses" in s]
+    assert uses and all(ACTION_PIN.match(u) for u in uses), uses

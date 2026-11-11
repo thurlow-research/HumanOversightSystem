@@ -60,6 +60,14 @@ oversight-gate-lint
 # oversight-gate-lint above, same ruling date.
 oversight-gate-type-check
 
+# new-code-gate <- .github/workflows/tests.yml (job name: new-code-gate; #2304
+# — 80% line coverage and 75% mutant score on new and changed Python, and the
+# decision-logic guard on new shell). Required by the human's #2304 rulings. Its only override is a human admin merge (#2304 H5);
+# contract/gate-suspension.md does not apply to it. new-code-measure, the job
+# it depends on, is deliberately NOT a required context: the gate fails closed
+# on any upstream result other than success.
+new-code-gate
+
 # NOT promoted: oversight-validator-js. This repo has zero tracked JS/TS files
 # and no package.json, so #1571 item 2's baseline method (run the real script
 # against every tracked file in scope) does not apply — its own unit tests
