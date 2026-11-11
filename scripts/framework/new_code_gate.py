@@ -49,6 +49,7 @@ STRIPPED_ENV_NAMES = frozenset({"GITHUB_TOKEN", "GH_TOKEN"})
 STRIPPED_ENV_PREFIXES = ("ACTIONS_", "NCG_")
 ARCHIVE_EXCLUDE = ":(exclude,glob)**/.claude/**"
 GIT_DIFF_PREFIX = [
+    "--literal-pathspecs",
     "-c",
     "diff.algorithm=myers",
     "-c",
@@ -57,6 +58,10 @@ GIT_DIFF_PREFIX = [
     "--no-ext-diff",
     "--no-textconv",
     "--no-color",
+    "--text",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--inter-hunk-context=0",
     "-M",
 ]
 
@@ -66,6 +71,7 @@ PHASE_MUTMUT = "mutmut_run"
 PHASE_COLLECT = "collect"
 
 MSG_UPSTREAM = "upstream job not successful: "
+RECORDS_FILENAME = "new-code-records.json"
 
 
 class BudgetExpired(Exception):
@@ -84,6 +90,15 @@ class ProcResult(NamedTuple):
     stdout: str
     stderr: str
     timed_out: bool
+
+
+def as_text(raw: bytes | str | None) -> str:
+    """Partial output off a `TimeoutExpired`, which carries bytes even for a text-mode child."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return raw
 
 
 class Runner(Protocol):
@@ -114,16 +129,36 @@ class SubprocessRunner:
             out, err = proc.communicate(timeout=max(spec.timeout, 0.0))
         except subprocess.TimeoutExpired:
             self.terminate(proc)
-            out, err = proc.communicate()
-            return ProcResult(proc.returncode, out, err, True)
+            out, err = self.drain(proc)
+            return ProcResult(self.exit_code(proc), out, err, True)
         return ProcResult(proc.returncode, out, err, False)
 
     def terminate(self, proc: subprocess.Popen) -> None:
+        """SIGTERM the group, then SIGKILL it whether or not the leader has gone.
+
+        A group member can ignore SIGTERM and keep the output pipe open after the
+        leader exits, so the leader's state says nothing about the group.
+        """
         self.signal_group(proc.pid, signal.SIGTERM)
         try:
             proc.wait(timeout=self.grace)
         except subprocess.TimeoutExpired:
-            self.signal_group(proc.pid, signal.SIGKILL)
+            pass
+        self.signal_group(proc.pid, signal.SIGKILL)
+
+    def drain(self, proc: subprocess.Popen) -> tuple[str, str]:
+        """Collect what the killed child wrote, without waiting on a pipe a stray process holds."""
+        try:
+            return proc.communicate(timeout=self.grace)
+        except subprocess.TimeoutExpired as exc:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            return as_text(exc.output), as_text(exc.stderr)
+
+    def exit_code(self, proc: subprocess.Popen) -> int:
+        code = proc.poll()
+        return -signal.SIGKILL if code is None else code
 
     def signal_group(self, pid: int, sig: int) -> None:
         try:
@@ -159,6 +194,14 @@ class MeasureOptions(NamedTuple):
     keep_workspace: bool
 
 
+class VerdictInputs(NamedTuple):
+    records_dir: Path
+    gated_sha: str
+    run_id: str
+    run_attempt: str
+    measure_result: str
+
+
 class Workspace(NamedTuple):
     root: Path
     tree: Path
@@ -182,6 +225,7 @@ class FileRun:
         self.workspace: Workspace | None = None
         self.mutant_names: list[str] = []
         self.gated_names: list[str] = []
+        self.workspace_seconds = 0.0
         self.done = False
 
     def add_fail(self, code: str, message: str) -> None:
@@ -213,6 +257,13 @@ class Context:
         self.workspaces: list[Workspace] = []
         self.sources: dict[str, str | None] = {}
         self.internal_errors: list[dict[str, Any]] = []
+        self.phase_seconds: dict[str, float] = {}
+        self.expired_phase = ""
+        self.expired_file = ""
+
+    def spend_phase(self, phase: str, since: float) -> None:
+        elapsed = self.clock.monotonic() - since
+        self.phase_seconds[phase] = round(self.phase_seconds.get(phase, 0.0) + elapsed, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -292,12 +343,14 @@ def build_meta(repo: Path, coverage_file: Path, environ: Mapping[str, str]) -> d
     """The `meta` sidecar: which commit and tools the coverage data describes (TD 5.1)."""
     if not coverage_file.is_file():
         raise GateError(f"coverage file missing: {coverage_file.name}")
+    dirty = tree_dirty_paths(repo)
     return {
         "schema": ncg.SCHEMA_META,
         "head_sha": rev_parse(repo, "HEAD"),
         "head_tree": rev_parse(repo, "HEAD^{tree}"),
         "checkout_root": str(repo.resolve()),
-        "clean": tree_dirty_paths(repo) == [],
+        "clean": dirty == [],
+        "dirty_paths": dirty[: ncg.MAX_SIDECAR_PATHS],
         "coverage_core": environ.get("COVERAGE_CORE"),
         "measured_sources": list(ncg.MEASURED_SOURCES),
         "tool_versions": installed_versions(),
@@ -375,11 +428,15 @@ def scrubbed_env(environ: Mapping[str, str]) -> dict[str, str]:
 def run_phase(
     ctx: Context, phase: str, argv: list[str], cwd: Path, env: dict[str, str]
 ) -> ProcResult:
-    remaining = ctx.deadline - ctx.clock.monotonic()
+    started = ctx.clock.monotonic()
+    remaining = ctx.deadline - started
     if remaining <= 0:
+        ctx.expired_phase = phase
         raise BudgetExpired(phase)
     result = ctx.runner.run(phase, ProcSpec(argv, str(cwd), env, remaining))
+    ctx.spend_phase(phase, started)
     if result.timed_out:
+        ctx.expired_phase = phase
         raise BudgetExpired(phase)
     return result
 
@@ -465,6 +522,28 @@ def extract_archive(ctx: Context, root: Path, tree: Path) -> None:
     tar_path.unlink()
 
 
+def verify_extracted(ctx: Context, work: FileRun, tree: Path) -> None:
+    """`git archive` honours export-ignore and export-subst, so check what the mutation run will execute.
+
+    The gated file, the selected test modules and their conftests must hash to the
+    committed blobs; a missing or rewritten one is a refusal, not a measurement.
+    """
+    tracked = set(ctx.tracked)
+    paths = sorted(({work.path} | set(wanted_test_paths(work.selected))) & tracked)
+    committed = git_text(ctx.repo, ["rev-parse", *[f"{ctx.gated_sha}:{p}" for p in paths]]).split()
+    hashed = run_git(
+        ctx.repo,
+        ["hash-object", "--no-filters", "--", *[str(tree / p) for p in paths]],
+        "could not hash the extracted workspace",
+    )
+    bad = ncg.blob_mismatches(
+        dict(zip(paths, committed)), dict(zip(paths, hashed.decode().split()))
+    )
+    if bad:
+        shown = ", ".join(bad[: ncg.MAX_BLOB_MISMATCHES])
+        raise GateError(f"extracted workspace differs from the gated commit: {shown}")
+
+
 def read_exact(path: Path) -> str:
     with open(path, encoding="utf-8", newline="") as handle:
         return handle.read()
@@ -506,10 +585,12 @@ def make_workspace(ctx: Context, work: FileRun) -> Workspace:
     plugin_dir = root / "ncg-plugin"
     ws = Workspace(root, tree, plugin_dir, plugin_dir / "events.jsonl")
     ctx.workspaces.append(ws)
+    work.workspace = ws
     extract_archive(ctx, root, tree)
     bad = contaminated(tree)
     if bad is not None:
         raise GateError(f"workspace contaminated: {bad}")
+    verify_extracted(ctx, work, tree)
     plugin_dir.mkdir()
     shutil.copyfile(ctx.repo / PLUGIN_RELPATH, plugin_dir / f"{PLUGIN_MODULE}.py")
     target = tree / work.path
@@ -684,9 +765,30 @@ def blob_shas(ctx: Context, path: str) -> tuple[str, str | None]:
     return blob, head_blob
 
 
-def prepare_python(
-    ctx: Context, change: ncg.ChangedPath, changed: Mapping[str, list[int]]
-) -> FileRun:
+def changed_lines(ctx: Context, change: ncg.ChangedPath) -> list[int]:
+    """Head-side changed lines of one file, from a diff limited to that file (and its rename source).
+
+    One diff per file means the parser sees only `@@` lines of a single patch: a
+    content line cannot forge the next file's header (F1). A changed file whose diff
+    has no hunk is refused instead of read as "nothing changed".
+    """
+    paths = [change.path]
+    if change.kind == "changed" and change.old_path:
+        paths.insert(0, change.old_path)
+    patch = git_text(
+        ctx.repo,
+        [*GIT_DIFF_PREFIX, "--unified=0", ctx.base_sha, ctx.gated_sha, "--", *paths],
+        "diff could not be computed",
+    )
+    lines, hunks = ncg.parse_hunks(patch)
+    if change.kind == "changed":
+        base_blob = rev_parse(ctx.repo, f"{ctx.base_sha}:{change.old_path or change.path}")
+        head_blob = rev_parse(ctx.repo, f"{ctx.gated_sha}:{change.path}")
+        ncg.check_diff_complete(change.path, base_blob, head_blob, hunks)
+    return lines
+
+
+def prepare_python(ctx: Context, change: ncg.ChangedPath) -> FileRun:
     """Diff, statements and coverage for one gated Python file (TD 5.3, 5.4)."""
     assert ctx.cov is not None
     text = blob_text(ctx.repo, ctx.gated_sha, change.path)
@@ -696,7 +798,7 @@ def prepare_python(
     statements, multiline = ncg.statement_map(text)
     work.statements = statements
     work.gated = ncg.gated_statement_lines(
-        changed.get(change.path, []), statements, multiline, change.kind == "new"
+        changed_lines(ctx, change), statements, multiline, change.kind == "new"
     )
     record.update(ncg.gated_lines_fields(work.gated))
     if not ncg.in_measured_surface(change.path, ctx.meta["measured_sources"]):
@@ -708,9 +810,7 @@ def prepare_python(
     return work
 
 
-def prepare_shell(
-    ctx: Context, change: ncg.ChangedPath, changed: Mapping[str, list[int]]
-) -> FileRun:
+def prepare_shell(ctx: Context, change: ncg.ChangedPath) -> FileRun:
     """The shell rule (H1, H4): no added or edited counted decision construct (TD 5.11)."""
     from scripts.oversight.validators.shell_logic_check import decision_lines, is_hard_exempt
 
@@ -719,16 +819,16 @@ def prepare_shell(
     record["mutation_reason"] = "not_python"
     work = FileRun(record, "")
     work.done = True
-    head = blob_text(ctx.repo, ctx.gated_sha, change.path).splitlines()
+    head = ncg.split_lines(blob_text(ctx.repo, ctx.gated_sha, change.path))
     base: list[str] = []
     if change.kind != "new":
-        base = blob_text(ctx.repo, ctx.base_sha, change.old_path or change.path).splitlines()
+        base = ncg.split_lines(blob_text(ctx.repo, ctx.base_sha, change.old_path or change.path))
     shell, reasons = ncg.shell_gate(
         change.path,
         is_hard_exempt(change.path),
         decision_lines(head),
         decision_lines(base),
-        changed.get(change.path, []),
+        changed_lines(ctx, change),
     )
     record["shell"] = shell
     record["fail_reasons"].extend(reasons)
@@ -743,6 +843,7 @@ def select_tests(ctx: Context, work: FileRun) -> None:
     if not ids:
         ids = ncg.name_fallback_ids(work.path, ctx.tracked)
         work.method = "name_fallback"
+    ids = ncg.sanitize_node_ids(ids)
     work.selected = ids
     if not ids:
         work.method = "none"
@@ -754,7 +855,7 @@ def collect_repo_copy(ctx: Context, works: Sequence[FileRun]) -> None:
     if not union:
         return
     argv = [ctx.opts.python_exe, "-m", "pytest", "--collect-only", "-q", "-m", "repo_copy"]
-    argv += ["-o", "addopts=", "-p", "no:cacheprovider", *union]
+    argv += ["-o", "addopts=", "-p", "no:cacheprovider", "--", *union]
     result = run_phase(ctx, PHASE_REPO_COPY, argv, ctx.repo, scrubbed_env(ctx.opts.environ))
     collected = ncg.parse_repo_copy_collect(result.returncode, result.stdout)
     for work in works:
@@ -763,14 +864,20 @@ def collect_repo_copy(ctx: Context, works: Sequence[FileRun]) -> None:
         )
 
 
-def test_sources(ctx: Context, work: FileRun) -> dict[str, str]:
-    """The selected test modules, their conftests and the shared loaders, read from the gated tree."""
-    wanted = list(ncg.SHARED_LOADER_FILES)
-    for node in work.selected:
+def wanted_test_paths(selected: Sequence[str]) -> list[str]:
+    """The selected test modules and every conftest above them."""
+    wanted = []
+    for node in selected:
         module = node.split("::")[0]
         wanted.append(module)
         parts = module.split("/")[:-1]
         wanted.extend("/".join([*parts[:i], "conftest.py"]) for i in range(len(parts) + 1))
+    return wanted
+
+
+def test_sources(ctx: Context, work: FileRun) -> dict[str, str]:
+    """The selected test modules, their conftests and the shared loaders, read from the gated tree."""
+    wanted = list(ncg.SHARED_LOADER_FILES) + wanted_test_paths(work.selected)
     found = {}
     for path in sorted(set(wanted)):
         if path not in ctx.sources:
@@ -806,8 +913,12 @@ def analyze_python(ctx: Context, work: FileRun) -> None:
 
 def enumerate_file(ctx: Context, work: FileRun) -> None:
     """Build the workspace and list the file's gated mutants in a per-file subprocess (TD 5.9.1)."""
-    work.workspace = make_workspace(ctx, work)
-    ws = work.workspace
+    started = ctx.clock.monotonic()
+    try:
+        ws = make_workspace(ctx, work)
+    finally:
+        work.workspace_seconds = round(ctx.clock.monotonic() - started, 3)
+        ctx.spend_phase("workspace", started)
     lines_file = ws.root / "gated-lines.json"
     lines_file.write_text(json.dumps(work.gated), encoding="utf-8")
     argv = child_argv(ctx, "_enumerate", work.path, ["--gated-lines-json", str(lines_file)])
@@ -1035,11 +1146,29 @@ def mutate_file(ctx: Context, work: FileRun) -> None:
 # ---------------------------------------------------------------------------
 
 
-def mark_timeout(work: FileRun) -> None:
+def mark_timeout(work: FileRun, message: str) -> None:
     work.record["mutation_ran"] = False
     work.record["mutation_reason"] = "timeout"
-    work.add_fail("mutation_timeout", ncg.MSG_TIMEOUT)
+    work.add_fail("mutation_timeout", message)
     work.done = True
+
+
+def release_workspace(ctx: Context, work: FileRun) -> None:
+    """Delete (or, with --keep-workspace, report) a file's workspace as soon as the file is finished."""
+    ws = work.workspace
+    if ws is None:
+        return
+    work.workspace = None
+    ctx.workspaces.remove(ws)
+    if ctx.opts.keep_workspace:
+        print(f"kept workspace: {ws.root}", file=sys.stderr)
+        return
+    shutil.rmtree(ws.root, ignore_errors=True)
+
+
+def release_if_done(ctx: Context, work: FileRun) -> None:
+    if work.done:
+        release_workspace(ctx, work)
 
 
 def guarded(ctx: Context, work: FileRun, step: Any) -> None:
@@ -1048,6 +1177,8 @@ def guarded(ctx: Context, work: FileRun, step: Any) -> None:
     try:
         step(ctx, work)
     except BudgetExpired:
+        ctx.expired_file = work.path
+        work.spend(started, ctx.clock)
         raise
     except Exception as exc:
         ctx.internal_errors.append(
@@ -1056,12 +1187,13 @@ def guarded(ctx: Context, work: FileRun, step: Any) -> None:
         work.record["mutation_reason"] = "internal_error"
         work.done = True
     work.spend(started, ctx.clock)
+    release_if_done(ctx, work)
 
 
 def cheap_phase(ctx: Context, works: Sequence[FileRun]) -> None:
+    for work in [w for w in works if not w.done]:
+        guarded(ctx, work, select_tests)
     py = [w for w in works if not w.done]
-    for work in py:
-        select_tests(ctx, work)
     collect_repo_copy(ctx, py)
     for work in py:
         guarded(ctx, work, analyze_python)
@@ -1069,6 +1201,7 @@ def cheap_phase(ctx: Context, works: Sequence[FileRun]) -> None:
         guarded(ctx, work, enumerate_file)
         if not work.done:
             settle_selection(work)
+            release_if_done(ctx, work)
 
 
 def mutation_phase(ctx: Context, works: Sequence[FileRun]) -> None:
@@ -1081,18 +1214,14 @@ def prepare_files(ctx: Context) -> list[FileRun]:
     names = git_text(
         repo, [*GIT_DIFF_PREFIX, "--name-status", base, gated], "diff could not be computed"
     )
-    patch = git_text(
-        repo, [*GIT_DIFF_PREFIX, "--unified=0", base, gated], "diff could not be computed"
-    )
-    changed = ncg.parse_unified0(patch)
     works = []
     for change in sorted(ncg.parse_name_status(names), key=lambda c: c.path):
         if change.kind is None:
             continue
         if ncg.in_python_scope(change.path):
-            works.append(prepare_python(ctx, change, changed))
+            works.append(prepare_python(ctx, change))
         elif ncg.in_shell_scope(change.path):
-            works.append(prepare_shell(ctx, change, changed))
+            works.append(prepare_shell(ctx, change))
     return works
 
 
@@ -1104,11 +1233,21 @@ def run_files(ctx: Context) -> list[FileRun]:
         mutation_phase(ctx, works)
     except BudgetExpired:
         pass
+    message = timeout_message(ctx, works)
     for work in works:
         if not work.done:
-            mark_timeout(work)
+            mark_timeout(work, message)
         work.record["fail_reasons"].sort(key=lambda r: ncg.FAIL_ORDER.index(r["code"]))
     return works
+
+
+def timeout_message(ctx: Context, works: Sequence[FileRun]) -> str:
+    """Where the 25 minutes went: the phase and file that ran out, then phase and file totals (M6)."""
+    where = ctx.expired_phase or "an unrecorded phase"
+    if ctx.expired_file:
+        where += f" of {ctx.expired_file}"
+    seconds = {w.path: (w.record["seconds"], w.workspace_seconds) for w in works}
+    return ncg.timeout_message(ctx.phase_seconds, seconds, where)
 
 
 def assemble(
@@ -1226,12 +1365,37 @@ def unreadable_records(error: str) -> dict[str, Any]:
     }
 
 
-def verdict(records_path: Path, out: Path, summary: Path, measure_result: str | None) -> int:
+def records_file(records_dir: Path) -> Path:
+    """The one records file of a fresh artifact directory; a directory holding anything else is refused."""
     try:
-        records = load_records(records_path)
+        names = sorted(entry.name for entry in records_dir.iterdir())
+    except OSError as exc:
+        raise GateError(f"records directory missing or unreadable: {records_dir.name}") from exc
+    path = records_dir / RECORDS_FILENAME
+    if names != [RECORDS_FILENAME] or path.is_symlink() or not path.is_file():
+        raise GateError(
+            f"records directory must hold exactly {RECORDS_FILENAME}, as a regular file"
+        )
+    return path
+
+
+def bound_records(inputs: VerdictInputs) -> dict[str, Any]:
+    """Load the records and prove they were written by this run for this commit."""
+    records = load_records(records_file(inputs.records_dir))
+    message = ncg.check_records_binding(
+        records, inputs.gated_sha, inputs.run_id, inputs.run_attempt
+    )
+    if message is not None:
+        raise GateError(message)
+    return records
+
+
+def verdict(inputs: VerdictInputs, out: Path, summary: Path) -> int:
+    try:
+        records = bound_records(inputs)
     except GateError as exc:
         records = unreadable_records(str(exc))
-    doc, text, code = build_verdict(records, measure_result)
+    doc, text, code = build_verdict(records, inputs.measure_result)
     write_json(out, doc)
     summary.write_text(text, encoding="utf-8")
     return code
@@ -1276,7 +1440,14 @@ def command_measure(args: argparse.Namespace) -> int:
 
 
 def command_verdict(args: argparse.Namespace) -> int:
-    return verdict(Path(args.records), Path(args.out), Path(args.summary), args.measure_result)
+    inputs = VerdictInputs(
+        records_dir=Path(args.records_dir),
+        gated_sha=args.gated_sha,
+        run_id=args.run_id,
+        run_attempt=args.run_attempt,
+        measure_result=args.measure_result,
+    )
+    return verdict(inputs, Path(args.out), Path(args.summary))
 
 
 def local_options(args: argparse.Namespace, repo: Path) -> MeasureOptions:
@@ -1316,7 +1487,7 @@ def command_run(args: argparse.Namespace) -> int:
     records, _code = measure(opts, SubprocessRunner(), Clock())
     doc, text, code = build_verdict(records, None)
     out_dir = Path(tempfile.mkdtemp(prefix="ncg-run-"))
-    write_json(out_dir / "new-code-records.json", records)
+    write_json(out_dir / RECORDS_FILENAME, records)
     write_json(out_dir / "new-code-verdict.json", doc)
     print(text)
     print(f"records and verdict written to {out_dir}", file=sys.stderr)
@@ -1347,14 +1518,17 @@ def build_parser() -> argparse.ArgumentParser:
     measure_p.add_argument("--coverage-file", required=True)
     measure_p.add_argument("--meta", required=True)
     measure_p.add_argument("--out", required=True)
-    measure_p.add_argument("--tests-result")
-    measure_p.add_argument("--run-id")
-    measure_p.add_argument("--run-attempt")
+    measure_p.add_argument("--tests-result", required=True)
+    measure_p.add_argument("--run-id", required=True)
+    measure_p.add_argument("--run-attempt", required=True)
     verdict_p = sub.add_parser("verdict", help="decide pass or fail from the records")
-    verdict_p.add_argument("--records", required=True)
+    verdict_p.add_argument("--records-dir", required=True)
+    verdict_p.add_argument("--gated-sha", required=True)
+    verdict_p.add_argument("--run-id", required=True)
+    verdict_p.add_argument("--run-attempt", required=True)
+    verdict_p.add_argument("--measure-result", required=True)
     verdict_p.add_argument("--out", required=True)
     verdict_p.add_argument("--summary", required=True)
-    verdict_p.add_argument("--measure-result")
     run_p = sub.add_parser("run", help="local: measure and verdict on HEAD")
     run_p.add_argument("--base", default="origin/main")
     run_p.add_argument("--keep-workspace", action="store_true")
@@ -1381,10 +1555,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return HANDLERS[args.phase](args)
     except GateError as exc:
-        print(f"new_code_gate: {exc}", file=sys.stderr)
+        print(ncg.safe_echo(f"new_code_gate: {exc}"), file=sys.stderr)
         return 3
     except Exception as exc:
-        print(f"new_code_gate: internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        line = f"new_code_gate: internal error: {type(exc).__name__}: {exc}"
+        print(ncg.safe_echo(line), file=sys.stderr)
         return 3
 
 

@@ -63,8 +63,6 @@ BARE_IMPORT_DIRS = ("scripts/oversight", "scripts/oversight/validators")
 
 HARD_EXEMPT_SHELL_SUFFIX = "bootstrap/hos_bootstrap.sh"
 
-EXCLUDED_PATH_COMPONENTS = frozenset({".venv", "venv", "site-packages"})
-
 KILLED_STATUSES = frozenset({"killed", "timeout"})
 NOT_KILLED_STATUSES = frozenset(
     {
@@ -113,6 +111,9 @@ MAX_NODE_ID_CHARS = 1024
 MAX_GATED_LINES = 5000
 MAX_SELECTED_TESTS = 2000
 MAX_LINES_IN_MESSAGE = 50
+MAX_SIDECAR_PATHS = 20
+MAX_TIMEOUT_FILES = 5
+MAX_BLOB_MISMATCHES = 10
 
 MSG_NOT_MEASURED = (
     "file is outside the measured surface; add its top-level directory to "
@@ -128,6 +129,11 @@ PRAGMA_NO_MUTATE_RE = re.compile(r"#\s*pragma:.*no mutate")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 SUMMARY_HEADER_RE = re.compile(r"^=+ short test summary info =+$")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+# The only line terminators Python's parser, coverage and git's `\n` all agree on.
+NEWLINE_RE = re.compile(r"\r\n|\n|\r")
+LINE_WITH_END_RE = re.compile(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+")
+NODE_ID_RE = re.compile(r"tests/[\w./\-]+\.py(::\S+)?")
+MODULE_ID_RE = re.compile(r"tests/[\w./\-]+\.py")
 TABLE_HEADER_RE = re.compile(r"^\[\[?[A-Za-z0-9_.\"' -]+\]\]?\s*(#.*)?$")
 MUTANT_KEY_RE = re.compile(r"^[\w.ǁ]+\.x[\wǁ]*__mutmut_\d+$")
 MAX_KEY_CHARS = 512
@@ -262,6 +268,55 @@ def bound_text(text: str, limit: int) -> str:
     return text[: limit - len(TRUNCATION_SUFFIX)] + TRUNCATION_SUFFIX
 
 
+def split_lines(text: str) -> list[str]:
+    """Lines as Python's parser and coverage count them: `\\n`, `\\r\\n` and `\\r` only.
+
+    `str.splitlines` also breaks on form feed, vertical tab, NEL and U+2028/9, which
+    shifts every later line number away from ast, coverage and git.
+    """
+    parts = NEWLINE_RE.split(text)
+    if parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def split_lines_keepends(text: str) -> list[str]:
+    """`split_lines` with each line's terminator kept, so joining restores the text."""
+    return LINE_WITH_END_RE.findall(text)
+
+
+def safe_echo(text: str) -> str:
+    """One line that cannot forge a workflow command: no CR or LF, no leading `::`."""
+    one_line = text.replace("\r", "\\r").replace("\n", "\\n")
+    if one_line.startswith("::"):
+        return "\\" + one_line
+    return one_line
+
+
+def sanitize_node_ids(node_ids: Iterable[str]) -> list[str]:
+    """Node IDs safe to hand to pytest as argv; a shape that is not safe falls back to its module.
+
+    The IDs come from coverage contexts, which the PR's own tests wrote. An ID that
+    is a plain `tests/...py[::name]` stays; one with whitespace in a parameter ID
+    widens to its whole module (never narrows); anything else, such as an option
+    like `--rootdir=/x`, is refused.
+    """
+    safe = set()
+    for node_id in node_ids:
+        module = node_id.split("::")[0]
+        if not MODULE_ID_RE.fullmatch(module) or ".." in module.split("/"):
+            raise GateError(
+                f"unsafe test id in coverage contexts: {bound_text(repr(node_id), 200)}"
+            )
+        safe.add(node_id if NODE_ID_RE.fullmatch(node_id) else module)
+    return sorted(safe)
+
+
+def blob_mismatches(expected: Mapping[str, str], actual: Mapping[str, str]) -> list[str]:
+    """Paths whose extracted content does not hash to the committed blob, sorted."""
+    return sorted(p for p in expected if actual.get(p) != expected[p])
+
+
 def percent_floor(numerator: int, denominator: int) -> float:
     """floor(n * 1000 / d) / 10: one decimal, rounded down (TD 5.4)."""
     return (numerator * 1000 // denominator) / 10
@@ -331,14 +386,31 @@ def check_sidecar_environment(
     return None
 
 
+def _dirty_summary(meta: Mapping[str, Any]) -> str:
+    paths = meta.get("dirty_paths")
+    if not isinstance(paths, list) or not paths:
+        return "no paths recorded"
+    shown = [bound_text(str(p), MAX_PATH_CHARS) for p in paths[:MAX_SIDECAR_PATHS]]
+    return ", ".join(shown)
+
+
 def check_sidecar_head(meta: Mapping[str, Any], gated_sha: str) -> str | None:
-    """The sidecar must describe the gated commit, from a clean tree, under ctrace."""
-    ok = (
-        meta.get("head_sha") == gated_sha
-        and meta.get("clean") is True
-        and meta.get("coverage_core") == "ctrace"
-    )
-    return None if ok else "coverage data stale or from a dirty tree"
+    """The sidecar must describe the gated commit, from a clean tree, under ctrace.
+
+    The message names which of the three conditions failed (head, clean, core).
+    """
+    failed = []
+    if meta.get("head_sha") != gated_sha:
+        seen = bound_text(str(meta.get("head_sha")), MAX_PATH_CHARS)
+        failed.append(f"head: sidecar describes {seen}, gated commit is {gated_sha}")
+    if meta.get("clean") is not True:
+        failed.append(f"clean: tracked .py/.sh files were modified ({_dirty_summary(meta)})")
+    if meta.get("coverage_core") != "ctrace":
+        seen = bound_text(str(meta.get("coverage_core")), MAX_PATH_CHARS)
+        failed.append(f"core: coverage_core is {seen}, not ctrace")
+    if not failed:
+        return None
+    return "coverage data stale or from a dirty tree: " + "; ".join(failed)
 
 
 def check_merge_parents(parents: Sequence[str], pr_head_sha: str) -> str | None:
@@ -386,10 +458,21 @@ def classify_status(status: str) -> str | None:
     return kinds.get(status[:1])
 
 
+def classify_change(status: str, old_path: str | None, path: str) -> str | None:
+    """`classify_status`, except a rename across scopes is a new file, never a clean move.
+
+    A rename from outside the gated scope (a test, a `.txt`) into it has no gated
+    history, so none of its lines may ride in as unchanged.
+    """
+    if status.startswith("R") and scope_of(old_path or path) != scope_of(path):
+        return "new"
+    return classify_status(status)
+
+
 def parse_name_status(text: str) -> list[ChangedPath]:
     """Parse `git diff --name-status -M` output."""
     out = []
-    for raw in text.splitlines():
+    for raw in text.split("\n"):
         parts = raw.split("\t")
         if len(parts) < 2:
             continue
@@ -397,38 +480,56 @@ def parse_name_status(text: str) -> list[ChangedPath]:
         paths = [unquote_git_path(p) for p in parts[1:]]
         is_move = status[:1] in ("R", "C")
         old = paths[0] if is_move else None
-        out.append(ChangedPath(status, paths[-1], old, classify_status(status)))
+        out.append(ChangedPath(status, paths[-1], old, classify_change(status, old, paths[-1])))
     return out
 
 
-def parse_unified0(text: str) -> dict[str, list[int]]:
-    """Head-side added or modified line numbers per path, from `--unified=0` output."""
-    result: dict[str, list[int]] = {}
-    current: str | None = None
-    for raw in text.splitlines():
-        if raw.startswith("+++ "):
-            target = unquote_git_path(raw[4:])
-            current = None if target == "/dev/null" else target.removeprefix("b/")
-            if current is not None:
-                result.setdefault(current, [])
-            continue
+def parse_hunks(text: str) -> tuple[list[int], int]:
+    """Head-side added or modified line numbers, and the hunk count, of one file's diff.
+
+    `text` is the `--unified=0` output for a single path. Only `@@` lines are read:
+    a body line always starts with `+`, `-` or a backslash, so no content line can
+    pose as a hunk header, and the `---` and `+++` file headers (which a content
+    line such as `++ b/x.py` could forge) are never consulted.
+    """
+    lines: list[int] = []
+    hunks = 0
+    for raw in text.split("\n"):
         match = HUNK_RE.match(raw)
-        if match is None or current is None:
+        if match is None:
             continue
+        hunks += 1
         start = int(match.group(1))
         count = int(match.group(2)) if match.group(2) is not None else 1
-        result[current].extend(range(start, start + count))
-    return result
+        lines.extend(range(start, start + count))
+    return lines, hunks
+
+
+def check_diff_complete(path: str, base_blob: str, head_blob: str, hunks: int) -> None:
+    """Fail closed when a file's content changed but its diff holds no hunk.
+
+    A mode-only change keeps the blob and passes. A deletion-only change still has a
+    hunk (`+N,0`), so it passes too.
+    """
+    if base_blob != head_blob and hunks == 0:
+        raise GateError(f"diff for {path} changed content but produced no hunks")
+
+
+def scope_of(path: str) -> str | None:
+    """Which gate rule a path falls under: 'python', 'shell' or None."""
+    if in_python_scope(path):
+        return "python"
+    if in_shell_scope(path):
+        return "shell"
+    return None
 
 
 def in_python_scope(path: str) -> bool:
-    """Tracked production Python: not tests, conftest, mutants or an environment."""
+    """Tracked production Python: not tests, conftest or mutants."""
     parts = path.split("/")
     if not path.endswith(".py"):
         return False
-    if parts[0] in ("tests", "mutants") or parts[-1] == "conftest.py":
-        return False
-    return not EXCLUDED_PATH_COMPONENTS.intersection(parts)
+    return parts[0] not in ("tests", "mutants") and parts[-1] != "conftest.py"
 
 
 def in_shell_scope(path: str) -> bool:
@@ -1063,16 +1164,36 @@ def _loaded_name(node: Node, names: set[str], stem: str, bare_ok: bool) -> tuple
 # ---------------------------------------------------------------------------
 
 
-def strip_no_mutate_pragmas(source: str) -> str:
-    """Remove every `# pragma: ... no mutate` comment token, leaving the line otherwise intact."""
-    lines = source.splitlines(keepends=True)
+def _tokens_without_comments(source: str) -> list[tuple[int, str]]:
+    tokens = tokenize.generate_tokens(StringIO(source).readline)
+    return [(t.type, t.string) for t in tokens if t.type not in (tokenize.COMMENT, tokenize.NL)]
+
+
+def _pragma_cuts(source: str) -> list[tuple[int, int, int]]:
+    """(0-based row, start column, end column) of every no-mutate pragma comment token."""
     cuts = []
     for tok in tokenize.generate_tokens(StringIO(source).readline):
         if tok.type == tokenize.COMMENT and PRAGMA_NO_MUTATE_RE.search(tok.string):
             cuts.append((tok.start[0] - 1, tok.start[1], tok.end[1]))
-    for row, begin, end in sorted(cuts, reverse=True):
+    return cuts
+
+
+def strip_no_mutate_pragmas(source: str) -> str:
+    """Remove every `# pragma: ... no mutate` comment token, leaving the line otherwise intact.
+
+    The result must tokenize to the same non-comment tokens as the source; if the
+    cuts landed anywhere but on comments, the line arithmetic was wrong and the
+    result is refused rather than mutated.
+    """
+    lines = split_lines_keepends(source)
+    for row, begin, end in sorted(_pragma_cuts(source), reverse=True):
         lines[row] = lines[row][:begin] + lines[row][end:]
-    return "".join(lines)
+    stripped = "".join(lines)
+    if _pragma_cuts(stripped):
+        raise GateError("a no-mutate pragma survived stripping")
+    if _tokens_without_comments(stripped) != _tokens_without_comments(source):
+        raise GateError("stripping no-mutate pragmas changed more than comments")
+    return stripped
 
 
 def generated_pytest_args() -> list[str]:
@@ -1182,7 +1303,7 @@ def compose_pyproject(head_text: str, table: Mapping[str, Any]) -> str:
 def changed_original_lines(original: str, mutated: str) -> list[int]:
     """1-based original-side lines that differ between a module and its mutant."""
     changed: set[int] = set()
-    matcher = difflib.SequenceMatcher(None, original.splitlines(), mutated.splitlines(), False)
+    matcher = difflib.SequenceMatcher(None, split_lines(original), split_lines(mutated), False)
     for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
@@ -1442,6 +1563,33 @@ def verdict_document(records: Mapping[str, Any], decision: Mapping[str, Any]) ->
 def verify_measure_sha(records: Mapping[str, Any]) -> bool:
     """The measure records must hash to the value they carry."""
     return records.get("records_sha256") == records_sha256(records["files"])
+
+
+def check_records_binding(
+    records: Mapping[str, Any], gated_sha: str, run_id: str, run_attempt: str
+) -> str | None:
+    """The records must have been written by this run for this commit (a stale or foreign set is refused)."""
+    expected = {"gated_sha": gated_sha, "run_id": run_id, "run_attempt": run_attempt}
+    for name, want in expected.items():
+        if records.get(name) != want:
+            got = bound_text(str(records.get(name)), MAX_PATH_CHARS)
+            return f"records do not belong to this run: {name} is {got}, expected {want}"
+    return None
+
+
+def timeout_message(
+    phase_seconds: Mapping[str, float],
+    file_seconds: Mapping[str, tuple[float, float]],
+    where: str,
+) -> str:
+    """MSG_TIMEOUT plus where the budget went: per phase, and per file (total, workspace)."""
+    phases = ", ".join(f"{name} {secs:.1f}s" for name, secs in sorted(phase_seconds.items()))
+    ranked = sorted(file_seconds.items(), key=lambda item: (-item[1][0], item[0]))
+    files = ", ".join(
+        f"{path} {total:.1f}s (workspace {setup:.1f}s)"
+        for path, (total, setup) in ranked[:MAX_TIMEOUT_FILES]
+    )
+    return f"{MSG_TIMEOUT} (ran out in {where}; phases: {phases}; slowest files: {files})"
 
 
 def _cell(value: Any) -> str:

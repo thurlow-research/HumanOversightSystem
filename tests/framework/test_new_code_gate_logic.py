@@ -129,9 +129,28 @@ def test_sidecar_python_must_equal_install():
 def test_sidecar_head_clean_and_core_checked():
     meta = {"head_sha": "abc", "clean": True, "coverage_core": "ctrace"}
     assert ncg.check_sidecar_head(meta, "abc") is None
-    for key, value in (("head_sha", "zzz"), ("clean", False), ("coverage_core", "sysmon")):
+    prefix = "coverage data stale or from a dirty tree: "
+    for key, value, expected in (
+        ("head_sha", "zzz", "head: sidecar describes zzz, gated commit is abc"),
+        ("clean", False, "clean: tracked .py/.sh files were modified (no paths recorded)"),
+        ("coverage_core", "sysmon", "core: coverage_core is sysmon, not ctrace"),
+    ):
         broken = dict(meta, **{key: value})
-        assert ncg.check_sidecar_head(broken, "abc") == "coverage data stale or from a dirty tree"
+        assert ncg.check_sidecar_head(broken, "abc") == prefix + expected
+
+
+def test_sidecar_head_names_every_failed_condition_and_the_dirty_paths():
+    paths = [f"scripts/p{i}.py" for i in range(30)] + ["x" * 3000]
+    meta = {"head_sha": "zzz", "clean": False, "coverage_core": None, "dirty_paths": paths}
+    message = ncg.check_sidecar_head(meta, "abc")
+    parts = message.split(": ", 1)[1].split("; ")
+    assert [p.split(":")[0] for p in parts] == ["head", "clean", "core"]
+    assert "scripts/p0.py, scripts/p1.py" in parts[1] and "scripts/p19.py" in parts[1]
+    assert "scripts/p20.py" not in parts[1]
+    clean_only = {"head_sha": "abc", "clean": False, "coverage_core": "ctrace", "dirty_paths": "x"}
+    assert ncg.check_sidecar_head(clean_only, "abc").endswith("(no paths recorded)")
+    long_head = dict(meta, head_sha="h" * 5000, coverage_core="c" * 5000)
+    assert len(ncg.check_sidecar_head(long_head, "abc")) < 4000
 
 
 def test_merge_commit_must_have_two_parents_second_is_pr_head():
@@ -170,12 +189,43 @@ def test_parse_name_status_handles_renames_and_quoted_paths():
     ]
 
 
+@pytest.mark.parametrize(
+    "status,old,new,kind",
+    [
+        ("R100", "tests/test_x.py", "scripts/x.py", "new"),
+        ("R087", "tests/test_x.py", "scripts/x.py", "new"),
+        ("R100", "docs/x.txt", "scripts/x.sh", "new"),
+        ("R100", "scripts/x.sh", "scripts/x.py", "new"),
+        ("R100", "scripts/a.py", "scripts/b.py", None),
+        ("R100", "scripts/a.sh", "scripts/b.sh", None),
+        ("R090", "scripts/a.py", "scripts/b.py", "changed"),
+        ("R100", "scripts/a.py", "tests/test_a.py", "new"),
+        ("M", None, "scripts/a.py", "changed"),
+    ],
+)
+def test_classify_change_treats_a_cross_scope_rename_as_new(status, old, new, kind):
+    assert ncg.classify_change(status, old, new) == kind
+
+
+def test_parse_name_status_marks_cross_scope_renames_new():
+    got = ncg.parse_name_status("R100\ttests/test_x.py\tscripts/x.py\nR100\ta/b.py\ta/c.py\n")
+    assert [(c.path, c.old_path, c.kind) for c in got] == [
+        ("scripts/x.py", "tests/test_x.py", "new"),
+        ("a/c.py", "a/b.py", None),
+    ]
+
+
+def test_parse_name_status_splits_on_newline_only():
+    got = ncg.parse_name_status("M\ta\x0cb.py\nM\tc d.py\n")
+    assert [c.path for c in got] == ["a\x0cb.py", "c d.py"]
+
+
 def test_unquote_git_path_escapes():
     assert ncg.unquote_git_path("plain.py") == "plain.py"
     assert ncg.unquote_git_path('"a\\tb\\"c\\\\d.py"') == 'a\tb"c\\d.py'
 
 
-def test_parse_unified0_collects_head_side_lines():
+def test_parse_hunks_collects_head_side_lines_and_counts_hunks():
     diff = _src(
         """
         diff --git a/a.py b/a.py
@@ -193,20 +243,42 @@ def test_parse_unified0_collects_head_side_lines():
         @@ -20,2 +22,0 @@
         -gone
         -gone2
-        diff --git a/b.py b/b.py
-        --- /dev/null
-        +++ b/b.py
-        @@ -0,0 +1,2 @@
-        +1
-        +2
-        diff --git a/c.py b/c.py
-        --- a/c.py
-        +++ /dev/null
-        @@ -1 +0,0 @@
-        -x
         """
     )
-    assert ncg.parse_unified0(diff) == {"a.py": [3, 4, 5, 12], "b.py": [1, 2]}
+    assert ncg.parse_hunks(diff) == ([3, 4, 5, 12], 3)
+    assert ncg.parse_hunks("") == ([], 0)
+
+
+def test_parse_hunks_ignores_forged_file_headers_and_content_lines():
+    """F1: a content line `++ b/other.py` shows up as `+++ b/other.py` and must not retarget lines."""
+    diff = _src(
+        """
+        diff --git a/a.py b/a.py
+        --- a/a.py
+        +++ b/a.py
+        @@ -1 +1,2 @@
+        -x
+        +++ b/victim.py
+        +@@ -1 +40,9 @@
+        @@ -9 +10 @@
+        -y
+        +z
+        """
+    )
+    assert ncg.parse_hunks(diff) == ([1, 2, 10], 2)
+
+
+def test_parse_hunks_splits_on_newline_only():
+    """A form feed or U+2028 inside a content line must not start a fake `@@` line."""
+    diff = "@@ -1 +1 @@\n+a\x0c@@ -5 +99 @@\n+b @@ -7 +77 @@\n"
+    assert ncg.parse_hunks(diff) == ([1], 1)
+
+
+def test_check_diff_complete_fails_closed_on_changed_content_without_hunks():
+    ncg.check_diff_complete("a.py", "b1", "b1", 0)
+    ncg.check_diff_complete("a.py", "b1", "b2", 1)
+    with pytest.raises(ncg.GateError, match="a.py changed content but produced no hunks"):
+        ncg.check_diff_complete("a.py", "b1", "b2", 0)
 
 
 @pytest.mark.parametrize(
@@ -217,8 +289,9 @@ def test_parse_unified0_collects_head_side_lines():
         ("tests/test_x.py", False),
         ("scripts/conftest.py", False),
         ("mutants/x.py", False),
-        ("scripts/oversight/.venv/lib/x.py", False),
-        ("a/site-packages/x.py", False),
+        ("scripts/venv/lib/x.py", True),
+        ("scripts/.venv/x.py", True),
+        ("a/site-packages/x.py", True),
         ("scripts/x.sh", False),
     ],
 )
@@ -999,6 +1072,120 @@ def test_strip_no_mutate_pragmas_removes_only_those_tokens():
         f'x = 1{gap}\ny = "# pragma: no mutate"\nz = 2  # pragma: no cover\n\n'
         f"if x:{gap}\n    pass\n"
     )
+
+
+@pytest.mark.parametrize("sep", ["\x0c", "\x0b", "\x1c", "\x85", " ", " "])
+def test_strip_pragmas_is_not_fooled_by_characters_splitlines_breaks_on(sep):
+    """F4: these inside a string shift `str.splitlines` rows away from the tokenizer's."""
+    source = f'a = "1{sep}2"\nb = 2\nc = 3  # pragma: no mutate\n'
+    assert ncg.strip_no_mutate_pragmas(source) == f'a = "1{sep}2"\nb = 2\nc = 3  \n'
+
+
+def test_strip_pragmas_handles_crlf_and_a_pragma_on_the_last_unterminated_line():
+    assert (
+        ncg.strip_no_mutate_pragmas("a = 1  # pragma: no mutate\r\nb = 2\r\n")
+        == "a = 1  \r\nb = 2\r\n"
+    )
+    assert ncg.strip_no_mutate_pragmas("a = 1\n# pragma: no mutate") == "a = 1\n"
+
+
+def test_strip_pragmas_refuses_a_result_that_still_holds_a_pragma():
+    """A bare `\\r` file leaves the tokenizer and the splitter disagreeing: refuse, never run it."""
+    with pytest.raises(ncg.GateError, match="a no-mutate pragma survived stripping"):
+        ncg.strip_no_mutate_pragmas("a = 1\rb = 2  # pragma: no mutate\r")
+
+
+def test_strip_pragmas_refuses_a_cut_that_changes_a_non_comment_token(monkeypatch):
+    monkeypatch.setattr(
+        ncg, "_pragma_cuts", lambda source: [(0, 0, 3)] if "x = 1" in source else []
+    )
+    with pytest.raises(ncg.GateError, match="changed more than comments"):
+        ncg.strip_no_mutate_pragmas("x = 1\n")
+
+
+def test_split_lines_counts_only_newline_cr_and_crlf():
+    assert ncg.split_lines("a\nb\n") == ["a", "b"]
+    assert ncg.split_lines("a\r\nb\rc") == ["a", "b", "c"]
+    assert ncg.split_lines("") == []
+    assert ncg.split_lines("\n") == [""]
+    assert ncg.split_lines("a\x0cb\x85c d\x0be\x1cf") == ["a\x0cb\x85c d\x0be\x1cf"]
+    assert ncg.split_lines_keepends("a\r\nb\rc\n\nd") == ["a\r\n", "b\r", "c\n", "\n", "d"]
+    assert ncg.split_lines_keepends("") == []
+
+
+def test_changed_original_lines_numbers_lines_like_ast_after_a_form_feed():
+    original = "a = '1\x0c2'\nb = 1\n"
+    mutated = "a = '1\x0c2'\nb = 2\n"
+    assert ncg.changed_original_lines(original, mutated) == [2]
+    assert ncg.statement_map(original)[0] == {1, 2}
+
+
+def test_safe_echo_has_no_cr_or_lf_and_no_leading_command_marker():
+    assert ncg.safe_echo("a\r\n::error::x") == "a\\r\\n::error::x"
+    assert ncg.safe_echo("::set-output name=x::y") == "\\::set-output name=x::y"
+    assert ncg.safe_echo("plain") == "plain"
+
+
+@pytest.mark.parametrize(
+    "ids,expected",
+    [
+        (["tests/a.py::t", "tests/a.py::t", "tests/b/c.py"], ["tests/a.py::t", "tests/b/c.py"]),
+        (["tests/a.py::t[x y]"], ["tests/a.py"]),
+        (["tests/a.py::t[a\nb]", "tests/a.py::u"], ["tests/a.py", "tests/a.py::u"]),
+        ([], []),
+    ],
+)
+def test_sanitize_node_ids_keeps_safe_ids_and_widens_odd_ones_to_their_module(ids, expected):
+    assert ncg.sanitize_node_ids(ids) == expected
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "--rootdir=/x",
+        "-p evil",
+        "-p evil::t",
+        "tests/../../x.py::t",
+        "scripts/a.py::t",
+        "tests/a.py\n",
+        "tests/a b.py::t",
+        "tests/a.txt",
+        "",
+    ],
+)
+def test_sanitize_node_ids_refuses_anything_that_could_be_a_pytest_option_or_escape(bad):
+    with pytest.raises(ncg.GateError, match="unsafe test id in coverage contexts"):
+        ncg.sanitize_node_ids(["tests/ok.py::t", bad])
+
+
+def test_blob_mismatches_lists_changed_and_missing_paths_sorted():
+    expected = {"b.py": "1", "a.py": "2", "c.py": "3"}
+    assert ncg.blob_mismatches(expected, {"a.py": "2", "b.py": "x"}) == ["b.py", "c.py"]
+    assert ncg.blob_mismatches(expected, dict(expected)) == []
+
+
+def test_check_records_binding_names_the_first_field_that_differs():
+    records = {"gated_sha": "g1", "run_id": "7", "run_attempt": "2"}
+    assert ncg.check_records_binding(records, "g1", "7", "2") is None
+    assert ncg.check_records_binding(records, "g2", "7", "2") == (
+        "records do not belong to this run: gated_sha is g1, expected g2"
+    )
+    assert "run_id is 7, expected 8" in ncg.check_records_binding(records, "g1", "8", "2")
+    assert "run_attempt is 2, expected 3" in ncg.check_records_binding(records, "g1", "7", "3")
+    assert "run_id is None, expected 7" in ncg.check_records_binding(
+        {"gated_sha": "g1", "run_attempt": "2"}, "g1", "7", "2"
+    )
+
+
+def test_timeout_message_reports_phases_slowest_files_and_where_it_ran_out():
+    files = {f"f{i}.py": (float(i), 0.5) for i in range(8)}
+    message = ncg.timeout_message(
+        {"mutmut_run": 1400.04, "enumerate": 12.0}, files, "mutmut_run of f7.py"
+    )
+    assert message.startswith(ncg.MSG_TIMEOUT + " (ran out in mutmut_run of f7.py; ")
+    assert "phases: enumerate 12.0s, mutmut_run 1400.0s;" in message
+    assert "slowest files: f7.py 7.0s (workspace 0.5s), f6.py 6.0s" in message
+    assert "f3.py" in message and "f2.py" not in message
 
 
 def test_also_copy_has_only_top_level_entries():
