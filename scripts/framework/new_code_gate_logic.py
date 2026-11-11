@@ -1454,11 +1454,20 @@ def _fraction(pct: Any, num: int, den: int) -> str:
     return f"{pct}% ({num}/{den})"
 
 
+def _error_lines(verdict: Mapping[str, Any]) -> list[str]:
+    errors = verdict.get("internal_errors") or []
+    if not errors:
+        return []
+    return ["", "Internal errors:"] + [
+        f"- {_cell(e['code'])}: {_cell(e['message'])}" for e in errors
+    ]
+
+
 def render_summary(verdict: Mapping[str, Any]) -> str:
     """The Markdown check summary (TD 5.16)."""
     files = verdict["files"]
     if not files:
-        return "No gated files in this PR.\n"
+        return "\n".join(["No gated files in this PR.", *_error_lines(verdict)]) + "\n"
     out = [
         "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) "
         "| Selection | Outcome | Reasons |",
@@ -1478,9 +1487,5 @@ def render_summary(verdict: Mapping[str, Any]) -> str:
     if details:
         out.append("")
         out.extend(details)
-    errors = verdict.get("internal_errors") or []
-    if errors:
-        out.append("")
-        out.append("Internal errors:")
-        out.extend(f"- {_cell(e['code'])}: {_cell(e['message'])}" for e in errors)
+    out.extend(_error_lines(verdict))
     return "\n".join(out) + "\n"

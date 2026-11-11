@@ -67,8 +67,13 @@ isort>=5.13,<6.0
 mypy>=1.8
 
 # Testing
-pytest>=8.0
-pytest-cov>=5.0
+# The five new-code-gate tools are pinned EXACTLY (#2304 AF-1, ADR-A7): the gate
+# refuses to run when an installed version differs from scripts/framework/
+# new_code_gate_logic.py PINNED, so this file and PINNED change together.
+pytest==9.2.0
+pytest-cov==7.1.0
+coverage==7.17.2
+libcst==1.9.0
 # Retry tolerance for the required "tests" CI gate (#1244 ruling, 2026-09-10):
 # a test that fails once then passes on an immediate retry is flaky by
 # definition and must not block; a test that fails twice under identical
@@ -81,7 +86,7 @@ pytest-rerunfailures>=14.0
 # runner now shells pytest in-process instead of a --runner command). A
 # floating `mutmut>=2.4` silently installed 3.6.0 against the 2.x-era
 # pyproject.toml config, crashing every invocation. (#1083)
-mutmut>=3.6,<4.0
+mutmut==3.8.1  # exact pin: #2304 AF-1 / ADR-A7 (was >=3.6,<4.0, #1083)
 
 # IP tooling (install separately to keep core deps lean)
 # scancode-toolkit>=32.0

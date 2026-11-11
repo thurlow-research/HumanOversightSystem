@@ -1382,7 +1382,7 @@ def test_summary_with_no_files_and_internal_errors():
     assert ncg.render_summary(empty) == "No gated files in this PR.\n"
     err = ncg.decide(_records(internal=[{"code": "c", "message": "m"}]), [], ncg.THRESHOLDS)
     text = ncg.render_summary(ncg.verdict_document(_records(), err))
-    assert "No gated files" in text
+    assert text == "No gated files in this PR.\n\nInternal errors:\n- c: m\n"
 
 
 def test_verdict_artifact_matches_schema_v1_and_sha():
