@@ -87,6 +87,7 @@ MUTMUT_CLEAN_FAILED_MESSAGE = "Failed to run clean test"
 # Fail codes in the fixed order of TD 5.14. Reasons on a file are listed in this order.
 FAIL_ORDER = (
     "symlink_not_gateable",
+    "mode_not_gateable",
     "not_measured",
     "path_loaded_module",
     "shell_decision_logic",
@@ -117,10 +118,25 @@ MAX_SIDECAR_PATHS = 20
 MAX_TIMEOUT_FILES = 5
 MAX_BLOB_MISMATCHES = 10
 
+REGULAR_FILE_MODES = frozenset({"100644", "100755"})
 SYMLINK_MODE = "120000"
 MSG_SYMLINK = (
     "this path is a symlink; replace it with a regular file, "
     "or a module that re-exports the target"
+)
+MSG_MODE_TEMPLATE = (
+    "this path is not a regular file in git (mode {mode}, for example a submodule); "
+    "only regular files (100644, 100755) can be gated"
+)
+
+# The one way the gate is started by CI, run_tests.sh and its own child processes (RV2-1).
+# `-I` keeps cwd, PYTHONPATH and the user site off sys.path; the pre-seeded `scripts`
+# namespace module means no checkout path is ever on sys.path and scripts/__init__.py never runs.
+ENTRY_SNIPPET = (
+    "import os, sys, types; r = os.path.realpath(sys.argv[1]); "
+    "p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; "
+    "sys.modules['scripts'] = p; "
+    "from scripts.framework.new_code_gate import main; sys.exit(main(sys.argv[2:]))"
 )
 MSG_NOT_MEASURED = (
     "file is outside the measured surface; add its top-level directory to "
@@ -513,8 +529,18 @@ def parse_tree_modes(listing: str) -> dict[str, str]:
     return modes
 
 
-def is_symlink_mode(mode: str | None) -> bool:
-    return mode == SYMLINK_MODE
+def mode_fail_code(mode: str) -> str | None:
+    """The fail code for a gated path's git mode, or None when it is a regular file."""
+    if mode in REGULAR_FILE_MODES:
+        return None
+    return "symlink_not_gateable" if mode == SYMLINK_MODE else "mode_not_gateable"
+
+
+def mode_message(mode: str) -> str:
+    """The fixed message for a non-regular git mode (symlink or other)."""
+    if mode == SYMLINK_MODE:
+        return MSG_SYMLINK
+    return MSG_MODE_TEMPLATE.format(mode=mode)
 
 
 def parse_hunks(text: str) -> tuple[list[int], int]:
@@ -1660,7 +1686,12 @@ def timeout_message(
 
 
 def _cell(value: Any) -> str:
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    """One Markdown-safe value: HTML-escaped, then backslash-escaped, then single-line (RV2-4b)."""
+    text = str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = text.replace("\\", "\\\\")
+    for char in "|`[]":
+        text = text.replace(char, "\\" + char)
+    return text.replace("\r", " ").replace("\n", " ")
 
 
 def _fraction(pct: Any, num: int, den: int) -> str:

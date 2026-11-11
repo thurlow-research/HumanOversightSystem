@@ -1101,11 +1101,16 @@ def test_enumerate_and_collect_run_in_per_file_subprocesses_with_workspace_cwd(r
     assert [len(v) for v in by_phase.values()] == [2, 2, 2]
     for phase in ("enumerate", "collect"):
         for spec, only in by_phase[phase]:
-            assert (
-                spec.argv[1:4] == ["-P", "-m", gate.GATE_MODULE]
-                and spec.argv[spec.argv.index("--file") + 1] == only[0]
-            )
-            assert spec.env["PYTHONPATH"] == str(rig.root.resolve())
+            assert spec.argv[1:5] == [
+                "-I",
+                "-c",
+                ncg.ENTRY_SNIPPET,
+                str(rig.root.resolve()),
+            ]
+            assert spec.argv[5] == f"_{phase}"
+            assert spec.argv[spec.argv.index("--file") + 1] == only[0]
+            assert "-m" not in spec.argv and "-P" not in spec.argv
+            assert "PYTHONPATH" not in spec.env
             assert not any(
                 k.startswith("NCG_") or k.startswith("ACTIONS_") or k == "GITHUB_TOKEN"
                 for k in spec.env
@@ -2154,6 +2159,91 @@ def test_sym2_a_symlink_turned_back_into_a_regular_file_is_gated_normally(rig):
     rec = file_rec(doc, rel)
     assert code == 0 and codes_of(rec) != ["symlink_not_gateable"]
     assert rec["gated_statements"] == 3
+
+
+def gitlink_pr(rig, rel):
+    """A feature commit that adds `rel` as a gitlink (mode 160000, a submodule) with no content."""
+    rig.base()
+    commit = rig.head()
+    rig.git("update-index", "--add", "--cacheinfo", f"160000,{commit},{rel}")
+    rig.git("commit", "-q", "-m", "gitlink")
+    rig.coverage({CALC_PATH: {TEST_CALC_ID + "|run": CALC_LINES}})
+    rig.sidecar()
+    return commit
+
+
+@pytest.mark.parametrize(
+    ("rel", "kind"),
+    [("scripts/framework/sub.py", "new"), ("scripts/framework/sub.sh", "shell")],
+)
+def test_mode_1_a_gitlink_at_a_gated_path_fails_closed_without_a_blob_read(
+    rig, monkeypatch, rel, kind
+):
+    commit = gitlink_pr(rig, rel)
+    assert rig.git("ls-tree", "HEAD", rel).startswith("160000 ")
+    parsed_nothing(monkeypatch)
+    runner = FakeRunner(rig)
+    doc, code = rig.measure(runner)
+    assert code == 0 and runner.calls == []
+    rec = file_rec(doc, rel)
+    message = ncg.mode_message("160000")
+    assert rec["kind"] == kind and rec["mutation_reason"] == "blocked_by:mode_not_gateable"
+    assert rec["fail_reasons"] == [{"code": "mode_not_gateable", "message": message}]
+    assert "(mode 160000, for example a submodule)" in message
+    assert rec["gated_statements"] == 0 and rec["mutation_ran"] is False
+    assert rec["blob_sha"] == commit
+    vdoc, summary, vcode = gate.build_verdict(doc, None)
+    assert vcode == 1 and vdoc["files"][0]["outcome"] == "fail"
+    assert "mode_not_gateable" in summary
+
+
+def test_mode_2_a_path_the_diff_reports_but_the_tree_listing_omits_is_exit_3(std, monkeypatch):
+    rig, runner = std
+    monkeypatch.setattr(gate, "tracked_modes", lambda repo, sha: {"README.md": "100644"})
+    doc, code = rig.measure(runner)
+    assert code == 3
+    (error,) = doc["internal_errors"]
+    assert error["message"] == f"tree listing and diff disagree: {CALC_PATH}"
+    assert doc["files"] == []
+
+
+def test_env_strip_drops_the_runner_file_command_variables_too():
+    """ENV-STRIP (RV2-3): partial hardening; every child env is built by scrubbed_env."""
+    names = ("GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STATE", "GITHUB_STEP_SUMMARY")
+    env = {name: "/runner/file" for name in names}
+    env.update(GITHUB_TOKEN="a", GH_TOKEN="b", ACTIONS_X="c", NCG_LOG="d", GITHUB_SHA="keep")
+    assert gate.scrubbed_env(env) == {"GITHUB_SHA": "keep"}
+    assert set(names) <= gate.STRIPPED_ENV_NAMES
+
+
+def test_atomic_1_an_output_symlink_is_replaced_not_followed(tmp_path):
+    """ATOMIC-1 (RV2-4c): a symlink at the destination never redirects the write."""
+    victim = tmp_path / "victim.json"
+    victim.write_text("untouched", encoding="utf-8")
+    out = tmp_path / "out" / "nested" / "new-code-verdict.json"
+    out.parent.mkdir(parents=True)
+    out.symlink_to(victim)
+    gate.write_json(out, {"a": 1})
+    assert not out.is_symlink() and json.loads(out.read_text(encoding="utf-8")) == {"a": 1}
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    summary = tmp_path / "fresh" / "dir" / "new-code-summary.md"
+    gate.write_text_atomic(summary, "hello\n")
+    assert summary.read_text(encoding="utf-8") == "hello\n"
+    assert [p.name for p in out.parent.iterdir()] == [out.name]
+
+
+def test_atomic_1_a_failed_write_leaves_no_temp_file_and_the_old_file(tmp_path, monkeypatch):
+    out = tmp_path / "records.json"
+    out.write_text("old", encoding="utf-8")
+
+    def boom(src, dst):
+        raise OSError("disk")
+
+    monkeypatch.setattr(gate.os, "replace", boom)
+    with pytest.raises(OSError, match="disk"):
+        gate.write_json(out, {"a": 1})
+    assert out.read_text(encoding="utf-8") == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["records.json"]
 
 
 def test_a_tracked_symlink_that_a_pr_did_not_touch_is_not_gated(std):

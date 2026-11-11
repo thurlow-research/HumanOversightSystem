@@ -2,6 +2,10 @@
 
     python -m scripts.framework.new_code_gate meta | measure | verdict | run
 
+(`python -m` is for a developer's own tree. CI, run_tests.sh and the gate's child
+processes start it as `python -I -c <ENTRY_SNIPPET> <checkout root> <phase> ...`, so no
+checkout file can shadow an import; see ADR-2304 section 2f RV2-1.)
+
 Design: docs/v0.7.0/TECHNICAL-DESIGN-2304-new-code-coverage-mutation-gate.md. The pure
 decisions live in `new_code_gate_logic`; this module does the git, coverage, mutmut and
 filesystem work and hands plain data to them.
@@ -40,13 +44,24 @@ GateError = ncg.GateError
 
 PLUGIN_RELPATH = "scripts/framework/new_code_gate_pytest_plugin.py"
 PLUGIN_MODULE = "_ncg_tripwire"
-GATE_MODULE = "scripts.framework.new_code_gate"
 KILL_GRACE_SECONDS = 10.0
 EXIT_SIGTERM = 143
 OUTPUT_TAIL_LINES = 40
 OUTPUT_TAIL_CHARS = 4000
 MAX_BLOCKED_NAMES = 20
-STRIPPED_ENV_NAMES = frozenset({"GITHUB_TOKEN", "GH_TOKEN"})
+# The runner's file-command variables are stripped as partial hardening only: a child that
+# finds those files by the runner's layout is not stopped (ADR-2304 section 2f RV2-3, R-9).
+STRIPPED_ENV_NAMES = frozenset(
+    {
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GITHUB_STATE",
+        "GITHUB_STEP_SUMMARY",
+    }
+)
 STRIPPED_ENV_PREFIXES = ("ACTIONS_", "NCG_")
 ARCHIVE_EXCLUDE = ":(exclude,glob)**/.claude/**"
 GIT_DIFF_PREFIX = [
@@ -451,13 +466,13 @@ def run_phase(
 
 
 def child_env(ctx: Context) -> dict[str, str]:
-    env = scrubbed_env(ctx.opts.environ)
-    env["PYTHONPATH"] = str(ctx.repo.resolve())
-    return env
+    return scrubbed_env(ctx.opts.environ)
 
 
 def child_argv(ctx: Context, phase: str, rel: str, extra: Sequence[str] = ()) -> list[str]:
-    return [ctx.opts.python_exe, "-P", "-m", GATE_MODULE, phase, "--file", rel, *extra]
+    """The `-I -c ENTRY_SNIPPET` form (RV2-1): no checkout path is on the child's sys.path."""
+    root = str(ctx.repo.resolve())
+    return [ctx.opts.python_exe, "-I", "-c", ncg.ENTRY_SNIPPET, root, phase, "--file", rel, *extra]
 
 
 def output_tail(output: str) -> str:
@@ -829,20 +844,38 @@ def prepare_python(ctx: Context, change: ncg.ChangedPath) -> FileRun:
     return work
 
 
-def prepare_symlink(ctx: Context, change: ncg.ChangedPath, scope: str) -> FileRun:
-    """A gated path that is a symlink fails closed; its link-target text is never read as source (RV-2)."""
+def prepare_non_regular(ctx: Context, change: ncg.ChangedPath, scope: str, mode: str) -> FileRun:
+    """A gated path that is not a regular file in git (a symlink, a gitlink) fails closed.
+
+    Its content is never read as source (RV-2, RV2-4a): only the object ids are resolved.
+    """
+    code = str(ncg.mode_fail_code(mode))
     kind = "shell" if scope == "shell" else str(change.kind)
     record = ncg.blank_file_record(change.path, kind)
     record["blob_sha"], record["pr_head_blob_sha"] = blob_shas(ctx, change.path)
     work = FileRun(record, "")
-    work.block("symlink_not_gateable", ncg.MSG_SYMLINK, "blocked_by:symlink_not_gateable")
+    work.block(code, ncg.mode_message(mode), f"blocked_by:{code}")
     return work
+
+
+def load_shell_rules() -> tuple[Any, Any]:
+    """Import the shell counter without leaving its sys.path edit behind (RV2-2a).
+
+    shell_logic_check puts its own directory at sys.path[0], and that directory holds
+    unprotected files; restoring the path keeps a later top-level import (coverage) from
+    resolving there.
+    """
+    saved = list(sys.path)
+    try:
+        from scripts.oversight.validators.shell_logic_check import decision_lines, is_hard_exempt
+    finally:
+        sys.path[:] = saved
+    return decision_lines, is_hard_exempt
 
 
 def prepare_shell(ctx: Context, change: ncg.ChangedPath) -> FileRun:
     """The shell rule (H1, H4): no added or edited counted decision construct (TD 5.11)."""
-    from scripts.oversight.validators.shell_logic_check import decision_lines, is_hard_exempt
-
+    decision_lines, is_hard_exempt = load_shell_rules()
     record = ncg.blank_file_record(change.path, "shell")
     record["blob_sha"], record["pr_head_blob_sha"] = blob_shas(ctx, change.path)
     record["mutation_reason"] = "not_python"
@@ -1252,8 +1285,12 @@ def prepare_files(ctx: Context) -> list[FileRun]:
         scope = ncg.scope_of(change.path)
         if change.kind is None or scope is None:
             continue
-        if ncg.is_symlink_mode(ctx.modes.get(change.path)):
-            works.append(prepare_symlink(ctx, change, scope))
+        mode = ctx.modes.get(change.path)
+        if mode is None:
+            shown = ncg.bound_text(change.path, ncg.MAX_PATH_CHARS)
+            raise GateError(f"tree listing and diff disagree: {shown}")
+        if ncg.mode_fail_code(mode) is not None:
+            works.append(prepare_non_regular(ctx, change, scope, mode))
         elif scope == "python":
             works.append(prepare_python(ctx, change))
         else:
@@ -1433,12 +1470,29 @@ def verdict(inputs: VerdictInputs, out: Path, summary: Path) -> int:
         records = unreadable_records(str(exc))
     doc, text, code = build_verdict(records, inputs.measure_result)
     write_json(out, doc)
-    summary.write_text(text, encoding="utf-8")
+    write_text_atomic(summary, text)
     return code
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write `path` through a temp file in its directory and `os.replace` (RV2-4c).
+
+    The parent is created. An existing symlink at `path` is replaced, never followed,
+    and a reader never sees a half-written file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
 def write_json(path: Path, doc: Mapping[str, Any]) -> None:
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_text_atomic(path, json.dumps(doc, indent=2, ensure_ascii=True) + "\n")
 
 
 # ---------------------------------------------------------------------------

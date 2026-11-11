@@ -7,7 +7,10 @@ depend on nor earn coverage for the code they guard.
 
 import ast
 import json
+import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -298,18 +301,31 @@ def test_run_tests_sets_ctrace_contexts_and_split_report():
     )
     assert "--omit='*/test_*,*/__init__.py,*/conftest.py,*/.venv/*,*/__pycache__/*' \\" in lines
     assert "--fail-under=$COVERAGE_TARGET" in lines
-    assert "--coverage-file .coverage --out coverage-meta.json" in lines
-    assert (
-        text.index("-m pytest")
-        < text.index("-m coverage report")
-        < text.index("-m scripts.framework.new_code_gate meta")
-    )
+    assert '"$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json' in lines
+    assert text.index("-m pytest") < text.index("-m coverage report") < text.index(" meta --cov")
+
+
+def entry_snippet_from_source():
+    for node in parse(FRAMEWORK / "new_code_gate_logic.py").body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "ENTRY_SNIPPET" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("ENTRY_SNIPPET not found")
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 NEW_JOBS = ("new-code-measure", "new-code-gate")
-ENTRY = "-m scripts.framework.new_code_gate"
+SNIPPET = entry_snippet_from_source()
+# Marks a gate invocation in a folded `run:` line; the wrapper imports `main` from the gate module.
+ENTRY = "from scripts.framework.new_code_gate import main"
+WRAPPER_ARGS = "${{ github.workspace }}"
 ACTION_PIN = re.compile(r"^actions/[a-z-]+@v\d+$")
+OUT_ROOT = "${{ runner.temp }}/ncg-out"
+
+
+def wrapper(python):
+    return f'{python} -I -c "{SNIPPET}" {WRAPPER_ARGS}'
 
 
 def workflow_text():
@@ -413,12 +429,12 @@ def test_ci_invokes_only_measure_and_verdict_entry_points():
     for job, phase in phases.items():
         gate_lines = [c for c in run_lines(job) if "new_code_gate" in c]
         assert len(gate_lines) == 1, job
-        assert re.search(rf"{ENTRY} {phase}( |$)", gate_lines[0]), gate_lines[0]
+        assert re.search(rf'" {re.escape(WRAPPER_ARGS)} {phase}( |$)', gate_lines[0]), gate_lines[0]
         for other in {"measure", "verdict", "run", "meta", "_enumerate", "_collect"} - {phase}:
-            assert f"{ENTRY} {other}" not in gate_lines[0]
+            assert f"{WRAPPER_ARGS} {other} " not in gate_lines[0]
     text = workflow_text()
     assert "new_code_gate.sh" not in text
-    assert len(re.findall(r"new_code_gate", text.split("\njobs:\n", 1)[1])) == 2
+    assert len(re.findall(r"new_code_gate import", text.split("\njobs:\n", 1)[1])) == 2
 
 
 def test_new_jobs_shell_lines_are_only_the_designed_ones():
@@ -429,8 +445,8 @@ def test_new_jobs_shell_lines_are_only_the_designed_ones():
             "scripts/oversight/.venv/bin/python",
         ],
         "new-code-gate": [
-            "python -m scripts.framework.new_code_gate verdict",
-            "cat new-code-summary.md",
+            wrapper("python") + " verdict",
+            "cat ",
         ],
     }
     for job, prefixes in allowed.items():
@@ -438,16 +454,57 @@ def test_new_jobs_shell_lines_are_only_the_designed_ones():
         assert len(lines) == len(prefixes), lines
         assert all(line.startswith(p) for line, p in zip(lines, prefixes)), lines
     (append,) = [c for c in run_lines("new-code-gate") if c.startswith("cat ")]
-    assert append == 'cat new-code-summary.md >> "$GITHUB_STEP_SUMMARY"'
+    assert append == f'cat "{OUT_ROOT}/new-code-summary.md" >> "$GITHUB_STEP_SUMMARY"'
     assert "&&" not in append and ";" not in append
 
 
 def test_gate_job_uses_system_python_and_measure_uses_the_venv():
     (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
     (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
-    assert measure_cmd.startswith("scripts/oversight/.venv/bin/python " + ENTRY)
-    assert gate_cmd.startswith("python " + ENTRY)
+    assert measure_cmd.startswith(wrapper("scripts/oversight/.venv/bin/python") + " measure ")
+    assert gate_cmd.startswith(wrapper("python") + " verdict ")
     assert not any("ensure_venv" in c for c in run_lines("new-code-gate"))
+
+
+def test_wf_entry_no_step_runs_the_gate_with_dash_m_or_without_isolation():
+    """WF-ENTRY (RV2-1): every gate invocation is the `-I -c ENTRY_SNIPPET <root>` wrapper, byte for byte.
+
+    A `-m` run (or any run without `-I`) puts the checkout root first on sys.path, so a
+    PR-added `json.py` or `scripts/__init__.py` would run inside the gate process.
+    """
+    run_tests = RUN_TESTS.read_text(encoding="utf-8")
+    texts = [workflow_text(), run_tests]
+    for text in texts:
+        assert "-m scripts.framework.new_code_gate" not in text
+    folded = " ".join(workflow_text().split())
+    invocations = [c for job in workflow_jobs() for c in run_lines(job) if "new_code_gate" in c] + [
+        " ".join(line.split()) for line in run_tests.splitlines() if "new_code_gate import" in line
+    ]
+    assert len(invocations) == 3
+    for command in invocations:
+        python, rest = command.split(" -I -c ", 1)
+        assert python.endswith("python") or python.endswith('"$VENV_PYTHON"'), command
+        assert rest.startswith(f'"{SNIPPET}" '), command
+        assert command.count("new_code_gate import") == 1
+    assert folded.count(f'"{SNIPPET}"') == 2
+    assert run_tests.count(f'-I -c "{SNIPPET}"') == 1
+    assert SNIPPET.endswith("sys.exit(main(sys.argv[2:]))")
+
+
+def test_new_code_gate_job_steps_are_exactly_the_inv_g_whitelist():
+    """INV-G: the job that decides runs no PR-controlled build step (no venv, pip, or repo script)."""
+    steps = steps_of("new-code-gate")
+    kinds = [str(s.get("uses", "")).split("@")[0] or s["name"] for s in steps]
+    assert kinds == [
+        "actions/checkout",
+        "actions/setup-python",
+        "actions/download-artifact",
+        "Apply thresholds",
+        "Publish step summary",
+        "actions/upload-artifact",
+    ]
+    text = " ".join(run_lines("new-code-gate"))
+    assert "pip" not in text and "bash scripts/" not in text and "ensure_venv" not in text
 
 
 def test_summary_step_and_verdict_artifact_run_even_when_the_gate_fails():
@@ -457,7 +514,10 @@ def test_summary_step_and_verdict_artifact_run_even_when_the_gate_fails():
     assert [s["if"] for s in summary] == ["always()"]
     assert upload["if"] == "always()"
     assert upload["with"]["name"] == "new-code-verdict"
-    assert upload["with"]["path"].split() == ["new-code-verdict.json", "new-code-summary.md"]
+    assert upload["with"]["path"].splitlines() == [
+        f"{OUT_ROOT}/new-code-verdict.json",
+        f"{OUT_ROOT}/new-code-summary.md",
+    ]
     assert upload["with"]["retention-days"] == 90
 
 
@@ -465,7 +525,7 @@ def test_records_artifact_is_uploaded_always_and_kept_90_days():
     upload = step_using("new-code-measure", "actions/upload-artifact@")
     assert upload["if"] == "always()"
     assert upload["with"]["name"] == "new-code-records"
-    assert upload["with"]["path"] == "new-code-records.json"
+    assert upload["with"]["path"] == f"{OUT_ROOT}/new-code-records.json"
     assert upload["with"]["retention-days"] == 90
 
 
@@ -514,9 +574,9 @@ def test_no_gate_input_path_is_checkout_relative():
         *flag_values(gate_cmd, "--records-dir"),
     ]
     assert inputs and all(p.startswith("${{ runner.temp }}/") for p in inputs)
-    for output in (*flag_values(measure_cmd, "--out"), *flag_values(gate_cmd, "--out")):
-        assert "/" not in output
-    assert flag_values(gate_cmd, "--summary") == ["new-code-summary.md"]
+    assert flag_values(measure_cmd, "--out") == [f"{OUT_ROOT}/new-code-records.json"]
+    assert flag_values(gate_cmd, "--out") == [f"{OUT_ROOT}/new-code-verdict.json"]
+    assert flag_values(gate_cmd, "--summary") == [f"{OUT_ROOT}/new-code-summary.md"]
 
 
 def test_verdict_is_passed_all_four_binding_values_and_each_measure_value():
@@ -571,3 +631,267 @@ def test_workflow_has_no_privileged_trigger_secrets_or_unpinned_actions():
     assert "secrets." not in workflow_text()
     uses = [s["uses"] for job in workflow_jobs().values() for s in job["steps"] if "uses" in s]
     assert uses and all(ACTION_PIN.match(u) for u in uses), uses
+
+
+# --------------------------------------------------------------------------
+# SHADOW-1/2, SHADOW-CTRL, VER-IMPORTS, SLC-PATH: a planted file never runs (RV2-1, RV2-2a)
+# --------------------------------------------------------------------------
+
+SHA = "a" * 40
+PLANTED_MODULES = ("json", "argparse", "re", "coverage", "mutmut", "libcst", "sitecustomize")
+GATE_FILES = ("new_code_gate.py", "new_code_gate_logic.py")
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.com",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.com",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+RECORDS_WRITER = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import json
+from scripts.framework import new_code_gate_logic as ncg
+sha, out = sys.argv[2], sys.argv[3]
+rec = ncg.blank_file_record("scripts/x.py", "new")
+rec["fail_reasons"] = [ncg.fail_reason("mode_not_gateable", ncg.mode_message("160000"))]
+doc = {
+    "schema": ncg.SCHEMA_RECORDS, "gate_version": ncg.GATE_VERSION, "phase": "measure",
+    "mode": "ci", "pr": 7, "gated_sha": sha, "pr_head_sha": sha, "base_sha": None,
+    "gated_tree": None, "run_id": "99", "run_attempt": 1, "tool_versions": {}, "python": "3.12",
+    "coverage_core": None, "budget_seconds": ncg.BUDGET_SECONDS,
+    "thresholds": dict(ncg.THRESHOLDS), "files": [rec], "internal_errors": [],
+    "records_sha256": ncg.records_sha256([rec]), "started_at": "s", "finished_at": "f",
+    "seconds": 0,
+}
+open(out, "w").write(json.dumps(doc))
+"""
+
+
+def plant(directory, markers):
+    """Root-level files that write a marker and exit 0 if anything imports or runs them."""
+    markers.mkdir(parents=True, exist_ok=True)
+    names = {f"{name}.py": f"m_{name}" for name in PLANTED_MODULES}
+    names["scripts/__init__.py"] = "m_scripts_init"
+    for rel, marker in names.items():
+        path = directory / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = f"import os\nopen({str(markers / marker)!r}, 'w').close()\nos._exit(0)\n"
+        path.write_text(body, encoding="utf-8")
+
+
+def fixture_checkout(tmp_path):
+    """A checkout holding only the two gate modules, plus every planted shadow."""
+    root = tmp_path / "checkout"
+    (root / "scripts" / "framework").mkdir(parents=True)
+    for name in GATE_FILES:
+        shutil.copy(FRAMEWORK / name, root / "scripts" / "framework" / name)
+    markers = tmp_path / "markers"
+    plant(root, markers)
+    return root, markers
+
+
+def child_env():
+    return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
+
+def run(argv, cwd, env=None):
+    return subprocess.run(
+        argv, cwd=cwd, env=env or child_env(), capture_output=True, text=True, timeout=120
+    )
+
+
+def bound_records(tmp_path):
+    records = tmp_path / "runner" / "ncg-in" / "records" / "new-code-records.json"
+    records.parent.mkdir(parents=True)
+    argv = [sys.executable, "-I", "-c", RECORDS_WRITER, str(ROOT), SHA, str(records)]
+    proc = run(argv, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    return records
+
+
+def literal_verdict_argv(tmp_path, root):
+    """The 'Apply thresholds' command exactly as tests.yml spells it, with its expressions filled in."""
+    values = {
+        "github.workspace": str(root),
+        "runner.temp": str(tmp_path / "runner"),
+        "github.sha": SHA,
+        "github.event.pull_request.number": "7",
+        "github.run_id": "99",
+        "github.run_attempt": "1",
+        "needs.new-code-measure.result": "success",
+    }
+    (step,) = [s for s in steps_of("new-code-gate") if s["name"] == "Apply thresholds"]
+    text = re.sub(
+        r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], " ".join(step["run"].split())
+    )
+    argv = shlex.split(text)
+    assert argv[:3] == ["python", "-I", "-c"] and argv[3] == SNIPPET
+    return [sys.executable, *argv[1:]]
+
+
+def markers_written(markers):
+    return sorted(p.name for p in markers.iterdir())
+
+
+def test_shadow_1_planted_root_modules_are_not_imported_by_the_workflows_verdict_command(tmp_path):
+    root, markers = fixture_checkout(tmp_path)
+    bound_records(tmp_path)
+    proc = run(literal_verdict_argv(tmp_path, root), root)
+    assert (proc.returncode, markers_written(markers)) == (1, []), proc.stderr
+    out = tmp_path / "runner" / "ncg-out"
+    verdict = json.loads((out / "new-code-verdict.json").read_text(encoding="utf-8"))
+    assert verdict["overall"] == "fail"
+    assert "mode_not_gateable" in (out / "new-code-summary.md").read_text(encoding="utf-8")
+
+
+def test_shadow_ctrl_the_dash_m_form_does_trip_the_same_fixture(tmp_path):
+    """SHADOW-CTRL: without this, SHADOW-1 could pass because the fixture plants nothing that bites."""
+    root, markers = fixture_checkout(tmp_path)
+    bound_records(tmp_path)
+    argv = literal_verdict_argv(tmp_path, root)
+    dash_m = [argv[0], "-m", "scripts.framework.new_code_gate", *argv[argv.index("verdict") :]]
+    proc = run(dash_m, root)
+    assert proc.returncode == 0 and markers_written(markers) != [], proc.stderr
+
+
+def test_ver_imports_the_verdict_process_loads_only_stdlib_and_the_gate_modules(tmp_path):
+    root, markers = fixture_checkout(tmp_path)
+    bound_records(tmp_path)
+    argv = literal_verdict_argv(tmp_path, root)
+    dump = tmp_path / "modules.txt"
+    tail = "sys.exit(main(sys.argv[2:]))"
+    report = f"rc = main(sys.argv[2:]); open({str(dump)!r}, 'w').write(' '.join(sorted(sys.modules))); sys.exit(rc)"
+    assert argv[3].endswith(tail)
+    argv[3] = argv[3].replace(tail, report)
+    proc = run(argv, root)
+    assert (proc.returncode, markers_written(markers)) == (1, []), proc.stderr
+    baseline = run([sys.executable, "-I", "-c", "import sys; print(' '.join(sys.modules))"], root)
+    allowed_gate = {"scripts", "scripts.framework"} | {
+        f"scripts.framework.{n[:-3]}" for n in GATE_FILES
+    }
+    allowed = set(baseline.stdout.split()) | allowed_gate | {"__main__"}
+    loaded = dump.read_text(encoding="utf-8").split()
+    foreign = [
+        m for m in loaded if m not in allowed and m.split(".")[0] not in sys.stdlib_module_names
+    ]
+    assert foreign == []
+    assert allowed_gate <= set(loaded)
+    assert {"coverage", "mutmut", "libcst", "pytest"}.isdisjoint(loaded)
+
+
+def test_ver_imports_the_children_still_resolve_mutmut_libcst_and_pytest_from_site_packages(
+    tmp_path,
+):
+    """The `-I -c` child form keeps the venv's site-packages and drops every checkout path."""
+    root, markers = fixture_checkout(tmp_path)
+    code = "import libcst, mutmut, pytest, coverage; print(libcst.__file__, mutmut.__file__)"
+    proc = run([sys.executable, "-I", "-c", code], root)
+    assert proc.returncode == 0 and markers_written(markers) == [], proc.stderr
+    assert str(root) not in proc.stdout
+
+
+def git_commit_all(directory):
+    env = {**child_env(), **GIT_IDENTITY}
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "x"]):
+        proc = run(["git", *args], directory, env)
+        assert proc.returncode == 0, proc.stderr
+
+
+def run_tests_meta_argv(root):
+    """The `meta` call in run_tests.sh, with its two shell variables filled in."""
+    lines = RUN_TESTS.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if "new_code_gate import main" in line)
+    command = lines[start].strip().rstrip("\\") + " " + lines[start + 1].strip()
+    values = {"$VENV_PYTHON": sys.executable, "$REPO_ROOT": str(root)}
+    argv = [values.get(token, token) for token in shlex.split(command)]
+    assert argv[1:4] == ["-I", "-c", SNIPPET]
+    return argv
+
+
+def test_shadow_2_the_run_tests_meta_form_ignores_planted_files(tmp_path):
+    root, markers = fixture_checkout(tmp_path)
+    (root / ".coverage").write_bytes(b"")
+    git_commit_all(root)
+    proc = run(run_tests_meta_argv(root), root)
+    assert (proc.returncode, markers_written(markers)) == (0, []), proc.stderr
+    meta = json.loads((root / "coverage-meta.json").read_text(encoding="utf-8"))
+    assert meta["checkout_root"] == str(root.resolve())
+
+
+def child_fixture(tmp_path, root):
+    """A workspace (the child's cwd) holding a mutmut config for x.py and the same planted files."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text('[tool.mutmut]\nonly_mutate = ["x.py"]\n', "utf-8")
+    plant(workspace, tmp_path / "markers")
+    return workspace
+
+
+def test_shadow_2_a_child_phase_resolves_real_mutmut_and_runs_no_planted_file(tmp_path):
+    root, markers = fixture_checkout(tmp_path)
+    workspace = child_fixture(tmp_path, root)
+    argv = [sys.executable, "-I", "-c", SNIPPET, str(root), "_collect", "--file", "x.py"]
+    proc = run(argv, workspace)
+    assert markers_written(markers) == [], proc.stderr
+    assert proc.returncode == 3 and "mutmut wrote no meta file for x.py" in proc.stderr
+
+
+def test_shadow_ctrl_the_old_child_form_ran_planted_files_from_the_workspace(tmp_path):
+    root, markers = fixture_checkout(tmp_path)
+    workspace = child_fixture(tmp_path, root)
+    old = [sys.executable, "-m", "scripts.framework.new_code_gate", "_collect", "--file", "x.py"]
+    proc = run(old, workspace, {**child_env(), "PYTHONPATH": str(root)})
+    assert markers_written(markers) != [] and proc.returncode == 0, proc.stderr
+
+
+def validators_fixture(tmp_path):
+    """Gate modules plus a copy of the validators package, with a planted `coverage.py` inside it."""
+    root, markers = fixture_checkout(tmp_path)
+    oversight = ROOT / "scripts" / "oversight"
+    target = root / "scripts" / "oversight"
+    target.mkdir()
+    if (oversight / "__init__.py").exists():
+        shutil.copy(oversight / "__init__.py", target / "__init__.py")
+    shutil.copytree(
+        oversight / "validators",
+        target / "validators",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    body = (
+        f"import os\nopen({str(markers / 'm_validators_coverage')!r}, 'w').close()\nos._exit(0)\n"
+    )
+    (target / "validators" / "coverage.py").write_text(body, encoding="utf-8")
+    return root, markers
+
+
+SLC_PROBE = """
+import os, sys, types
+r = os.path.realpath(sys.argv[1])
+p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; sys.modules['scripts'] = p
+from scripts.framework import new_code_gate as gate
+before = list(sys.path)
+if sys.argv[2] == 'restore':
+    gate.load_shell_rules()
+else:
+    from scripts.oversight.validators.shell_logic_check import decision_lines
+print('PATH_RESTORED' if sys.path == before else 'PATH_CHANGED', flush=True)
+import coverage
+print(coverage.__file__)
+"""
+
+
+def test_slc_path_the_shell_rules_import_leaves_sys_path_as_it_found_it(tmp_path):
+    root, markers = validators_fixture(tmp_path)
+    proc = run([sys.executable, "-I", "-c", SLC_PROBE, str(root), "restore"], root)
+    assert markers_written(markers) == [], proc.stderr
+    assert proc.stdout.split()[0] == "PATH_RESTORED"
+    assert str(root) not in proc.stdout.split()[1]
+
+
+def test_slc_path_control_the_unrestored_import_does_let_a_later_import_resolve_there(tmp_path):
+    root, markers = validators_fixture(tmp_path)
+    proc = run([sys.executable, "-I", "-c", SLC_PROBE, str(root), "plain"], root)
+    assert markers_written(markers) == ["m_validators_coverage"], proc.stderr
+    assert proc.stdout.split()[0] == "PATH_CHANGED"

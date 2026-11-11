@@ -1273,14 +1273,71 @@ def test_tree_modes_read_every_entry_and_spot_only_symlinks():
         "dir/with space.sh": "100755",
         "tab\tname.py": "120000",
     }
-    assert [ncg.is_symlink_mode(m) for m in (*modes.values(), None)] == [
-        False,
-        True,
-        False,
-        True,
-        False,
+    assert [ncg.mode_fail_code(m) for m in modes.values()] == [
+        None,
+        "symlink_not_gateable",
+        None,
+        "symlink_not_gateable",
     ]
     assert ncg.parse_tree_modes("") == {}
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        ("100644", None),
+        ("100755", None),
+        ("120000", "symlink_not_gateable"),
+        ("160000", "mode_not_gateable"),
+        ("040000", "mode_not_gateable"),
+        ("100664", "mode_not_gateable"),
+        ("", "mode_not_gateable"),
+    ],
+)
+def test_mode_allow_list_has_one_decision_per_mode(mode, code):
+    """MODE-L (RV2-4a): regular files pass, a symlink and anything unexpected fail, each with its own code."""
+    assert ncg.mode_fail_code(mode) == code
+    if code == "mode_not_gateable":
+        message = ncg.mode_message(mode)
+        assert f"(mode {mode}, for example a submodule)" in message
+        assert "only regular files (100644, 100755) can be gated" in message
+    if code == "symlink_not_gateable":
+        assert ncg.mode_message(mode) == ncg.MSG_SYMLINK
+
+
+def test_mode_not_gateable_follows_symlink_and_is_never_ruling_eligible():
+    assert ncg.FAIL_ORDER[:2] == ("symlink_not_gateable", "mode_not_gateable")
+    assert "mode_not_gateable" not in ncg.RULING_ELIGIBLE
+    record = ncg.blank_file_record("scripts/x.py", "new")
+    record["fail_reasons"] = [ncg.fail_reason("mode_not_gateable", ncg.mode_message("160000"))]
+    ruling = [{"path": "scripts/x.py", "blob_sha": None}]
+    decision = ncg.decide({"files": [record]}, ruling, ncg.THRESHOLDS)
+    assert decision["files"][0]["outcome"] == "fail" and decision["exit_code"] == 1
+
+
+def test_cell_1_escapes_html_then_backslash_then_markdown_then_newlines():
+    """CELL-1 (RV2-4b): the exact order matters; a hostile path renders to one inert string."""
+    hostile = "a|b`c[d](e)<img src=x>&\\.py"
+    assert ncg._cell(hostile) == "a\\|b\\`c\\[d\\](e)&lt;img src=x&gt;&amp;\\\\.py"
+    assert ncg._cell("one\r\ntwo\nthree\rfour") == "one  two three four"
+    assert ncg._cell("&lt;") == "&amp;lt;"
+    assert ncg._cell(7) == "7"
+
+
+def test_cell_is_used_for_every_table_cell_and_detail_and_error_line():
+    record = ncg.blank_file_record("a|b`c[d](e)<img>.py", "new")
+    record["outcome"] = "fail"
+    record["fail_reasons"] = [{"code": "x", "message": "see [here](http://x) <b>"}]
+    verdict = {
+        "files": [record],
+        "overall": "fail",
+        "internal_errors": [{"code": "e", "message": "<script>`"}],
+    }
+    text = ncg.render_summary(verdict)
+    assert "a\\|b\\`c\\[d\\](e)&lt;img&gt;.py" in text
+    assert "- see \\[here\\](http://x) &lt;b&gt;" in text
+    assert "- e: &lt;script&gt;\\`" in text
+    assert "<" not in text and "`" not in text.replace("\\`", "")
 
 
 def test_symlink_not_gateable_is_the_first_fail_code_and_never_ruling_eligible():

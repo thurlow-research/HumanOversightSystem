@@ -103,8 +103,11 @@ if ! $MUTATION_ONLY; then
         --fail-under=$COVERAGE_TARGET
 
     # Sidecar describing the coverage data for the new-code gate (#2304).
-    "$VENV_PYTHON" -m scripts.framework.new_code_gate meta \
-        --coverage-file .coverage --out coverage-meta.json
+    # Started through the -I -c wrapper (ADR-2304 2f RV2-1; the text equals
+    # ENTRY_SNIPPET in new_code_gate_logic.py, asserted by WF-ENTRY) so no repo-root
+    # file can shadow an import in the gate process.
+    "$VENV_PYTHON" -I -c "import os, sys, types; r = os.path.realpath(sys.argv[1]); p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; sys.modules['scripts'] = p; from scripts.framework.new_code_gate import main; sys.exit(main(sys.argv[2:]))" \
+        "$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json
 
     if [[ $PYTEST_EXIT -ne 0 ]]; then
         echo ""

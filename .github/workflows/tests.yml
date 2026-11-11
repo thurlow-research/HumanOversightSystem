@@ -159,14 +159,17 @@ jobs:
           path: ${{ runner.temp }}/ncg-in/coverage
 
       - name: Measure new and changed code
+        # The -I -c wrapper (text equal to ENTRY_SNIPPET in new_code_gate_logic.py,
+        # asserted by WF-ENTRY) keeps cwd and PYTHONPATH off sys.path (#2304 RV2-1).
         run: >-
-          scripts/oversight/.venv/bin/python -m scripts.framework.new_code_gate measure
+          scripts/oversight/.venv/bin/python -I -c "import os, sys, types; r = os.path.realpath(sys.argv[1]); p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; sys.modules['scripts'] = p; from scripts.framework.new_code_gate import main; sys.exit(main(sys.argv[2:]))"
+          ${{ github.workspace }} measure
           --gated-sha ${{ github.sha }}
           --pr-head-sha ${{ github.event.pull_request.head.sha }}
           --pr ${{ github.event.pull_request.number }}
           --coverage-file ${{ runner.temp }}/ncg-in/coverage/.coverage
           --meta ${{ runner.temp }}/ncg-in/coverage/coverage-meta.json
-          --out new-code-records.json
+          --out ${{ runner.temp }}/ncg-out/new-code-records.json
           --tests-result ${{ needs.tests.result }}
           --run-id ${{ github.run_id }}
           --run-attempt ${{ github.run_attempt }}
@@ -176,7 +179,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: new-code-records
-          path: new-code-records.json
+          path: ${{ runner.temp }}/ncg-out/new-code-records.json
           # 90 days is the maximum for a public repository. A value above the
           # repository's Artifact and log retention setting is silently capped,
           # so a human verifies the artifact's expires_at after the first run
@@ -220,21 +223,24 @@ jobs:
       # verdict is stdlib-only, so the system python is used and no venv is built.
       # The four binding values prove the records were written by this run (or an
       # earlier attempt of it, for a verdict-only re-run) for this PR and commit.
+      # The gate creates ${{ runner.temp }}/ncg-out itself (outputs are written through
+      # a temp file and os.replace), so this job needs no extra step (INV-G).
       - name: Apply thresholds
         run: >-
-          python -m scripts.framework.new_code_gate verdict
+          python -I -c "import os, sys, types; r = os.path.realpath(sys.argv[1]); p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; sys.modules['scripts'] = p; from scripts.framework.new_code_gate import main; sys.exit(main(sys.argv[2:]))"
+          ${{ github.workspace }} verdict
           --records-dir ${{ runner.temp }}/ncg-in/records
           --gated-sha ${{ github.sha }}
           --pr ${{ github.event.pull_request.number }}
           --run-id ${{ github.run_id }}
           --run-attempt ${{ github.run_attempt }}
-          --out new-code-verdict.json
-          --summary new-code-summary.md
+          --out ${{ runner.temp }}/ncg-out/new-code-verdict.json
+          --summary ${{ runner.temp }}/ncg-out/new-code-summary.md
           --measure-result ${{ needs.new-code-measure.result }}
 
       - name: Publish step summary
         if: always()
-        run: cat new-code-summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat "${{ runner.temp }}/ncg-out/new-code-summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload new-code verdict
         if: always()
@@ -242,8 +248,8 @@ jobs:
         with:
           name: new-code-verdict
           path: |
-            new-code-verdict.json
-            new-code-summary.md
+            ${{ runner.temp }}/ncg-out/new-code-verdict.json
+            ${{ runner.temp }}/ncg-out/new-code-summary.md
           retention-days: 90
           if-no-files-found: warn
           overwrite: true
