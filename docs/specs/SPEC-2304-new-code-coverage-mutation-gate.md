@@ -1,7 +1,7 @@
 # Requirements Spec — Issue #2304: CI gate for 80% coverage and 75% mutant score on new files and changed lines
 
 **Document type:** Requirements specification
-**Status:** DRAFT. The human rulings of 2026-11-10 on OQ-H1 to OQ-H5 and on the ADR's NQ-1 and NQ-2 are recorded in §2a, and lines changed to apply them carry `[ruled 2026-11-10]`. The human confirms them, and approves the §9 structural items, in the PR's CODEOWNER review. Technical design: `docs/v0.7.0/TECHNICAL-DESIGN-2304-new-code-coverage-mutation-gate.md`.
+**Status:** DRAFT. The human rulings of 2026-11-10 on OQ-H1 to OQ-H5 and on the ADR's NQ-1 and NQ-2 are recorded in §2a, and lines changed to apply them carry `[ruled 2026-11-10]`. The rulings of 2026-11-11 on TD-2304 §14 Q4 and Q5 are also in §2a, and their lines carry `[ruled 2026-11-11: Q4]` or `[ruled 2026-11-11: Q5]`. The human confirms them, and approves the §9 structural items, in the PR's CODEOWNER review. Technical design: `docs/v0.7.0/TECHNICAL-DESIGN-2304-new-code-coverage-mutation-gate.md`.
 **Issue:** #2304 (milestone v0.7.0 — Quality). Labels stay as they are, `parked` included. This spec changes no labels.
 **Sibling (out of scope):** #2305 (v0.7.6, whole-touched-file enforcement, legacy cleanup, converting path-loaded tests). Also related: #1823 (mutmut scope for `scripts/automation/`), #1242 (testability epic), #2219 (verified human ruling mechanism), #1570 (gates are code, not attestation), #1567 (a check is required only once all source passes it), SPEC-375 (deterministic-gate invariant).
 **Risk tier (declared for downstream routing):** **HIGH.** This is a new required merge gate. It touches protected surfaces: `.github/workflows/**`, `.claude/agents/**` and `contract/**`.
@@ -50,6 +50,8 @@ These rulings were relayed by the human-proxy session as the human's (ScottThurl
 | H5 (OQ-H5) | A verified human ruling covers only a named file's coverage and mutation **thresholds**. It does not cover path-load, shell or timeout failures. It is bound to the file's **content** (blob hash), not the head SHA, and is void if the file changes after the ruling. There is no in-gate exception path until S5 (which depends on #2101). A human admin merge is the only override. `contract/gate-suspension.md` does not apply to this gate. |
 | NQ-1 | A file with zero gated mutants and gated coverage ≥ 80% needs no test selection, but only if its gated lines contain no decision logic (AST `If`/`For`/`While`/`Try`/`BoolOp`/`Compare`/`IfExp`, or a comprehension with an `if`). Otherwise it fails with "move logic into a function so it can be mutated". Every other empty selection fails. |
 | NQ-2 | Unmutatable gated lines (decorated functions, enums) are reported as `unmutatable_gated_lines`. They pass on coverage only if they contain no decision logic, under the same AST definition. Otherwise the file fails with "move the logic into an undecorated helper so it can be mutated". |
+| TD-Q4 (2026-11-11) [ruled 2026-11-11: Q4] | `Match` statements count as decision logic. |
+| TD-Q5 (2026-11-11) [ruled 2026-11-11: Q5] | Module-level or class-level decision logic on gated lines is **not** coverage-only. It fails with "move the logic into a function so it can be mutated", using the same mechanism and AST definition as NQ-1 and NQ-2. Narrow carve-outs only, and nothing else: (a) `if __name__ == "__main__":` whose body is only a call (e.g. `sys.exit(main())`); (b) `try: import X` / `except ImportError:` fallbacks (import-only `try` bodies and `ImportError` handlers); (c) `if TYPE_CHECKING:`. |
 
 ## 3. Definitions
 
@@ -99,7 +101,7 @@ These rulings were relayed by the human-proxy session as the human's (ScottThurl
 - **REQ-9.** Each new Python file must have a mutant score ≥ 75% across all mutants in the file.
 - **REQ-10.** For each changed file, the mutants on the gated lines must score ≥ 75%. Surviving mutants above 25% fail the gate.
 - **REQ-11.** Every gated file is mutated, whether or not it is in `[tool.mutmut] source_paths`. The gate builds its own target list from the PR diff. "Not in scope" is never a pass.
-- **REQ-12.** A file whose gated lines produce zero mutants passes only if mutmut ran without error and reported zero mutants on those lines. The record says `mutation_ran: true, total: 0`. Gated lines in code mutmut never mutates (decorated functions, enums) are listed as `unmutatable_gated_lines`. They pass on coverage only if they contain no decision logic. Otherwise the file fails with "move the logic into an undecorated helper so it can be mutated" (NQ-2) [ruled 2026-11-10].
+- **REQ-12.** A file whose gated lines produce zero mutants passes only if mutmut ran without error and reported zero mutants on those lines. The record says `mutation_ran: true, total: 0`. Gated lines in code mutmut never mutates (decorated functions, enums) are listed as `unmutatable_gated_lines`. They pass on coverage only if they contain no decision logic. Otherwise the file fails with "move the logic into an undecorated helper so it can be mutated" (NQ-2) [ruled 2026-11-10]. Decision logic on gated module-level or class-level lines fails with "move the logic into a function so it can be mutated". This applies whatever the file's mutant count or selection is. The only exceptions are the three TD-Q5 carve-outs in §2a [ruled 2026-11-11: Q5].
 
 ### 4.4 Test selection
 
