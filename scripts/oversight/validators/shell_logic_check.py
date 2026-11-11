@@ -74,8 +74,12 @@ def _is_hard_exempt(path: str) -> bool:
     return normalized.endswith(_HARD_EXEMPT_SUFFIX)
 
 
-def _scan_file(path: str) -> tuple[int, int | None]:
-    """Return (decision_construct_count, first_construct_lineno).
+def decision_lines(lines: list[str]) -> list[int]:
+    """Return the sorted 1-based line numbers of every counted decision construct.
+
+    Takes the file's already-split lines. Duplicates are preserved (never a
+    set), so len() of the result is the construct count. Sorted because the
+    scan below appends in close order (fi/esac/done), not in line order (#2304).
 
     Walks a small open/close stack over structural tokens so `if`/`elif`
     guard-clause exemption (no `else`, no further `elif` in the same chain)
@@ -86,10 +90,6 @@ def _scan_file(path: str) -> tuple[int, int | None]:
     left open at EOF is simply never counted — undercounting is the safe
     direction for a signal-not-block validator.
     """
-    try:
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0, None
 
     stack: list[dict] = []
     decisions: list[int] = []
@@ -168,8 +168,20 @@ def _scan_file(path: str) -> tuple[int, int | None]:
                     ):
                         decisions.append(frame["lineno"])
 
-    first_lineno = min(decisions) if decisions else None
-    return len(decisions), first_lineno
+    return sorted(decisions)
+
+
+def _scan_file(path: str) -> tuple[int, int | None]:
+    """Return (decision_construct_count, first_construct_lineno)."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return 0, None
+    d = decision_lines(lines)
+    return len(d), min(d) if d else None
+
+
+is_hard_exempt = _is_hard_exempt
 
 
 # Score: step function on the exempted decision-construct count.

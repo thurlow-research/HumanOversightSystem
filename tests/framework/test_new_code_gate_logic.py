@@ -1,0 +1,1373 @@
+"""Pure-logic tests for the new-code gate (#2304, TD section 9).
+
+The gate modules are imported canonically and at module level: a first import
+inside a test would record the module's top-level statements under that test's
+coverage context and drag the test into every selection (TD 5.19).
+"""
+
+import ast
+import json
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from scripts.framework import new_code_gate_logic as ncg
+from scripts.oversight.validators.shell_logic_check import decision_lines, is_hard_exempt
+
+REPO = Path(__file__).resolve().parents[2]
+LOGIC_FILE = REPO / "scripts" / "framework" / "new_code_gate_logic.py"
+
+
+def _src(text: str) -> str:
+    return textwrap.dedent(text).lstrip("\n")
+
+
+def _findings(source: str, lines=None):
+    gated = ncg.statement_map(source)[0] if lines is None else lines
+    return ncg.decision_logic_findings(source, gated)
+
+
+def _codes(source: str, lines=None, path: str = "m.py") -> list[str]:
+    return [r["code"] for r in ncg.decision_fail_reasons(path, _findings(source, lines))]
+
+
+def _message(source: str, code: str, path: str = "m.py") -> str:
+    reasons = ncg.decision_fail_reasons(path, _findings(source))
+    return next(r["message"] for r in reasons if r["code"] == code)
+
+
+# --------------------------------------------------------------------------
+# Small helpers, thresholds, coverage
+# --------------------------------------------------------------------------
+
+
+def test_new_file_coverage_boundary_79_fails_80_passes():
+    assert not ncg.meets_threshold(79, 100, 80)
+    assert ncg.meets_threshold(80, 100, 80)
+    low = ncg.blank_file_record("a.py", "new")
+    low.update(ncg.coverage_fields(100, 79))
+    assert [r["code"] for r in ncg.threshold_reasons(low, ncg.THRESHOLDS)] == [
+        "coverage_below_threshold"
+    ]
+    ok = ncg.blank_file_record("a.py", "new")
+    ok.update(ncg.coverage_fields(100, 80))
+    assert ncg.threshold_reasons(ok, ncg.THRESHOLDS) == []
+
+
+def test_failing_percentage_is_rounded_down_never_displayed_as_threshold():
+    assert ncg.percent_floor(7996, 10000) == 79.9
+    assert ncg.percent_floor(2, 3) == 66.6
+    assert ncg.coverage_fields(0, 0)["coverage_pct"] is None
+
+
+def test_new_file_mutant_score_boundary_74_fails_75_passes():
+    rec = ncg.blank_file_record("a.py", "new")
+    rec.update(mutation_ran=True, mutants_total=100, mutants_killed=74)
+    codes = [r["code"] for r in ncg.threshold_reasons(rec, ncg.THRESHOLDS)]
+    assert codes == ["mutant_score_below_threshold"]
+    rec["mutants_killed"] = 75
+    assert ncg.threshold_reasons(rec, ncg.THRESHOLDS) == []
+
+
+def test_no_score_requirement_without_a_mutation_run_or_mutants():
+    rec = ncg.blank_file_record("a.py", "new")
+    rec.update(mutation_ran=False, mutants_total=10, mutants_killed=0)
+    assert ncg.threshold_reasons(rec, ncg.THRESHOLDS) == []
+    rec.update(mutation_ran=True, mutants_total=0)
+    assert ncg.threshold_reasons(rec, ncg.THRESHOLDS) == []
+
+
+def test_bound_text_and_format_lines_caps():
+    assert ncg.bound_text("abc", 10) == "abc"
+    cut = ncg.bound_text("x" * 50, 20)
+    assert len(cut) == 20 and cut.endswith(ncg.TRUNCATION_SUFFIX)
+    assert ncg.format_lines([3, 1, 3, 2]) == "1,2,3"
+    many = ncg.format_lines(range(1, 53))
+    assert many.endswith("…and 2 more") and many.count(",") == 49
+
+
+def test_canonical_name_and_module_stem():
+    assert ncg.canonical_name("scripts/framework/new_code_gate.py") == (
+        "scripts.framework.new_code_gate"
+    )
+    assert ncg.canonical_name("scripts/automation/lib/__init__.py") == "scripts.automation.lib"
+    assert ncg.module_stem("scripts/automation/lib/__init__.py") == "lib"
+    assert ncg.module_stem("bootstrap/lib/hos_tmp_root.py") == "hos_tmp_root"
+
+
+# --------------------------------------------------------------------------
+# Version and sidecar guards
+# --------------------------------------------------------------------------
+
+
+def test_check_pins_names_the_first_mismatch():
+    assert ncg.check_pins(dict(ncg.PINNED)) is None
+    bad = dict(ncg.PINNED, libcst="1.0.0")
+    assert ncg.check_pins(bad) == "tool version mismatch: libcst 1.0.0 != 1.9.0"
+    missing = {k: v for k, v in ncg.PINNED.items() if k != "pytest"}
+    assert ncg.check_pins(missing) == "tool version mismatch: pytest None != 9.2.0"
+
+
+@pytest.mark.parametrize("tool", sorted(ncg.PINNED))
+def test_sidecar_tool_versions_must_equal_install(tool):
+    meta = {"tool_versions": dict(ncg.PINNED), "python": "3.12"}
+    assert ncg.check_sidecar_environment(meta, dict(ncg.PINNED), "3.12") is None
+    meta["tool_versions"][tool] = "0.0.1"
+    msg = ncg.check_sidecar_environment(meta, dict(ncg.PINNED), "3.12")
+    assert msg.startswith("sidecar tool versions differ from measure environment: " + tool)
+
+
+def test_sidecar_python_must_equal_install():
+    meta = {"tool_versions": dict(ncg.PINNED), "python": "3.11"}
+    msg = ncg.check_sidecar_environment(meta, dict(ncg.PINNED), "3.12")
+    assert msg == "sidecar tool versions differ from measure environment: python 3.11 != 3.12"
+
+
+def test_sidecar_head_clean_and_core_checked():
+    meta = {"head_sha": "abc", "clean": True, "coverage_core": "ctrace"}
+    assert ncg.check_sidecar_head(meta, "abc") is None
+    for key, value in (("head_sha", "zzz"), ("clean", False), ("coverage_core", "sysmon")):
+        broken = dict(meta, **{key: value})
+        assert ncg.check_sidecar_head(broken, "abc") == "coverage data stale or from a dirty tree"
+
+
+def test_merge_commit_must_have_two_parents_second_is_pr_head():
+    assert ncg.check_merge_parents(["base", "head"], "head") is None
+    expected = "merge commit does not contain the PR head"
+    assert ncg.check_merge_parents(["base", "other"], "head") == expected
+    assert ncg.check_merge_parents(["base"], "head") == expected
+    assert ncg.check_merge_parents(["a", "b", "c"], "b") == expected
+
+
+# --------------------------------------------------------------------------
+# Diff parsing and scope
+# --------------------------------------------------------------------------
+
+
+def test_classify_status():
+    assert ncg.classify_status("A") == "new"
+    assert ncg.classify_status("C100") == "new"
+    assert ncg.classify_status("M") == "changed"
+    assert ncg.classify_status("T") == "changed"
+    assert ncg.classify_status("R100") is None
+    assert ncg.classify_status("R087") == "changed"
+    assert ncg.classify_status("D") is None
+
+
+def test_parse_name_status_handles_renames_and_quoted_paths():
+    text = "A\tnew.py\nM\tx/y.py\nR090\told.py\tnew2.py\nD\tgone.py\n"
+    text += 'M\t"caf\\303\\251.py"\n'
+    got = ncg.parse_name_status(text)
+    assert [(c.status, c.path, c.old_path, c.kind) for c in got] == [
+        ("A", "new.py", None, "new"),
+        ("M", "x/y.py", None, "changed"),
+        ("R090", "new2.py", "old.py", "changed"),
+        ("D", "gone.py", None, None),
+        ("M", "café.py", None, "changed"),
+    ]
+
+
+def test_unquote_git_path_escapes():
+    assert ncg.unquote_git_path("plain.py") == "plain.py"
+    assert ncg.unquote_git_path('"a\\tb\\"c\\\\d.py"') == 'a\tb"c\\d.py'
+
+
+def test_parse_unified0_collects_head_side_lines():
+    diff = _src(
+        """
+        diff --git a/a.py b/a.py
+        --- a/a.py
+        +++ b/a.py
+        @@ -3,2 +3,3 @@ def f():
+        -x
+        -y
+        +x1
+        +y1
+        +z1
+        @@ -10 +12 @@
+        -q
+        +q1
+        @@ -20,2 +22,0 @@
+        -gone
+        -gone2
+        diff --git a/b.py b/b.py
+        --- /dev/null
+        +++ b/b.py
+        @@ -0,0 +1,2 @@
+        +1
+        +2
+        diff --git a/c.py b/c.py
+        --- a/c.py
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -x
+        """
+    )
+    assert ncg.parse_unified0(diff) == {"a.py": [3, 4, 5, 12], "b.py": [1, 2]}
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("scripts/oversight/x.py", True),
+        ("bin/tool.py", True),
+        ("tests/test_x.py", False),
+        ("scripts/conftest.py", False),
+        ("mutants/x.py", False),
+        ("scripts/oversight/.venv/lib/x.py", False),
+        ("a/site-packages/x.py", False),
+        ("scripts/x.sh", False),
+    ],
+)
+def test_in_python_scope(path, expected):
+    assert ncg.in_python_scope(path) is expected
+
+
+def test_shell_scope_and_measured_surface():
+    assert ncg.in_shell_scope("scripts/framework/run_tests.sh")
+    assert not ncg.in_shell_scope("bin/hos-cron")
+    assert ncg.in_measured_surface("bootstrap/x.py", ncg.MEASURED_SOURCES)
+    assert ncg.in_measured_surface("scripts/automation/lib/x.py", ncg.MEASURED_SOURCES)
+    assert not ncg.in_measured_surface("newdir/x.py", ncg.MEASURED_SOURCES)
+
+
+def test_continuation_line_edit_is_gated():
+    source = _src(
+        """
+        import os
+        x = foo(
+            1,
+            2,
+        )
+        # a comment
+
+        @deco
+        def f():
+            return 1
+        """
+    )
+    statements, multiline = ncg.statement_map(source)
+    assert ncg.gated_statement_lines([3], statements, multiline, False) == [2]
+    assert ncg.gated_statement_lines([6, 7], statements, multiline, False) == []
+    assert ncg.gated_statement_lines([8], statements, multiline, False) == [8]
+    assert ncg.gated_statement_lines([], statements, multiline, True) == sorted(statements)
+
+
+def test_pragma_no_cover_on_gated_line_still_counted():
+    source = "x = 1  # pragma: no cover\nif x:  # pragma: no cover\n    y = 2\n"
+    statements, _ = ncg.statement_map(source)
+    assert statements == {1, 2, 3}
+
+
+# --------------------------------------------------------------------------
+# Decision logic: R-DL
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "if a:\n    pass\n",
+        "for x in y:\n    pass\n",
+        "async def f(y):\n    async for x in y:\n        pass\n",
+        "while a:\n    pass\n",
+        "try:\n    a()\nexcept E:\n    pass\n",
+        "try:\n    a()\nexcept* E:\n    pass\n",
+        "match a:\n    case 1:\n        pass\n",
+        "x = a or b\n",
+        "x = a < b\n",
+        "x = 1 if a else 2\n",
+        "x = [i for i in y if i]\n",
+        "x = {i for i in y if i}\n",
+        "x = {i: 1 for i in y if i}\n",
+        "x = (i for i in y if i)\n",
+    ],
+)
+def test_has_decision_logic_each_node_type(source):
+    gated = ncg.statement_map(source)[0]
+    assert ncg.has_decision_logic(source, gated)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "x = [i for i in y]\n",
+        "x = 1\n",
+        "import os\n",
+        "x = f(1, 2)\nassert x\nwith a:\n    pass\n",
+    ],
+)
+def test_no_decision_node_without_ifs_asserts_or_with(source):
+    gated = ncg.statement_map(source)[0]
+    assert not ncg.has_decision_logic(source, gated)
+
+
+# --------------------------------------------------------------------------
+# Q5-MOD
+# --------------------------------------------------------------------------
+
+MODULE_CASES = [
+    ("if x:\n    y = 1\n", "1", "If"),
+    ("for i in x:\n    pass\n", "1", "For"),
+    ("while x:\n    pass\n", "1", "While"),
+    ("try:\n    import a\n    b()\nexcept E:\n    pass\n", "1", "Try"),
+    ("try:\n    x()\nexcept* E:\n    pass\n", "1", "TryStar"),
+    ("match x:\n    case 1:\n        pass\n", "1", "Match"),
+    ("X = a or b\n", "1", "BoolOp"),
+    ("X = a == b\n", "1", "Compare"),
+    ("X = a if c else b\n", "1", "IfExp"),
+    ("X = [i for i in y if i]\n", "1", "ListComp"),
+    ("X = {i for i in y if i}\n", "1", "SetComp"),
+    ("X = {i: 1 for i in y if i}\n", "1", "DictComp"),
+    ("X = (i for i in y if i)\n", "1", "GeneratorExp"),
+    ("f = lambda: (1 if a else 2)\n", "1", "IfExp"),
+    ("with a:\n    if b:\n        pass\n", "2", "If"),
+]
+
+
+@pytest.mark.parametrize("source,lines,construct", MODULE_CASES)
+def test_module_level_decision_logic_fails_move_into_function(source, lines, construct):
+    findings = _findings(source)
+    assert any(f["construct"] == construct and f["region"] == "module" for f in findings)
+    expected = (
+        f"module-level decision logic at m.py:{lines} — "
+        "move the logic into a function so it can be mutated"
+    )
+    assert _message(source, "module_level_decision_logic") == expected
+    assert "unmutatable_decision_logic" not in _codes(source)
+
+
+def test_module_level_logic_on_ungated_line_is_not_a_finding():
+    source = "A = 1\nB = x or y\n"
+    assert _findings(source, [1]) == []
+    assert _codes(source, [1]) == []
+    assert _codes(source, [2]) == ["module_level_decision_logic"]
+
+
+def test_finding_fields_are_complete_and_sorted():
+    source = "X = a if b else (c or d)\n"
+    findings = _findings(source)
+    assert [f["construct"] for f in findings] == ["BoolOp", "IfExp"]
+    for finding in findings:
+        assert set(finding) == {
+            "line",
+            "node_line",
+            "construct",
+            "region",
+            "unmutatable_reason",
+            "carve_out",
+        }
+        assert finding["line"] == 1 and finding["region"] == "module"
+    keys = [(f["line"], f["node_line"], f["construct"]) for f in findings]
+    assert keys == sorted(keys)
+
+
+# --------------------------------------------------------------------------
+# Q5-CLS
+# --------------------------------------------------------------------------
+
+CLASS_CASES = [
+    ("class A:\n    x = 1 if c else 2\n", "2"),
+    ("class A:\n    if c:\n        x = 1\n", "2"),
+    ("class E(Enum):\n    A = 1 == 1\n", "2"),
+    ("class A: x = a or b\n", "1"),
+    ("class A:\n    class B:\n        y = c or d\n", "3"),
+    ("class A:\n    def m(self, x=a == b):\n        return x\n", "2"),
+    ("class A:\n    @deco(1 if c else 2)\n    def m(self):\n        return 1\n", "2"),
+]
+
+
+@pytest.mark.parametrize("source,lines", CLASS_CASES)
+def test_class_level_decision_logic_fails(source, lines):
+    expected = (
+        f"class-level decision logic at m.py:{lines} — "
+        "move the logic into a function so it can be mutated"
+    )
+    assert _message(source, "class_level_decision_logic") == expected
+    assert "unmutatable_decision_logic" not in _codes(source)
+
+
+def test_enum_and_single_line_class_bodies_are_listed_with_region_class():
+    enum = "class E(Enum):\n    A = 1 == 1\n"
+    got = ncg.unmutatable_gated_lines(enum, ncg.statement_map(enum)[0])
+    assert got == [
+        {"line": 2, "reason": "enum_body", "region": "class", "has_decision_logic": True}
+    ]
+    single = "class A: x = a or b\n"
+    got = ncg.unmutatable_gated_lines(single, ncg.statement_map(single)[0])
+    assert got == [
+        {"line": 1, "reason": "single_line_class", "region": "class", "has_decision_logic": True}
+    ]
+
+
+# --------------------------------------------------------------------------
+# Q5-MAIN
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["sys.exit(main())", "main()", "sys.exit(_main(sys.argv[1:]))"],
+)
+def test_main_guard_carve_out_passes_exact_shape(call):
+    source = f'if __name__ == "__main__":\n    {call}\n'
+    assert _codes(source) == []
+    carved = [f for f in _findings(source) if f["carve_out"]]
+    assert {f["construct"] for f in carved} == {"If", "Compare"}
+    assert {f["carve_out"] for f in carved} == {"main_guard"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'if __name__ == "__main__":\n    raise SystemExit(main())\n',
+        'if __name__ == "__main__":\n    a()\n    b()\n',
+        'if __name__ == "__main__":\n    main()\nelse:\n    other()\n',
+        'if "__main__" == __name__:\n    main()\n',
+        'if __name__ != "__main__":\n    main()\n',
+        'if a:\n    if __name__ == "__main__":\n        main()\n',
+        'class A:\n    if __name__ == "__main__":\n        main()\n',
+    ],
+)
+def test_main_guard_near_misses_fail(source):
+    assert any(c.endswith("_level_decision_logic") for c in _codes(source))
+    guard_findings = [f for f in _findings(source) if f["carve_out"] == "main_guard"]
+    assert guard_findings == []
+
+
+def test_main_guard_body_logic_is_still_judged():
+    source = 'if __name__ == "__main__":\n    sys.exit(main() or 1)\n'
+    findings = _findings(source)
+    assert {f["construct"]: f["carve_out"] for f in findings} == {
+        "If": "main_guard",
+        "Compare": "main_guard",
+        "BoolOp": None,
+    }
+    assert _message(source, "module_level_decision_logic").endswith(
+        "m.py:2 — move the logic into a function so it can be mutated"
+    )
+
+
+# --------------------------------------------------------------------------
+# Q5-IMP
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "try:\n    import x\nexcept ImportError:\n    x = None\n",
+        "try:\n    from a import b\nexcept ImportError as e:\n    b = None\n",
+        (
+            "try:\n    import x\nexcept ImportError:\n    x = None\n"
+            "except ImportError as e:\n    x = 2\n"
+        ),
+    ],
+)
+def test_import_fallback_carve_out_passes_exact_shape(source):
+    assert _codes(source) == []
+    assert [f["carve_out"] for f in _findings(source)] == ["import_fallback"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "try:\n    import x\nexcept ModuleNotFoundError:\n    x = None\n",
+        "try:\n    import x\nexcept (ImportError, OSError):\n    x = None\n",
+        "try:\n    import x\nexcept:\n    x = None\n",
+        "try:\n    sys.path.insert(0, p)\n    import x\nexcept ImportError:\n    x = None\n",
+        "try:\n    import x\nexcept ImportError:\n    x = None\nelse:\n    y = 1\n",
+        "try:\n    import x\nexcept ImportError:\n    x = None\nfinally:\n    y = 1\n",
+        "if TYPE_CHECKING:\n    try:\n        import x\n    except ImportError:\n        x = 1\n",
+    ],
+)
+def test_import_fallback_near_misses_fail(source):
+    assert "module_level_decision_logic" in _codes(source)
+
+
+def test_import_fallback_inside_a_function_has_no_q5_reason():
+    source = "def f():\n    try:\n        import x\n    except ImportError:\n        x = None\n"
+    assert _codes(source) == []
+
+
+def test_import_fallback_handler_contents_are_still_judged():
+    source = "try:\n    import x\nexcept ImportError:\n    if a:\n        x = 1\n"
+    assert _message(source, "module_level_decision_logic").endswith(
+        "m.py:4 — " + ("move the logic into a function so it can be mutated")
+    )
+    nested = (
+        "try:\n    import x\nexcept ImportError:\n    def fallback():\n"
+        "        if a:\n            return 1\n"
+    )
+    reasons = {f["unmutatable_reason"] for f in _findings(nested) if f["region"] == "function"}
+    assert reasons == {"non_top_level_function"}
+    assert "unmutatable_decision_logic" in _codes(nested)
+
+
+# --------------------------------------------------------------------------
+# Q5-TC
+# --------------------------------------------------------------------------
+
+
+def test_type_checking_carve_out_passes_exact_shape():
+    source = "if TYPE_CHECKING:\n    import x\n"
+    assert _codes(source) == []
+    assert [f["carve_out"] for f in _findings(source)] == ["type_checking"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "if typing.TYPE_CHECKING:\n    import x\n",
+        "if not TYPE_CHECKING:\n    import x\n",
+        "if TYPE_CHECKING:\n    import x\nelse:\n    y = 1\n",
+    ],
+)
+def test_type_checking_near_misses_fail(source):
+    assert "module_level_decision_logic" in _codes(source)
+
+
+def test_type_checking_body_logic_still_fails():
+    source = "if TYPE_CHECKING:\n    X = a if b else c\n"
+    findings = _findings(source)
+    assert {f["construct"]: f["carve_out"] for f in findings} == {
+        "If": "type_checking",
+        "IfExp": None,
+    }
+    assert _codes(source) == ["module_level_decision_logic"]
+
+
+# --------------------------------------------------------------------------
+# Q5-DEC
+# --------------------------------------------------------------------------
+
+
+def _reasons(source: str) -> set[str]:
+    return {f["unmutatable_reason"] for f in _findings(source) if f["unmutatable_reason"]}
+
+
+def test_decorated_function_body_logic_is_nq2_not_q5():
+    source = "@deco\ndef f(x):\n    if x:\n        return 1\n    return 2\n"
+    assert _codes(source) == ["unmutatable_decision_logic"]
+    assert _reasons(source) == {"decorated_function"}
+    message = _message(source, "unmutatable_decision_logic")
+    assert message == (
+        "unmutatable decision logic at m.py:3 — "
+        "move the logic into an undecorated helper so it can be mutated"
+    )
+
+
+def test_decorator_argument_logic_is_module_level():
+    source = "@retry(times=3 if CI else 1)\ndef f():\n    return 1\n"
+    assert _codes(source) == ["module_level_decision_logic"]
+    assert _findings(source)[0]["line"] == 1
+
+
+def test_single_line_def_default_is_module_level():
+    assert _codes("def f(x=a == b): return x\n") == ["module_level_decision_logic"]
+
+
+def test_mutated_code_carries_no_decision_reason():
+    plain = "def f(x):\n    if x:\n        return 1\n    return 2\n"
+    assert _codes(plain) == []
+    static = (
+        "class A:\n    @staticmethod\n    def m(x):\n        if x:\n            return 1\n"
+        "        return 2\n"
+    )
+    assert _codes(static) == []
+
+
+def test_nested_decorated_wrapper_is_unmutatable_at_any_depth():
+    source = _src(
+        """
+        def outer(orig):
+            @functools.wraps(orig)
+            def wrapper(*a):
+                if a:
+                    return 1
+                return orig()
+            return wrapper
+        """
+    )
+    assert _reasons(source) == {"decorated_function"}
+    assert _codes(source) == ["unmutatable_decision_logic"]
+
+
+def test_def_inside_module_level_with_is_not_a_mutated_unit():
+    source = "with a:\n    def g(x):\n        if x:\n            return 1\n"
+    assert _reasons(source) == {"non_top_level_function"}
+
+
+def test_method_of_nested_class_is_not_a_mutated_unit():
+    source = (
+        "class A:\n    class B:\n        def m(self, x):\n            if x:\n"
+        "                return 1\n"
+    )
+    assert _reasons(source) == {"non_top_level_function"}
+
+
+def test_nested_def_non_simple_default_is_definition_time():
+    source = "def outer():\n    def inner(x=a == b):\n        return x\n    return inner\n"
+    assert _reasons(source) == {"definition_time_expression"}
+
+
+def test_decorated_method_splits_decorator_and_body_logic():
+    source = _src(
+        """
+        class A:
+            @deco(1 if c else 2)
+            def m(self):
+                if self:
+                    return 1
+        """
+    )
+    codes = _codes(source)
+    assert "class_level_decision_logic" in codes and "unmutatable_decision_logic" in codes
+    by_line = {f["line"]: f for f in _findings(source) if f["construct"] == "IfExp"}
+    assert by_line[2]["region"] == "class"
+
+
+def test_no_line_carries_both_q5_and_nq2_reasons():
+    sources = [case[0] for case in CLASS_CASES] + [case[0] for case in MODULE_CASES]
+    sources.append("@deco\ndef f(x):\n    if x:\n        return 1\n")
+    for source in sources:
+        findings = _findings(source)
+        nq2 = {f["line"] for f in findings if f["region"] == "function" and f["unmutatable_reason"]}
+        q5 = {f["line"] for f in findings if f["region"] != "function"}
+        assert nq2.isdisjoint(q5)
+        for entry in ncg.unmutatable_gated_lines(source, ncg.statement_map(source)[0]):
+            if entry["region"] == "function":
+                assert entry["reason"] in {
+                    "decorated_function",
+                    "enum_body",
+                    "never_mutate_name",
+                    "non_top_level_function",
+                }
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("def f(r):\n    return len(r.get('e') or [])\n", {"never_mutate_name"}),
+        ("def f(x):\n    return isinstance(x, A if c else B)\n", {"never_mutate_name"}),
+        ("def f(a, b):\n    return len(a) > 0 and b\n", set()),
+        (
+            "class C:\n    def __setattr__(self, k, v):\n        if k:\n            pass\n",
+            {"never_mutate_name"},
+        ),
+    ],
+)
+def test_never_mutate_name_reasons(source, expected):
+    assert _reasons(source) == expected
+
+
+@pytest.mark.parametrize("base", ["Enum", "enum.IntEnum"])
+def test_enum_special_methods_are_unmutatable_other_methods_are_not(base):
+    label = (
+        f"class E({base}):\n    def label(self):\n        if self:\n            return 1\n"
+        "        return 2\n"
+    )
+    assert _reasons(label) == set()
+    init = f"class E({base}):\n    def __init__(self, v):\n        if v:\n            self.v = 1\n"
+    assert _reasons(init) == {"enum_body"}
+
+
+def test_definition_time_expressions_inside_function_bodies():
+    annotated = "def f():\n    x: (A if c else B) = 1\n    return x\n"
+    assert _reasons(annotated) == {"definition_time_expression"}
+    lam = "def f():\n    g = lambda y=a == b: y\n    return g\n"
+    assert _reasons(lam) == {"definition_time_expression"}
+    fstring = 'def f():\n    def inner(x=f"{a if b else c}"):\n        return x\n    return inner\n'
+    assert _reasons(fstring) == set()
+
+
+def test_unmutatable_gated_lines_lists_body_statements_without_logic():
+    source = "@deco\ndef f(x):\n    y = x\n    if y:\n        return 1\n"
+    got = ncg.unmutatable_gated_lines(source, ncg.statement_map(source)[0])
+    assert [(e["line"], e["reason"], e["has_decision_logic"]) for e in got] == [
+        (3, "decorated_function", False),
+        (4, "decorated_function", True),
+        (5, "decorated_function", False),
+    ]
+    assert {e["region"] for e in got} == {"function"}
+
+
+# --------------------------------------------------------------------------
+# NQ-1
+# --------------------------------------------------------------------------
+
+
+def test_zero_mutant_reason_names_lines_and_ignores_carve_outs():
+    source = "try:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n"
+    findings = _findings(source)
+    reason = ncg.zero_mutant_reason("pkg/__init__.py", findings)
+    assert reason["code"] == "zero_mutant_decision_logic"
+    assert reason["message"] == (
+        "decision logic at pkg/__init__.py:1 — move logic into a function so it can be mutated"
+    )
+    assert ncg.zero_mutant_reason("x.py", _findings("X = 1\n")) is None
+    assert _codes(source) == []
+
+
+def test_selection_reason_nq1_carve_out():
+    assert ncg.selection_reason(["t::a"], False, False) is None
+    assert ncg.selection_reason([], True, True) is None
+    assert ncg.selection_reason([], True, False) == "zero_mutant_decision_logic"
+    assert ncg.selection_reason([], False, True) == "no_test_exercises"
+
+
+# --------------------------------------------------------------------------
+# Selection
+# --------------------------------------------------------------------------
+
+
+def test_selection_only_tests_executing_gated_lines():
+    by_line = {
+        1: ["tests/a.py::t1|run", "tests/a.py::t1|setup", ""],
+        2: ["tests/b.py::t2|run"],
+        3: ["tests/c.py::t3|run"],
+    }
+    assert ncg.select_by_context(by_line, [1, 2]) == ["tests/a.py::t1", "tests/b.py::t2"]
+    assert ncg.select_by_context(by_line, [9]) == []
+    assert ncg.contexts_to_node_ids(["", "|run"]) == []
+
+
+def test_name_fallback_matches_stem_and_package_name():
+    tracked = [
+        "tests/framework/test_foo.py",
+        "tests/test_foo.py",
+        "tests/x/test_foobar.py",
+        "a/test_foo.py",
+    ]
+    assert ncg.name_fallback_ids("scripts/oversight/foo.py", tracked) == [
+        "tests/framework/test_foo.py",
+        "tests/test_foo.py",
+    ]
+    assert ncg.name_fallback_ids("scripts/pkg/__init__.py", ["tests/test_pkg.py"]) == [
+        "tests/test_pkg.py"
+    ]
+
+
+def test_remove_repo_copy_exact_and_container_children():
+    selected = ["tests/a.py::t1", "tests/b.py"]
+    kept, removed = ncg.remove_repo_copy(
+        selected, ["tests/a.py::t1", "tests/b.py::tc", "tests/z.py::q"]
+    )
+    assert kept == ["tests/b.py"]
+    assert removed == ["tests/a.py::t1", "tests/b.py::tc"]
+
+
+def test_parse_repo_copy_collect_exit_codes_and_output():
+    out = "tests/a.py::t1\ntests/b.py::T::t2\n\n2/9 tests collected (7 deselected)\n"
+    assert ncg.parse_repo_copy_collect(0, out) == ["tests/a.py::t1", "tests/b.py::T::t2"]
+    assert ncg.parse_repo_copy_collect(5, "no tests ran") == []
+    with pytest.raises(ncg.GateError, match="pytest exited 2"):
+        ncg.parse_repo_copy_collect(2, "")
+    for bad in ("some noise\n\n", "other/x.py::t\n\n", "tests/a.py\n\n"):
+        with pytest.raises(ncg.GateError, match="unparseable output"):
+            ncg.parse_repo_copy_collect(0, bad)
+
+
+def test_selection_fields_are_capped_and_bounded():
+    ids = [f"tests/t.py::t{i}" for i in range(ncg.MAX_SELECTED_TESTS + 5)]
+    fields = ncg.selection_fields("context", ids)
+    assert fields["selected_tests_count"] == len(ids)
+    assert len(fields["selected_tests"]) == ncg.MAX_SELECTED_TESTS
+    assert fields["selected_tests_truncated"] is True
+    small = ncg.selection_fields("name_fallback", ["tests/a.py"])
+    assert small["selected_tests_truncated"] is False
+
+
+def test_is_attributable_equal_under_or_module_of_selection():
+    selected = ["tests/a.py::t1", "tests/b.py"]
+    assert ncg.is_attributable("tests/a.py::t1", selected)
+    assert ncg.is_attributable("tests/a.py", selected)
+    assert ncg.is_attributable("tests/b.py::anything", selected)
+    assert not ncg.is_attributable("tests/c.py::t", selected)
+
+
+# --------------------------------------------------------------------------
+# Path-load static pre-check
+# --------------------------------------------------------------------------
+
+GATED = "scripts/oversight/validators/foo.py"
+
+
+def test_static_spec_from_file_location_fails_with_named_fix():
+    sources = {
+        "tests/oversight/test_foo.py": _src(
+            """
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "foo_mod", "scripts/oversight/validators/foo.py"
+            )
+            """
+        )
+    }
+    found = ncg.static_path_load_findings(GATED, sources)
+    assert found == [
+        {
+            "importer": "tests/oversight/test_foo.py",
+            "loaded_as": "foo_mod",
+            "canonical": "scripts.oversight.validators.foo",
+            "via": "static:spec_from_file_location",
+            "phase": "static",
+        }
+    ]
+    message = ncg.path_load_message("tests/oversight/test_foo.py", GATED, "foo_mod", "static:x")
+    assert message == (
+        "tests/oversight/test_foo.py loads scripts/oversight/validators/foo.py as module "
+        "'foo_mod' (static:x) instead of the canonical "
+        "'import scripts.oversight.validators.foo' — convert to a canonical scripts.... "
+        "import in this PR"
+    )
+
+
+def test_static_path_load_matches_filename_segment_and_helper():
+    sources = {"tests/t.py": 'load_module_from_path("m", ROOT / "validators" / "foo.py")\n'}
+    assert [f["via"] for f in ncg.static_path_load_findings(GATED, sources)] == [
+        "static:load_module_from_path"
+    ]
+
+
+def test_bare_sys_path_import_fails_with_named_fix():
+    sources = {"tests/a.py": "from foo import main\n", "tests/b.py": "import foo\n"}
+    found = ncg.static_path_load_findings(GATED, sources)
+    assert [(f["importer"], f["via"], f["loaded_as"]) for f in found] == [
+        ("tests/a.py", "static:bare_import", "foo"),
+        ("tests/b.py", "static:bare_import", "foo"),
+    ]
+
+
+def test_canonical_import_and_unrelated_modules_are_clean():
+    sources = {
+        "tests/a.py": "from scripts.oversight.validators.foo import main\n",
+        "tests/b.py": 'spec_from_file_location("x", "scripts/other.py")\nimport bar\n',
+        "tests/broken.py": "def (:\n",
+    }
+    assert ncg.static_path_load_findings(GATED, sources) == []
+
+
+def test_bare_import_only_applies_to_conftest_path_directories():
+    sources = {"tests/a.py": "import foo\n"}
+    assert ncg.static_path_load_findings("scripts/framework/foo.py", sources) == []
+
+
+def _path_parts(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.BinOp):
+        return _path_parts(node.left) + _path_parts(node.right)
+    if isinstance(node, ast.Constant):
+        return [node.value]
+    return []
+
+
+def _assign_parts(tree: ast.AST, name: str) -> str:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and node.targets[0].id == name:
+            return "/".join(_path_parts(node.value))
+    raise AssertionError(name)
+
+
+def test_bare_import_dirs_equal_conftest_insertions():
+    tree = ast.parse((REPO / "tests" / "conftest.py").read_text(encoding="utf-8"))
+    dirs = {_assign_parts(tree, "VALIDATORS_DIR"), _assign_parts(tree, "OVERSIGHT_DIR")}
+    assert dirs == set(ncg.BARE_IMPORT_DIRS)
+
+
+def test_no_path_literal_allow_list_in_logic_module():
+    tree = ast.parse(LOGIC_FILE.read_text(encoding="utf-8"))
+    names = {
+        t.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for t in node.targets
+        if isinstance(t, ast.Name)
+    }
+    assert not {n for n in names if "EXEMPT" in n.upper() and "SHELL" not in n.upper()}
+    assert not {n for n in names if "ALLOW" in n.upper() or "SKIP" in n.upper()}
+
+
+# --------------------------------------------------------------------------
+# Workspace configuration
+# --------------------------------------------------------------------------
+
+
+def test_strip_no_mutate_pragmas_removes_only_those_tokens():
+    source = _src(
+        """
+        x = 1  # pragma: no mutate
+        y = "# pragma: no mutate"
+        z = 2  # pragma: no cover
+        # pragma: no mutate block
+        if x:  # pragma: no mutate class
+            pass
+        """
+    )
+    out = ncg.strip_no_mutate_pragmas(source)
+    # Lines keep their other bytes, so the two spaces before the comment remain.
+    gap = " " * 2
+    assert out == (
+        f'x = 1{gap}\ny = "# pragma: no mutate"\nz = 2  # pragma: no cover\n\n'
+        f"if x:{gap}\n    pass\n"
+    )
+
+
+def test_also_copy_has_only_top_level_entries():
+    dirs = [".github", ".claude", "audit", "bin", "scripts", "tests", "docs/"]
+    files = ["CLAUDE.md", "setup.cfg", "pyproject.toml", "AGENTS.md"]
+    source_paths = ncg.mutmut_source_paths(["bin", "scripts", "tests"], "scripts/x.py")
+    assert source_paths == ["bin/", "scripts/"]
+    got = ncg.mutmut_also_copy(dirs, files, source_paths)
+    assert got == [".github/", "audit/", "docs/", "AGENTS.md", "CLAUDE.md"]
+    for entry in got:
+        assert "/" not in entry.rstrip("/")
+    assert ".claude/" not in got and "setup.cfg" not in got and "pyproject.toml" not in got
+
+
+def test_source_paths_include_a_top_level_gated_file():
+    assert ncg.mutmut_source_paths(["scripts"], "tool.py") == ["scripts/", "tool.py"]
+
+
+def test_generated_pytest_args_pin_report_chars():
+    args = ncg.generated_pytest_args()
+    assert args.count("-rfE") == 1
+    assert [a for a in args if a.startswith("-r") and a != "-rfE"] == []
+    assert not [a for a in args if a.startswith("--report-chars")]
+    assert "--no-summary" not in args and "-q" not in args
+    assert ["-p", "_ncg_tripwire"] == args[
+        args.index("_ncg_tripwire") - 1 : args.index("_ncg_tripwire") + 1
+    ]
+    assert args[-2:] == ["-m", "not repo_copy"]
+    assert ncg.mutmut_table(["a/"], "a/x.py", [], ["t"])["pytest_add_cli_args"] == args
+
+
+def test_generated_config_selection_equals_selection():
+    table = ncg.mutmut_table(["a/"], "a/x.py", ["docs/"], ["tests/t.py::a", "tests/t.py::b"])
+    assert table["pytest_add_cli_args_test_selection"] == ["tests/t.py::a", "tests/t.py::b"]
+    assert table["only_mutate"] == ["a/x.py"]
+    assert (
+        table["use_git_change_detection"] is False and table["mutate_only_covered_lines"] is False
+    )
+    assert table["timeout_multiplier"] == 15.0 and table["max_stack_depth"] == -1
+
+
+def test_compose_pyproject_replaces_only_the_mutmut_table():
+    head = _src(
+        """
+        [tool.black]
+        line-length = 100
+
+        [tool.mutmut]
+        source_paths = [
+            "old/",
+        ]
+        also_copy = ["x/"]
+
+        [tool.other]
+        keep = true
+        """
+    )
+    table = ncg.mutmut_table(["a/"], "a/x.py", ["docs/"], ["tests/t.py::a"])
+    out = ncg.compose_pyproject(head, table)
+    parsed = __import__("tomllib").loads(out)
+    assert parsed["tool"]["mutmut"] == table
+    assert parsed["tool"]["black"] == {"line-length": 100}
+    assert parsed["tool"]["other"] == {"keep": True}
+    assert "old/" not in out
+
+
+def test_compose_pyproject_round_trips_the_real_file():
+    head = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    table = ncg.mutmut_table(["bin/", "scripts/"], "scripts/x.py", [".github/"], ["tests/t.py"])
+    out = ncg.compose_pyproject(head, table)
+    assert "[tool.mutmut]" in out and 'only_mutate = ["scripts/x.py"]' in out
+
+
+def test_compose_pyproject_rejects_a_table_that_does_not_round_trip():
+    with pytest.raises(ncg.GateError, match="failed round-trip"):
+        ncg.compose_pyproject("[tool.black]\nx = 1\n", {"bad": {"k": 1}})
+
+
+# --------------------------------------------------------------------------
+# Mutants: mapping, classification, score
+# --------------------------------------------------------------------------
+
+
+def test_changed_original_lines_and_mapping():
+    original = "def f(a):\n    x = (1 +\n         2)\n    return a + x\n"
+    mutated = "def f(a):\n    x = (1 -\n         2)\n    return a + x\n"
+    changed = ncg.changed_original_lines(original, mutated)
+    assert changed == [2]
+    statements, multiline = ncg.statement_map(original)
+    assert ncg.map_mutant_lines([3], statements, multiline) == [2]
+    assert ncg.is_gated_mutant([2], [2, 4]) and not ncg.is_gated_mutant([3], [2, 4])
+    assert ncg.changed_original_lines("a\n", "a\nb\n") == [2]
+    assert ncg.changed_original_lines("a\nb\n", "a\n") == [2]
+    assert ncg.changed_original_lines("a\n", "a\n") == []
+
+
+@pytest.mark.parametrize(
+    "key,ok",
+    [
+        ("scripts.framework.m.x_main__mutmut_1", True),
+        ("scripts.framework.m.xǁKlassǁrun__mutmut_12", True),
+        ("scripts.framework.m.x_main", False),
+        ("x" * 600 + ".x_a__mutmut_1", False),
+        ("evil; rm -rf", False),
+    ],
+)
+def test_mutant_key_pattern(key, ok):
+    assert ncg.check_mutant_key(key) is ok
+
+
+def test_timeout_status_counts_killed_segfault_does_not():
+    statuses = {
+        "a": "killed",
+        "b": "timeout",
+        "c": "segfault",
+        "d": "survived",
+        "e": "no tests",
+        "f": "suspicious",
+    }
+    got = ncg.classify_statuses(statuses, ["a", "b", "c", "d", "e"])
+    assert got == {
+        "mutants_total": 5,
+        "mutants_killed": 2,
+        "mutant_status_counts": {
+            "killed": 1,
+            "timeout": 1,
+            "segfault": 1,
+            "survived": 1,
+            "no tests": 1,
+        },
+    }
+    assert ncg.mutant_score_pct(2, 5) == 40.0 and ncg.mutant_score_pct(0, 0) is None
+
+
+@pytest.mark.parametrize("status", ["caught by type check", "mystery"])
+def test_unexpected_mutant_status_raises(status):
+    with pytest.raises(ncg.GateError, match="unexpected mutant status"):
+        ncg.classify_statuses({"a": status}, ["a"])
+
+
+def test_short_summary_parse_reads_only_the_section():
+    noise = _src(
+        """
+        FAILED: Unable to force test failures
+        ----- Captured stdout call -----
+        FAILED tests/x.py::fake
+        =================================== FAILURES ===================================
+        ___ test_a ___
+        """
+    )
+    assert ncg.parse_short_summary(noise) == []
+    real = noise + _src(
+        """
+        =========================== short test summary info ============================
+        FAILED tests/a.py::t - msg
+        ERROR tests/b.py
+        =========================== warnings summary ===================================
+        FAILED tests/after.py::no
+        """
+    )
+    assert ncg.parse_short_summary(real) == ["tests/a.py::t", "tests/b.py"]
+    colored = "\x1b[31m=== short test summary info ===\x1b[0m\nFAILED tests/a.py::t - boom\n"
+    assert ncg.parse_short_summary(colored) == ["tests/a.py::t"]
+    two = (
+        "=== short test summary info ===\nFAILED tests/old.py::x\n"
+        "FAILED tests/y.py::fake - forged\n=== short test summary info ===\n"
+        "FAILED tests/new.py::z\n"
+    )
+    assert ncg.parse_short_summary(two) == ["tests/new.py::z"]
+
+
+# --------------------------------------------------------------------------
+# Shell: AC-8, AC-9, R-H4
+# --------------------------------------------------------------------------
+
+IF_ELSE_SH = 'if [[ -z "$a" ]]; then\n  x=1\nelse\n  x=2\nfi\n'
+GUARD_SH = 'if [[ -z "$a" ]]; then\n  echo hi\nfi\n'
+FLAG_PARSE_SH = 'while [[ $# -gt 0 ]]; do\n  case "$1" in\n    *) shift ;;\n  esac\ndone\n'
+
+
+def _shell(path, head, base="", changed=None, exempt=None):
+    head_lines = decision_lines(head.splitlines())
+    base_lines = decision_lines(base.splitlines())
+    if changed is None:
+        changed = range(1, len(head.splitlines()) + 1)
+    return ncg.shell_gate(
+        path,
+        is_hard_exempt(path) if exempt is None else exempt,
+        head_lines,
+        base_lines,
+        changed,
+    )
+
+
+def test_shell_new_file_if_else_fails_guard_and_flagparse_pass():
+    record, reasons = _shell("s.sh", IF_ELSE_SH)
+    assert [r["code"] for r in reasons] == ["shell_decision_logic"]
+    assert reasons[0]["message"] == (
+        "shell decision logic at s.sh:1 — move decision logic into tested Python "
+        "(recommended home: scripts/automation/lib)"
+    )
+    assert record["head_count"] == 1 and record["counted_on_changed_lines"] == [1]
+    assert _shell("g.sh", GUARD_SH)[1] == []
+    assert _shell("f.sh", FLAG_PARSE_SH)[1] == []
+
+
+def test_shell_changed_case_fails_untouched_logic_passes():
+    base = IF_ELSE_SH
+    added_case = base + 'case "$m" in\n  a) : ;;\nesac\n'
+    _record, reasons = _shell("s.sh", added_case, base, changed=[6, 7, 8])
+    assert [r["code"] for r in reasons] == ["shell_decision_logic"]
+    assert reasons[0]["message"].startswith("shell decision logic at s.sh:6")
+    shifted = "echo header\n" + base
+    assert _shell("s.sh", shifted, base, changed=[1])[1] == []
+
+
+def test_hos_bootstrap_sh_exempt():
+    record, reasons = _shell("bootstrap/hos_bootstrap.sh", IF_ELSE_SH)
+    assert record == {"exempt": "hos_bootstrap"} and reasons == []
+
+
+def test_edited_counted_if_line_fails_edited_guard_line_passes():
+    edited = IF_ELSE_SH.replace('"$a"', '"$b"')
+    assert [r["code"] for r in _shell("s.sh", edited, IF_ELSE_SH, changed=[1])[1]] == [
+        "shell_decision_logic"
+    ]
+    guard_edit = GUARD_SH.replace('"$a"', '"$b"')
+    assert _shell("s.sh", guard_edit, GUARD_SH, changed=[1])[1] == []
+
+
+def test_for_loop_not_counted():
+    assert decision_lines(["for i in a; do", "  echo $i", "done"]) == []
+    assert _shell("s.sh", "for i in a; do\n  echo $i\ndone\n")[1] == []
+
+
+def test_count_growth_on_unchanged_lines_still_fails():
+    _record, reasons = ncg.shell_gate("s.sh", False, [5], [], [1])
+    assert reasons[0]["message"].startswith("shell decision logic at s.sh:5")
+
+
+# --------------------------------------------------------------------------
+# decide, records, rendering
+# --------------------------------------------------------------------------
+
+
+def _record(path="a.py", **fields):
+    rec = ncg.blank_file_record(path, "new")
+    rec.update(fields)
+    return rec
+
+
+def _records(*files, internal=()):
+    return {"files": list(files), "internal_errors": list(internal), "records_sha256": None}
+
+
+def test_record_has_every_req24_field():
+    rec = ncg.blank_file_record("a.py", "new")
+    assert set(rec) == set(ncg.FILE_FIELDS)
+    for name in (
+        "blob_sha",
+        "pr_head_blob_sha",
+        "decision_logic_findings",
+        "decision_logic_findings_truncated",
+        "unmutatable_gated_lines",
+        "removed_repo_copy",
+        "path_load_findings",
+        "exception_path",
+    ):
+        assert name in rec
+    assert rec["exception"] is None and rec["exception_path"] == ncg.EXCEPTION_PATH_TEXT
+
+
+def test_record_carries_blob_sha_and_bounded_fields():
+    rec = ncg.blank_file_record("p" * 2000, "changed")
+    assert len(rec["path"]) == ncg.MAX_PATH_CHARS
+    fields = ncg.gated_lines_fields(list(range(ncg.MAX_GATED_LINES + 1)))
+    assert fields["gated_lines_truncated"] is True and len(fields["gated_lines"]) == 5000
+    found = ncg.findings_fields([{"line": 1}] * (ncg.MAX_GATED_LINES + 1))
+    assert found["decision_logic_findings_truncated"] is True
+
+
+def test_no_ruling_input_in_s2_failing_file_stays_fail():
+    rec = _record(executed_gated=1, gated_statements=10, blob_sha="b1")
+    decision = ncg.decide(_records(rec), [], ncg.THRESHOLDS)
+    assert decision["exit_code"] == 1 and decision["overall"] == "fail"
+    assert decision["files"][0]["outcome"] == "fail"
+    assert [r["code"] for r in decision["files"][0]["fail_reasons"]] == ["coverage_below_threshold"]
+
+
+def test_ruling_binds_to_blob_and_covers_thresholds_only():
+    rec = _record(executed_gated=1, gated_statements=10, blob_sha="b1")
+    good = [{"path": "a.py", "blob_sha": "b1"}]
+    assert ncg.decide(_records(rec), good, ncg.THRESHOLDS)["files"][0]["outcome"] == "excepted"
+    stale = [{"path": "a.py", "blob_sha": "other"}]
+    assert ncg.decide(_records(rec), stale, ncg.THRESHOLDS)["files"][0]["outcome"] == "fail"
+    rec["fail_reasons"] = [ncg.fail_reason("path_loaded_module", "x")]
+    assert ncg.decide(_records(rec), good, ncg.THRESHOLDS)["files"][0]["outcome"] == "fail"
+
+
+def test_decide_orders_reasons_and_merges_duplicates():
+    rec = _record(
+        executed_gated=0,
+        gated_statements=5,
+        fail_reasons=[
+            ncg.fail_reason("module_level_decision_logic", "m"),
+            ncg.fail_reason("no_test_exercises", "n"),
+            ncg.fail_reason("coverage_below_threshold", "already"),
+        ],
+    )
+    reasons = ncg.decide(_records(rec), [], ncg.THRESHOLDS)["files"][0]["fail_reasons"]
+    assert [r["code"] for r in reasons] == [
+        "no_test_exercises",
+        "module_level_decision_logic",
+        "coverage_below_threshold",
+    ]
+    assert reasons[-1]["message"] == "already"
+
+
+def test_decide_exit_codes_zero_files_internal_and_upstream():
+    assert ncg.decide(_records(), [], ncg.THRESHOLDS)["exit_code"] == 0
+    ok = _record(executed_gated=10, gated_statements=10)
+    assert ncg.decide(_records(ok), [], ncg.THRESHOLDS)["exit_code"] == 0
+    err = {"code": "x", "message": "boom"}
+    assert ncg.decide(_records(ok, internal=[err]), [], ncg.THRESHOLDS)["exit_code"] == 3
+    upstream = ncg.decide(
+        _records(ok), [], ncg.THRESHOLDS, ["upstream job not successful: failure"]
+    )
+    assert upstream["exit_code"] == 3 and upstream["internal_errors"][0]["code"] == "upstream"
+    flagged = ncg.decide(_records(ok, internal=[{**err, "file": "a.py"}]), [], ncg.THRESHOLDS)
+    assert flagged["files"][0]["outcome"] == "fail" and flagged["exit_code"] == 3
+
+
+def test_decide_reads_no_environment():
+    tree = ast.parse(LOGIC_FILE.read_text(encoding="utf-8"))
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "os" not in names and "getenv" not in attrs and "environ" not in attrs
+
+
+def test_gate_modules_import_only_stdlib_at_module_level():
+    tree = ast.parse(LOGIC_FILE.read_text(encoding="utf-8"))
+    allowed = set(sys.stdlib_module_names) | {"__future__"}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            assert {a.name.split(".")[0] for a in node.names} <= allowed
+        if isinstance(node, ast.ImportFrom):
+            assert node.module.split(".")[0] in allowed
+
+
+def test_summary_table_per_file_columns():
+    rec = _record(
+        "a|b.py",
+        executed_gated=8,
+        gated_statements=10,
+        coverage_pct=80.0,
+        mutation_ran=True,
+        mutants_total=4,
+        mutants_killed=3,
+        mutant_score_pct=75.0,
+        selection_method="context",
+        fail_reasons=[ncg.fail_reason("no_test_exercises", "line one\nline two | x")],
+    )
+    decision = ncg.decide(_records(rec), [], ncg.THRESHOLDS)
+    doc = ncg.verdict_document(_records(rec), decision)
+    text = ncg.render_summary(doc)
+    header = text.splitlines()[0]
+    assert header == (
+        "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) "
+        "| Selection | Outcome | Reasons |"
+    )
+    row = text.splitlines()[2]
+    assert row == (
+        "| a\\|b.py | new | 80.0% (8/10) | 75.0% (3/4) | context | fail | no_test_exercises |"
+    )
+    assert "line one line two \\| x" in text
+    assert "1 gated file(s): 0 pass, overall fail." in text
+
+
+def test_summary_with_no_files_and_internal_errors():
+    empty = ncg.verdict_document(_records(), ncg.decide(_records(), [], ncg.THRESHOLDS))
+    assert ncg.render_summary(empty) == "No gated files in this PR.\n"
+    err = ncg.decide(_records(internal=[{"code": "c", "message": "m"}]), [], ncg.THRESHOLDS)
+    text = ncg.render_summary(ncg.verdict_document(_records(), err))
+    assert "No gated files" in text
+
+
+def test_verdict_artifact_matches_schema_v1_and_sha():
+    a = _record("a.py", seconds=1.5, executed_gated=10, gated_statements=10)
+    b = _record("b.py", seconds=9.0)
+    records = _records(a, b)
+    records["records_sha256"] = ncg.records_sha256(records["files"])
+    slower = [dict(a, seconds=99.0), dict(b, seconds=0.1)]
+    assert ncg.records_sha256(slower) == records["records_sha256"]
+    assert ncg.verify_measure_sha(records)
+    changed = _records(dict(a, executed_gated=9), b)
+    changed["records_sha256"] = records["records_sha256"]
+    assert not ncg.verify_measure_sha(changed)
+    doc = ncg.verdict_document(records, ncg.decide(records, [], ncg.THRESHOLDS))
+    assert doc["phase"] == "verdict" and doc["measure_records_sha256"] == records["records_sha256"]
+    assert [f["outcome"] for f in doc["files"]] == ["pass", "pass"]
+    assert doc["overall"] == "pass" and doc["exit_code"] == 0
+    assert set(ncg.TOP_LEVEL_FIELDS) >= {"gated_sha", "pr_head_sha", "base_sha", "gated_tree"}
+    assert json.loads(json.dumps(doc)) == doc
+
+
+# --------------------------------------------------------------------------
+# Q5-SELF: the gate's own files pass its own rules (TD 5.19)
+# --------------------------------------------------------------------------
+
+SELF_CHECK = """
+import json, sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from scripts.framework import new_code_gate_logic as ncg
+
+out = {}
+for rel in sys.argv[1:]:
+    src = Path(rel).read_text(encoding="utf-8")
+    findings = ncg.decision_logic_findings(src, ncg.statement_map(src)[0])
+    out[rel] = [
+        f for f in findings
+        if (f["region"] in ("module", "class") and not f["carve_out"])
+        or (f["region"] == "function" and f["unmutatable_reason"])
+    ]
+print(json.dumps(out))
+"""
+
+SELF_FILES = [
+    "scripts/framework/new_code_gate_logic.py",
+    "scripts/oversight/validators/shell_logic_check.py",
+]
+
+
+def _final_main_block_lines(rel: str) -> set[int]:
+    tree = ast.parse((REPO / rel).read_text(encoding="utf-8"))
+    last = tree.body[-1]
+    assert isinstance(last, ast.If)
+    return set(range(last.lineno, last.end_lineno + 1))
+
+
+def test_gate_modules_have_no_q5_or_nq2_findings():
+    # Runs in a subprocess so it earns no coverage context and never reads a
+    # trampolined copy of the file under mutation.
+    proc = subprocess.run(
+        [sys.executable, "-c", SELF_CHECK, *SELF_FILES],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    failing = json.loads(proc.stdout)
+    assert failing["scripts/framework/new_code_gate_logic.py"] == []
+    shell = failing["scripts/oversight/validators/shell_logic_check.py"]
+    inside = _final_main_block_lines("scripts/oversight/validators/shell_logic_check.py")
+    assert shell and all(f["node_line"] in inside for f in shell)

@@ -1,17 +1,25 @@
 """
 Unit tests for shell_logic_check.py (#1241).
 
-Style mirrors test_validators_integration.py: import the validator module
-directly (conftest.py puts scripts/oversight/validators/ on sys.path) and
-call main([...]) against real temp files.
+Style mirrors test_validators_integration.py: call main([...]) against real
+temp files. The module is imported by its canonical name (#2304): the
+new-code gate fails a selected test that reaches a gated file through a
+sys.path-injected bare name.
 """
 
+import ast
+import inspect
 import os
 import textwrap
 
 import pytest
-from shell_logic_check import main as sl_main
 
+from scripts.oversight.validators.shell_logic_check import (
+    _scan_file,
+    decision_lines,
+    is_hard_exempt,
+)
+from scripts.oversight.validators.shell_logic_check import main as sl_main
 from tests.tmp_hygiene import make_dir, named_temp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -204,3 +212,125 @@ class TestShellLogicCheckRealFiles:
         assert result["score"] == pytest.approx(0.0)
         assert result["raw_value"]["decision_construct_count"] == 0
         assert path in result["raw_value"]["exempted_files"]
+
+
+# Nested forks: the inner `fi` closes before the outer one, so the scan appends
+# [2, 1] in close order. decision_lines must hand back line order.
+NESTED_FORKS_SH = textwrap.dedent(
+    """\
+    if a; then
+      if b; then
+        x
+      else
+        y
+      fi
+    else
+      z
+    fi
+"""
+)
+
+ELIF_CHAIN_SH = textwrap.dedent(
+    """\
+    if a; then
+      x
+    elif b; then
+      y
+    fi
+    case "$m" in
+      a) :;;
+    esac
+    until done_yet; do
+      sleep 1
+    done
+"""
+)
+
+
+class TestDecisionLines:
+    """The #2304 seam: per-line list behind _scan_file's (count, first line)."""
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            CLEAN_SH,
+            FLAG_PARSE_ONLY_SH,
+            LOGIC_HEAVY_SH,
+            GUARD_CLAUSE_NO_ELSE_SH,
+            GUARD_CLAUSE_WITH_ELSE_SH,
+            NESTED_FORKS_SH,
+            ELIF_CHAIN_SH,
+            "",
+        ],
+    )
+    def test_decision_lines_matches_scan_file_count(self, tmp_path, source):
+        path = _tmpfile(tmp_path, source)
+        try:
+            lines = decision_lines(source.splitlines())
+            count, first = _scan_file(path)
+            assert len(lines) == count
+            assert first == (lines[0] if lines else None)
+        finally:
+            os.unlink(path)
+
+    def test_logic_heavy_lines(self):
+        assert decision_lines(LOGIC_HEAVY_SH.splitlines()) == [6, 11, 15]
+
+    def test_scan_file_empty_returns_zero_none(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_SH)
+        try:
+            assert _scan_file(path) == (0, None)
+        finally:
+            os.unlink(path)
+
+    def test_scan_file_unreadable_returns_zero_none(self, tmp_path):
+        assert _scan_file(str(tmp_path / "missing.sh")) == (0, None)
+
+    def test_decision_lines_sorted_duplicates_preserved(self, tmp_path):
+        lines = NESTED_FORKS_SH.splitlines()
+        assert decision_lines(lines) == [1, 2]
+        path = _tmpfile(tmp_path, NESTED_FORKS_SH)
+        try:
+            assert _scan_file(path) == (2, 1)
+        finally:
+            os.unlink(path)
+
+    def test_elif_chain_counts_all_but_the_last_arm(self):
+        # The final elif has nothing after it, so it is the exempt guard arm.
+        assert decision_lines(ELIF_CHAIN_SH.splitlines()) == [1, 6, 9]
+
+    def test_decision_lines_does_not_deduplicate(self):
+        body = ast.parse(textwrap.dedent(inspect.getsource(decision_lines)))
+        names = {n.id for n in ast.walk(body) if isinstance(n, ast.Name)}
+        assert "set" not in names
+
+    def test_is_hard_exempt_alias(self):
+        assert is_hard_exempt("bootstrap/hos_bootstrap.sh") is True
+        assert is_hard_exempt("x\\bootstrap\\hos_bootstrap.sh") is True
+        assert is_hard_exempt("bootstrap/other.sh") is False
+
+    def test_edited_counted_lines_are_reported_in_order(self):
+        base = GUARD_CLAUSE_WITH_ELSE_SH.splitlines()
+        edited = ["#!/usr/bin/env bash", "echo hi"] + base[1:]
+        assert decision_lines(base) == [2]
+        assert decision_lines(edited) == [3]
+
+
+class TestRunTestsShellShape:
+    """R-S1b (#2304): run_tests.sh gains no counted shell decision construct.
+
+    EXPECTED shifts by the number of lines S1 adds above the --mutation block.
+    Keep it in step with scripts/framework/run_tests.sh; no git lookup is used,
+    so the test runs the same inside a mutation workspace.
+    """
+
+    EXPECTED = [128, 135]
+
+    def test_run_tests_adds_no_counted_shell_construct(self):
+        path = os.path.join(ROOT, "scripts", "framework", "run_tests.sh")
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        found = decision_lines(lines)
+        assert found == self.EXPECTED
+        assert lines[found[0] - 1].strip() == "if total == 0:"
+        assert lines[found[1] - 1].strip() == 'if [[ "$KILL_RATE" -ge "$MUTANT_TARGET" ]]; then'
