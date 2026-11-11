@@ -28,10 +28,12 @@ Read the project configuration declared in `config.sh` to resolve the technical-
 ## Targets (CORE floor)
 
 - **Code coverage ≥ 80%.**
-- **Mutant score ≥ 75%** (killed mutants / total non-equivalent mutants).
-- **Mutation testing is required wherever the stack supports it.** CORE names no tool. The installed pack names the actual coverage and mutation tools for the stack, or — where the stack has no suitable mutation framework — disables mutation testing for that stack. When the pack has disabled mutation, record that in the declaration (e.g. `Mutant_score_pct: N/A (no mutation framework for stack — disabled in PACK)`); the coverage target still applies.
+- **Mutant score ≥ 75%** (killed mutants / total mutants). Equivalent mutants are **not** removed from the denominator — the 25% headroom absorbs them. No pragma, exclusion comment, or "documented equivalent" claim reduces either count.
+- **Mutation testing is required wherever the stack supports it.** CORE names no tool. The installed pack names the coverage and mutation tools for the stack, or — only where the stack has no suitable mutation framework — disables mutation testing for that stack. Python is a stack with a mutation framework: for Python, mutation is never disabled and `Mutant_score_pct` is never N/A. When (and only when) the pack has disabled mutation for a non-Python stack, record that in the declaration (e.g. `Mutant_score_pct: N/A (no mutation framework for stack — disabled in PACK)`); the coverage target still applies.
 
 These are the proven floor. A project MAY override the numbers in its PROJECT section, but doing so is **not recommended** — lowering them weakens the floor.
+
+**Measured, never declared.** `Coverage_pct` and `Mutant_score_pct` are numbers copied from a tool run on the current head. "not run", "N/A" (except the PACK-disabled case above), sampled, estimated, or hand-computed values are never acceptable. Where the project runs a deterministic CI gate for these targets on new and changed code, the numbers come from that gate's output, and `Thresholds_met: true` is written only when that gate passed on the current head; iterate against the gate's local entry point (named in the project's CLAUDE.md or canonical entry-point list) until it passes. A gate failure you cannot fix within the round cap is a `test-resistance` escalation, never a declaration.
 
 ## What to test (generic priority)
 
@@ -47,13 +49,13 @@ Prefer real collaborators over mocks for the system under test's own layers; iso
 
 ## Iteration with the coder
 
-1. Measure coverage and run mutation testing; identify uncovered lines and surviving mutants.
+1. Measure coverage and run mutation testing (the project's gate, where one exists); identify uncovered lines and surviving mutants.
 2. Write tests for the gaps — target the surviving mutants specifically, not line count for its own sake.
 3. Re-measure both. Repeat until both targets are met.
 
-A surviving mutant that is **genuinely equivalent** (produces the same observable output as the original) is documented with a comment and excluded — it is never gamed to inflate the score. Record the count and that they are documented in the sign-off declaration.
+A surviving mutant you believe is equivalent (it produces the same observable output as the original) still counts as surviving. Do not add a pragma or exclusion to hide it, and do not remove it from the count; note it in the declaration's `Notes:` if it matters. If equivalent survivors alone keep the score below target, that is a `test-resistance` escalation, not an exclusion.
 
-Track the iteration count. After 5 rounds without meeting both targets, stop — do not attempt a 6th round. Before escalating, file a `test-resistance` issue recording the step, current coverage and mutant score vs. targets, the specific uncoverable lines/mutants, what was tried each round, and any surviving non-equivalent mutants. Then escalate per the escalation section and write a `Status: ESCALATED` register entry.
+Track the iteration count. After 5 rounds without meeting both targets, stop — do not attempt a 6th round. Before escalating, file a `test-resistance` issue recording the step, current coverage and mutant score vs. targets, the specific uncoverable lines/mutants, what was tried each round, and the surviving mutants (marking any you believe equivalent). Then escalate per the escalation section and write a `Status: ESCALATED` register entry.
 
 **Loop temp-state:** write round state to `.claudetmp/tests/unit-test-{step}-{YYYYMMDDTHHMMSS}.md` (create `.claudetmp/tests/` if absent), recording iteration, step, coverage, mutant score, per-round deltas, and remaining gaps. On read: glob `.claudetmp/tests/unit-test-{step}-*.md`, take the newest by timestamp; if older than 24h, delete it and restart at iteration 1. Delete on targets met or on escalation.
 
@@ -69,10 +71,9 @@ Artifact: {test files written / modules covered}
 Iterations: {N}
 Critical_findings_resolved: N/A
 Coverage_pct: {N}
-Mutant_score_pct: {N or N/A (disabled in PACK)}
+Mutant_score_pct: {N — measured; N/A only when the PACK disabled mutation for a non-Python stack}
 Thresholds_met: true | false
-Surviving_equivalents: {N}
-Equivalents_documented: true | false
+Surviving_equivalents: {N — informational only; never subtracted from the score}
 Notes: {one paragraph; empty if clean}
 ```
 

@@ -363,6 +363,7 @@ T4.1 for the enforced, current exemption set.
 | Repo sync (fetch + fast-forward the default branch; with `HOS_REPO_SYNC_PRUNE=1`, Human clone only, also prunes merged or closed local branches) | `bootstrap/hos_repo_sync.sh` |
 | Dependency/environment health check | `scripts/oversight/smoke_test.sh` |
 | Running the PR-required test suite | `scripts/framework/run_tests_inner_loop.sh` |
+| Running the new-code coverage + mutation gate locally on HEAD (needs a clean-tree run_tests.sh sidecar first) | `scripts/oversight/.venv/bin/python -m scripts.framework.new_code_gate run` |
 | Running blocking pre-review gates | `scripts/oversight/run_gates.sh` |
 | Running risk-assessment validators | `scripts/oversight/run_validators.sh` |
 | Explain which review dimensions apply to a diff (HOS repo only until #1643 W7, #1930) | `scripts/framework/run_post_change_sweep.sh` |
