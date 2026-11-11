@@ -3305,7 +3305,7 @@ def test_a20_list_archives_rc2_when_for_each_ref_fails(repo, capsys):
 
 
 # =============================================================================
-# #2313: D4 under --remote-scope all, and the loud git-error WARN
+# #2313/#2329: D4 is local-only under --remote-scope all; the loud git-error WARN
 # =============================================================================
 
 
@@ -3318,6 +3318,7 @@ def test_d4_review_name_does_not_apply_to_remote_heads_under_remote_scope_all(re
     out = lines_of(capsys)
     assert not any("review-pr-done" in ln or "review-stale" in ln for ln in out)
     assert not any(ln.startswith("WOULD-REAP branch=pr-7-review") for ln in out)
+    assert any("KEEP branch=pr-7-review reason=unlanded-no-pr where=remote" in ln for ln in out)
 
 
 def test_d4_review_name_remote_head_untouched_by_default_worker_scope(repo, capsys):
