@@ -90,8 +90,10 @@ practice regardless of sandboxing.
 - **File the gap (#1973).** If your search of `scripts/`, `bootstrap/`, `bin/` and
   `scripts/automation/lib/` comes up empty and you still have to write and run an
   ad-hoc multi-step command sequence, file a bug for it with
-  `bootstrap/create_issue.sh` (`--app overseer`, labels `bug,process-gap`) — after
-  checking open issues so you do not duplicate one. State what you were trying to
+  `bootstrap/create_issue.sh` (`--app overseer`, labels `bug,process-gap`; no
+  `needs-ai`, so triage routes it) — after checking
+  `bootstrap/query_issues.sh --app overseer --list --label process-gap --state open`
+  and skipping or commenting on an existing match. State what you were trying to
   do, why no existing script covered it, and the workaround you used (context only,
   not a sanctioned pattern). One issue per gap, not per invocation. A single
   command that an existing script already wraps is not a gap. The gap is the
