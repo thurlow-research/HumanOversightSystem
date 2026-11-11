@@ -3302,3 +3302,98 @@ def test_a20_list_archives_rc2_when_for_each_ref_fails(repo, capsys):
 
     assert readopt.list_archives(repo, git=bad) == 2
     assert "listing archives failed" in capsys.readouterr().err
+
+
+# =============================================================================
+# #2313: D4 under --remote-scope all, and the loud git-error WARN
+# =============================================================================
+
+
+def test_d4_review_name_applies_to_remote_heads_under_remote_scope_all(repo, capsys):
+    # D4 is name-based, not local-only: with remote_scope="all" a remote head named like a
+    # review copy (no PR of its own) whose tip a PR head covers is reaped as review-pr-done.
+    tip = remote_only_branch(repo, "pr-7-review")
+    prs = [pr("worker-x", tip, merged=True, number=7)]
+    assert reap_all(repo, prs=prs, dry_run=True) == 0
+    assert (
+        f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=remote pr=#7 tip={tip}"
+        in lines_of(capsys)
+    )
+
+
+def test_d4_review_name_remote_head_untouched_by_default_worker_scope(repo, capsys):
+    remote_only_branch(repo, "pr-7-review")
+    seen = []
+    reap(
+        repo,
+        do_local=False,
+        prs=[pr("worker-x", "0" * 40, merged=True, number=7)],
+        remote_heads=lambda pat: seen.append(pat) or [],
+        dry_run=True,
+    )
+    assert seen == ["refs/heads/worker-*"]
+    assert not any("pr-7-review" in ln for ln in lines_of(capsys))
+
+
+def test_git_error_keeps_over_threshold_print_warn_with_first_stderr(repo, capsys):
+    for i in range(readopt.GIT_ERROR_WARN_THRESHOLD + 1):
+        make_branch(repo, f"worker-9{i}-x", f"f{i}.txt", "w\n")
+    real = readopt.make_git(repo)
+
+    def run(args):
+        if list(args[:2]) == ["merge-tree", "--write-tree"]:
+            run.first_error = (
+                run.first_error or "fatal: Unable to create 'x.lock': Read-only file system"
+            )
+            return 2, ""
+        return real(args)
+
+    run.first_error = ""
+    issues = {90 + i: "open" for i in range(readopt.GIT_ERROR_WARN_THRESHOLD + 1)}
+    assert reap(repo, issues=issues, git=run, dry_run=True) == 0
+    out = lines_of(capsys)
+    n = readopt.GIT_ERROR_WARN_THRESHOLD + 1
+    assert (
+        f"WARN: git-error KEEPs={n} exceeds {readopt.GIT_ERROR_WARN_THRESHOLD}"
+        " — first stderr: fatal: Unable to create 'x.lock': Read-only file system"
+    ) in out
+
+
+def test_git_error_keeps_at_threshold_print_no_warn(repo, capsys):
+    for i in range(readopt.GIT_ERROR_WARN_THRESHOLD):
+        make_branch(repo, f"worker-8{i}-x", f"f{i}.txt", "w\n")
+    run = _failing_git(repo, fail_prefix=("merge-tree", "--write-tree"), rc=2)
+    issues = {80 + i: "open" for i in range(readopt.GIT_ERROR_WARN_THRESHOLD)}
+    reap(repo, issues=issues, git=run, dry_run=True)
+    assert not any(ln.startswith("WARN: git-error") for ln in lines_of(capsys))
+
+
+def test_make_git_first_error_keeps_first_fatal_only(repo: Path) -> None:
+    run = readopt.make_git(repo)
+    assert run.first_error == ""  # type: ignore[attr-defined]
+    assert run(["status", "--porcelain"])[0] == 0
+    assert run.first_error == ""  # type: ignore[attr-defined]  # rc 0 never records
+    rc, _ = run(["rev-parse", "--verify", "-q", "refs/heads/no-such"])
+    assert rc != 0 and run.first_error == ""  # type: ignore[attr-defined]  # silent failure
+    rc, _ = run(["rev-parse", "--verify", "bogus-ref-one^{commit}"])
+    assert rc != 0
+    first = run.first_error  # type: ignore[attr-defined]
+    assert first.lower().startswith("fatal:") and "single revision" in first
+    run(["rev-parse", "--verify", "bogus-ref-two^{commit}"])
+    assert run.first_error == first  # type: ignore[attr-defined]
+
+
+def test_make_git_first_error_ignores_warning_only_stderr(repo: Path, tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    shim = fake_bin / "git"
+    shim.write_text("#!/bin/sh\necho 'warning: something benign' >&2\nexit 1\n")
+    shim.chmod(0o755)
+    old = os.environ["PATH"]
+    os.environ["PATH"] = f"{fake_bin}:{old}"
+    try:
+        run = readopt.make_git(repo)
+        assert run(["anything"])[0] == 1
+    finally:
+        os.environ["PATH"] = old
+    assert run.first_error == ""  # type: ignore[attr-defined]

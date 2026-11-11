@@ -269,20 +269,55 @@ machine-local registry. Create `~/.config/hos/projects.conf`:
 Values are read literally (no `$HOME`/`~` expansion); use absolute paths.
 
 ```ini
-# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release, max_seconds
+# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release, max_seconds,
+#                           overseer_branch_reap (off | dry-run | on; default dry-run)
 hos_config_dir=/path/to/<project>/.config/hos
 hos_worker_root=/path/to/<project>/Worker
 hos_overseer_root=/path/to/<project>/Overseer
 hos_target_release=v0.4.2
+hos_overseer_branch_reap=dry-run
 
 cps_config_dir=/path/to/<other-project>/.config/hos
 cps_worker_root=/path/to/<other-project>/Worker
 cps_overseer_root=/path/to/<other-project>/Overseer
 cps_target_release=v1.0.0
+cps_overseer_branch_reap=off
 ```
 
 Use real absolute paths — this file is not shell-sourced, so `$HOME` is not
 expanded; write the full path. `chmod 600` it.
+
+### Overseer branch hygiene (`overseer_branch_reap`)
+
+Once per 24 h the overseer cycle runs `readopt.py reap-orphans --local-only` to delete
+local review copies of PR heads (`pr-N`, `pr-N-review`, ...) and provably orphaned local
+branches; audit-record branches are never touched, and remote heads are never reached
+(they belong to the worker). The mode is operator-owned, never set by an agent:
+`HOS_OVERSEER_BRANCH_REAP` (env) wins over `<project>_overseer_branch_reap`
+(`projects.conf`); the default is `dry-run`.
+
+| Value | Effect |
+|---|---|
+| `off` | No reap. |
+| `dry-run` (default) | Reports what it would delete (`WOULD-REAP`), deletes nothing, and writes one `cycle-branch-reap-dry-run` audit event per run. |
+| `on` | Deletes, with one `cycle-branch-reap` (or `cycle-branch-reap-failed`) event per branch. |
+
+Any other value is treated as `off` with a WARN and a `cycle-branch-reap-config-invalid` event.
+
+**Enable procedure.** (1) Leave the default `dry-run` and review the first dry run in the
+cycle log and the `cycle-branch-reap-dry-run` event (`would_reap`, `items=<branch>:<reason>,...`).
+(2) Make one attended real run: `hos-suspend` the project so no scheduled cycle overlaps,
+set `HOS_OVERSEER_BRANCH_REAP=on` for a single manual run, and inspect the result. (3) Only
+then set `<project>_overseer_branch_reap=on` in `projects.conf` and resume.
+
+Related audit events (role `overseer`):
+
+| Event | When |
+|---|---|
+| `cycle-branch-reap-dry-run` | Once per dry run: `would_reap`, `would_local`, `would_remote`, `kept`, `aborted`, `items` (capped at 500 chars). |
+| `cycle-branch-reap-git-error` | More than 3 KEEPs in one run were `git-error` (typically a read-only `.git`): `count`, `threshold`, `cause` (first git stderr line, sanitized, capped). A WARN is also logged. |
+| `cycle-review-worktree-cleanup` | Cycle-end review-worktree sweep: `removed`, `kept` counts. |
+| `cycle-review-worktree-kept` | One per kept review worktree (`head-moved`: a commit was made in it; a human must inspect): `pr`, `path`, `reason`. |
 
 ### Active target release (`target_release`)
 
