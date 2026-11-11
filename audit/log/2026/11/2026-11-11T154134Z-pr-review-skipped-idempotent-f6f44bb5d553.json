@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","head_sha":"b3e15cf12a812aa0146b409aca6ce6ab85d80e03","pr":2342,"reason":"verdict already posted on this head at 10:41Z; only new item is a worker status comment, no change to the HUMAN_REQUIRED disposition"}
