@@ -15,8 +15,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -136,10 +138,11 @@ def build_fixture(tmp_path, tests, calc=CALC, extra_pr_files=None, base_extra=No
     return repo
 
 
-def measure_coverage(repo, tmp_path):
-    """What the `tests` job does: run the suite with contexts, then write the sidecar."""
-    env = clean_env(tmp_path)
-    argv = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *FEATURE_COVERAGE_ARGS]
+def measure_coverage(repo, tmp_path, **extra_env):
+    """What the `tests` job does: run the suite (with `--reruns 1`) with contexts, then write the sidecar."""
+    env = clean_env(tmp_path, **extra_env)
+    argv = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--reruns", "1"]
+    argv += FEATURE_COVERAGE_ARGS
     proc = subprocess.run(argv, cwd=repo, env=env, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = [sys.executable, "-m", "scripts.framework.new_code_gate", "meta"]
@@ -299,3 +302,116 @@ def test_real_path_loaded_test_fails_with_a_named_fix(tmp_path):
     assert reason_codes(rec) == ["path_loaded_module"], explain(proc)
     assert "tests/test_loader.py" in rec["fail_reasons"][0]["message"]
     assert "canonical" in rec["fail_reasons"][0]["message"]
+
+
+FLAKY = "def pick(x):\n    return x + 1\n"
+FAIL_ONCE_TESTS = """import os
+import tempfile
+from pathlib import Path
+
+from bootstrap.flaky import pick
+
+
+def test_pick_fails_on_each_processs_first_attempt_only():
+    marker = Path(tempfile.gettempdir()) / f"rr-first-attempt-{os.getpid()}"
+    first = not marker.exists()
+    marker.touch()
+    pick(1)
+    assert not first, "fails once per process, then passes on the rerun"
+"""
+
+
+def test_rr1_a_deterministic_kill_stays_killed_and_a_fail_once_test_leaves_its_mutant_survived(
+    tmp_path,
+):
+    """RV-1: `--reruns 1` in the mutation workspace. Two consecutive failures are a kill; one is not."""
+    repo = build_fixture(
+        tmp_path,
+        {"tests/test_calc.py": STRONG_TESTS, "tests/test_flaky.py": FAIL_ONCE_TESTS},
+        extra_pr_files={"bootstrap/flaky.py": FLAKY},
+    )
+    measure_coverage(repo, tmp_path)
+    proc, records, verdict = run_gate(repo, tmp_path)
+    assert proc.returncode == 1, explain(proc)
+    assert records["internal_errors"] == [], explain(proc)
+    calc = file_record(verdict, CALC_PATH)
+    assert calc["outcome"] == "pass" and calc["mutants_killed"] == calc["mutants_total"] > 0
+    assert set(calc["mutant_status_counts"]) <= {"killed", "timeout"}
+    flaky = file_record(verdict, "bootstrap/flaky.py")
+    assert flaky["mutants_total"] > 0, explain(proc)
+    assert flaky["mutants_killed"] == 0 and flaky["mutant_status_counts"] == {
+        "survived": flaky["mutants_total"]
+    }
+    assert reason_codes(flaky) == ["mutant_score_below_threshold"], explain(proc)
+
+
+HOLD_TEST = """
+
+def test_hold():
+    assert add(1, 1) == 2
+    if os.environ.get("MUTANT_UNDER_TEST"):
+        with open(os.environ["HOLD_PIDFILE"], "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        time.sleep(300)
+"""
+
+
+def process_is_gone(pid):
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[0]
+    except OSError:
+        return True
+    return state == "Z"
+
+
+def wait_for(condition, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.1)
+    return condition()
+
+
+def test_int2_sigterm_to_measure_removes_its_workspace_and_leaves_no_live_child_group(tmp_path):
+    """RV-4: SIGTERM mid-mutation exits 143, writes no records, and kills the mutmut group."""
+    held = "import os\nimport time\n\n" + STRONG_TESTS + HOLD_TEST
+    repo = build_fixture(tmp_path, {"tests/test_calc.py": held})
+    git(repo, "checkout", "-q", "main")
+    pr_head = git(repo, "rev-parse", "feature")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge", "feature")
+    gated = git(repo, "rev-parse", "HEAD")
+    measure_coverage(repo, tmp_path, GITHUB_RUN_ID="5")
+    pidfile = tmp_path / "hold.pid"
+    out = tmp_path / "records.json"
+    argv = [sys.executable, "-m", "scripts.framework.new_code_gate", "measure"]
+    argv += ["--gated-sha", gated, "--pr-head-sha", pr_head, "--pr", "1"]
+    argv += ["--coverage-file", ".coverage", "--meta", "coverage-meta.json", "--out", str(out)]
+    argv += ["--tests-result", "success", "--run-id", "5", "--run-attempt", "1"]
+    proc = subprocess.Popen(
+        argv,
+        cwd=repo,
+        env=clean_env(tmp_path, HOLD_PIDFILE=str(pidfile)),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert wait_for(lambda: pidfile.exists() or proc.poll() is not None, 300)
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+            recorded = out.read_text(encoding="utf-8") if out.exists() else "no records"
+            pytest.fail(f"measure ended early: {proc.returncode}\n{stdout}{stderr}\n{recorded}")
+        assert wait_for(lambda: pidfile.read_text(encoding="utf-8") != "", 10)
+        held_pid = int(pidfile.read_text(encoding="utf-8"))
+        assert not process_is_gone(held_pid)
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert proc.returncode == 143, stdout + stderr
+    assert not out.exists()
+    assert wait_for(lambda: process_is_gone(held_pid), 30)
+    assert list((tmp_path / "tmp").glob("ncg-*")) == []

@@ -113,6 +113,9 @@ jobs:
             coverage-meta.json
           retention-days: 7
           if-no-files-found: error
+          # A re-run of this job replaces the earlier attempt's artifact rather than
+          # failing on the duplicate name (#2304 RV-5).
+          overwrite: true
           # .coverage is a dotfile; upload-artifact@v4 skips hidden files by default.
           include-hidden-files: true
 
@@ -151,6 +154,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-contexts
+          # A fresh directory outside the checkout: PR code cannot pre-place a
+          # file (or a symlink) where the gate will read its inputs (#2304 RV-7).
+          path: ${{ runner.temp }}/ncg-in/coverage
 
       - name: Measure new and changed code
         run: >-
@@ -158,8 +164,8 @@ jobs:
           --gated-sha ${{ github.sha }}
           --pr-head-sha ${{ github.event.pull_request.head.sha }}
           --pr ${{ github.event.pull_request.number }}
-          --coverage-file .coverage
-          --meta coverage-meta.json
+          --coverage-file ${{ runner.temp }}/ncg-in/coverage/.coverage
+          --meta ${{ runner.temp }}/ncg-in/coverage/coverage-meta.json
           --out new-code-records.json
           --tests-result ${{ needs.tests.result }}
           --run-id ${{ github.run_id }}
@@ -177,6 +183,8 @@ jobs:
           # (TD 5.15.3).
           retention-days: 90
           if-no-files-found: warn
+          # Re-running only this job replaces the earlier attempt's records (#2304 RV-5).
+          overwrite: true
 
   new-code-gate:
     name: new-code-gate
@@ -206,12 +214,20 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: new-code-records
+          # A fresh directory outside the checkout, holding only this artifact (#2304 RV-7).
+          path: ${{ runner.temp }}/ncg-in/records
 
       # verdict is stdlib-only, so the system python is used and no venv is built.
+      # The four binding values prove the records were written by this run (or an
+      # earlier attempt of it, for a verdict-only re-run) for this PR and commit.
       - name: Apply thresholds
         run: >-
           python -m scripts.framework.new_code_gate verdict
-          --records new-code-records.json
+          --records-dir ${{ runner.temp }}/ncg-in/records
+          --gated-sha ${{ github.sha }}
+          --pr ${{ github.event.pull_request.number }}
+          --run-id ${{ github.run_id }}
+          --run-attempt ${{ github.run_attempt }}
           --out new-code-verdict.json
           --summary new-code-summary.md
           --measure-result ${{ needs.new-code-measure.result }}
@@ -230,3 +246,4 @@ jobs:
             new-code-summary.md
           retention-days: 90
           if-no-files-found: warn
+          overwrite: true

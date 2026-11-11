@@ -9,8 +9,10 @@ The gate modules are imported canonically and at module level (TD 5.19), and not
 the real repository's `.git` or `.claude/` (G-NOGIT): fixtures are `git init`ed in `tmp_path`.
 """
 
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -134,6 +136,7 @@ class Rig:
             "checkout_root": str(self.root.resolve()),
             "clean": True,
             "coverage_core": "ctrace",
+            "run_id": None,
             "measured_sources": list(ncg.MEASURED_SOURCES),
             "tool_versions": dict(ncg.PINNED),
             "python": "3.12",
@@ -272,6 +275,14 @@ def rig(tmp_path):
     return Rig(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def keep_the_hosts_sigterm_handler():
+    """`measure` and `run` install a SIGTERM handler (RV-4); no test may leave it in the host."""
+    before = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, before)
+
+
 @pytest.fixture
 def std(rig):
     rig.standard()
@@ -352,6 +363,21 @@ def test_twice_identical_records_sha256(std):
     assert first["seconds"] != second["seconds"]
     assert first["records_sha256"] == second["records_sha256"] == ncg.records_sha256(first["files"])
     assert measure_with_step(rig, 1.0, killed=4)["records_sha256"] != first["records_sha256"]
+    assert file_rec(first)["enumerate_seconds"] != file_rec(second)["enumerate_seconds"]
+
+
+def test_the_enumerate_phase_seconds_are_recorded_per_file_apart_from_the_total(std):
+    """RV-3 (P-E): `_enumerate` time is its own field, so the 60 s / 25% trigger can be read."""
+    rig, runner = std
+    clock = FakeClock()
+    runner.hook = lambda phase, spec: setattr(
+        clock, "t", clock.t + {"enumerate": 7.0, "mutmut_run": 2.0}.get(phase, 0.0)
+    )
+    rec = file_rec(rig.measure(runner, clock)[0])
+    assert rec["enumerate_seconds"] == 7.0
+    assert rec["seconds"] == 9.0
+    zero = ncg.blank_file_record("scripts/framework/z.py", "new")
+    assert zero["enumerate_seconds"] == 0.0
 
 
 def test_noop_diff_zero_files_pass(rig):
@@ -1901,15 +1927,16 @@ def merge_rig(rig, base_side_edit=True):
 
 
 def ci_opts(rig, pr_head, **override):
-    return rig.options(
-        mode="ci", base_ref=None, pr_head_sha=pr_head, pr=7, run_id="1", run_attempt="2", **override
-    )
+    values = {"mode": "ci", "base_ref": None, "pr_head_sha": pr_head, "pr": 7}
+    values.update(run_id="1", run_attempt="2")
+    values.update(override)
+    return rig.options(**values)
 
 
 def test_ci_mode_gates_merge_commit_base_is_first_parent(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1, 2, 3, 4, 5, 6]}})
-    rig.sidecar()
+    rig.sidecar(run_id="1")
     doc, code = gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())
     rec = file_rec(doc, "scripts/framework/m.py")
     assert code == 0 and rec["gated_lines"] == [1]
@@ -1926,11 +1953,11 @@ def test_ci_mode_gates_merge_commit_base_is_first_parent(rig):
 def test_ci_mode_second_parent_must_equal_pr_head(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"x.py": {"tests/t.py::t|run": [1]}})
-    rig.sidecar()
+    rig.sidecar(run_id="1")
     doc, code = gate.measure(ci_opts(rig, "0" * 40), FakeRunner(rig), FakeClock())
     assert code == 3 and internal_messages(doc) == ["merge commit does not contain the PR head"]
     rig.git("checkout", "-q", "-B", "linear", "feature")
-    rig.sidecar()
+    rig.sidecar(run_id="1")
     doc, code = gate.measure(ci_opts(rig, rig.head()), FakeRunner(rig), FakeClock())
     assert code == 3 and internal_messages(doc) == ["merge commit does not contain the PR head"]
     assert pr_head
@@ -1939,7 +1966,7 @@ def test_ci_mode_second_parent_must_equal_pr_head(rig):
 def test_blob_sha_from_gated_tree_pr_head_blob_alongside(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
-    rig.sidecar()
+    rig.sidecar(run_id="1")
     rec = file_rec(
         gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())[0],
         "scripts/framework/m.py",
@@ -1952,7 +1979,7 @@ def test_blob_sha_from_gated_tree_pr_head_blob_alongside(rig):
 def test_blob_sha_equals_pr_head_blob_when_base_did_not_touch_the_file(rig):
     pr_head = merge_rig(rig, base_side_edit=False)
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
-    rig.sidecar()
+    rig.sidecar(run_id="1")
     rec = file_rec(
         gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())[0],
         "scripts/framework/m.py",
@@ -1966,6 +1993,180 @@ def test_pr_head_blob_is_null_when_the_path_is_absent_there(std):
     ctx = gate.Context(rig.options(pr_head_sha=base), FakeRunner(rig), FakeClock())
     assert gate.blob_shas(ctx, CALC_PATH) == (rig.git("rev-parse", f"HEAD:{CALC_PATH}"), None)
     assert gate.blob_shas(ctx, "README.md")[1] == gate.blob_shas(ctx, "README.md")[0]
+
+
+# --------------------------------------------------------------------------
+# BIND-5: the sidecar belongs to this run; inputs are regular files (RV-7)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sidecar_run", [None, "2", ""], ids=["no-run-id", "other-run", "empty"])
+def test_bind5_a_sidecar_from_another_run_exits_3_in_ci(rig, sidecar_run):
+    pr_head = merge_rig(rig)
+    rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
+    rig.sidecar(run_id=sidecar_run)
+    runner = FakeRunner(rig)
+    doc, code = gate.measure(ci_opts(rig, pr_head), runner, FakeClock())
+    assert code == 3 and runner.calls == [] and doc["files"] == []
+    (message,) = internal_messages(doc)
+    assert message.startswith("coverage data stale or from a dirty tree: run: sidecar was written")
+    assert message.endswith(f"written by run {sidecar_run}, this is run 1")
+
+
+def test_bind5_a_ci_measure_with_no_run_id_never_matches_a_sidecar(rig):
+    pr_head = merge_rig(rig)
+    rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
+    rig.sidecar(run_id=None)
+    doc, code = gate.measure(ci_opts(rig, pr_head, run_id=None), FakeRunner(rig), FakeClock())
+    assert code == 3 and "run: sidecar was written by run None, this is run " in str(
+        internal_messages(doc)
+    )
+
+
+def test_bind5_local_mode_ignores_the_sidecar_run_id(std):
+    rig, runner = std
+    rig.sidecar(run_id="77")
+    assert rig.measure(runner)[1] == 0
+
+
+@pytest.mark.parametrize("which", ["coverage", "meta"])
+def test_the_coverage_inputs_must_be_regular_files_not_symlinks(std, which):
+    rig, runner = std
+    real = rig.tmp / (".coverage" if which == "coverage" else "coverage-meta.json")
+    moved = rig.tmp / "elsewhere"
+    real.rename(moved)
+    real.symlink_to(moved)
+    doc, code = rig.measure(runner)
+    assert code == 3 and internal_messages(doc) == ["coverage data missing contexts"]
+    assert runner.calls == []
+
+
+def test_a_coverage_input_that_is_a_directory_is_refused(std):
+    rig, runner = std
+    (rig.tmp / ".coverage").unlink()
+    (rig.tmp / ".coverage").mkdir()
+    doc, code = rig.measure(runner)
+    assert code == 3 and internal_messages(doc) == ["coverage data missing contexts"]
+
+
+# --------------------------------------------------------------------------
+# SYM-1 and SYM-2: a gated symlink fails closed before any blob is parsed (RV-2)
+# --------------------------------------------------------------------------
+
+
+def symlink_pr(rig, rel, target, base_files=None):
+    """A feature commit that adds `rel` as a git symlink (mode 120000) to `target`."""
+    rig.base(extra=base_files)
+    path = rig.root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    rig.commit("symlink")
+    rig.coverage({CALC_PATH: {TEST_CALC_ID + "|run": CALC_LINES}})
+    rig.sidecar()
+
+
+def parsed_nothing(monkeypatch):
+    """Fail the test if anything parses source: the link-target text is never source."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a symlink's content was parsed")
+
+    monkeypatch.setattr(ncg, "statement_map", refuse)
+    monkeypatch.setattr(gate, "blob_text", refuse)
+
+
+@pytest.mark.parametrize(
+    ("rel", "kind"),
+    [("scripts/framework/link.py", "new"), ("scripts/framework/link.sh", "shell")],
+)
+def test_sym1_a_symlink_in_python_or_shell_scope_fails_closed_without_parsing(
+    rig, monkeypatch, rel, kind
+):
+    symlink_pr(rig, rel, "../../README.md")
+    assert rig.git("ls-tree", "HEAD", rel).startswith("120000 ")
+    parsed_nothing(monkeypatch)
+    runner = FakeRunner(rig)
+    doc, code = rig.measure(runner)
+    assert code == 0 and runner.calls == []
+    rec = file_rec(doc, rel)
+    assert rec["kind"] == kind and rec["mutation_reason"] == "blocked_by:symlink_not_gateable"
+    assert rec["fail_reasons"] == [{"code": "symlink_not_gateable", "message": ncg.MSG_SYMLINK}]
+    assert rec["gated_statements"] == 0 and rec["mutation_ran"] is False
+    assert rec["blob_sha"] == rig.git("rev-parse", f"HEAD:{rel}")
+    vdoc, summary, vcode = gate.build_verdict(doc, None)
+    assert vcode == 1 and vdoc["files"][0]["outcome"] == "fail"
+    assert "symlink_not_gateable" in summary
+
+
+def test_sym1_a_symlink_to_python_source_is_not_read_as_source(rig):
+    symlink_pr(rig, "scripts/framework/alias.py", "calc.py", base_files={CALC_PATH: CALC})
+    doc, code = rig.measure(FakeRunner(rig))
+    assert code == 0
+    assert [f["path"] for f in doc["files"]] == ["scripts/framework/alias.py"]
+    assert codes_of(file_rec(doc, "scripts/framework/alias.py")) == ["symlink_not_gateable"]
+
+
+def test_sym1_regular_files_beside_a_symlink_are_still_measured(std):
+    rig, runner = std
+    rig.write("scripts/framework/other.sh", "echo hi\n")
+    (rig.root / "scripts/framework/alias.py").symlink_to("calc.py")
+    rig.commit("alias")
+    rig.coverage({CALC_PATH: {TEST_CALC_ID + "|run": CALC_LINES}})
+    rig.sidecar()
+    doc, code = rig.measure(runner, base_ref="HEAD~1")
+    assert [f["path"] for f in doc["files"]] == [
+        "scripts/framework/alias.py",
+        "scripts/framework/other.sh",
+    ]
+    assert codes_of(file_rec(doc, "scripts/framework/alias.py")) == ["symlink_not_gateable"]
+    assert codes_of(file_rec(doc, "scripts/framework/other.sh")) == []
+
+
+def test_sym2_a_type_change_from_a_regular_file_to_a_symlink_fails_closed(rig, monkeypatch):
+    rel = "scripts/framework/m.py"
+    rig.base(extra={rel: "a = 1\n"})
+    (rig.root / rel).unlink()
+    (rig.root / rel).symlink_to("../../README.md")
+    rig.commit("now a link")
+    assert rig.git("diff", "--name-status", "HEAD~1", "HEAD").startswith("T\t")
+    rig.coverage({rel: {"tests/t.py::t|run": [1]}})
+    rig.sidecar()
+    parsed_nothing(monkeypatch)
+    doc, code = rig.measure(FakeRunner(rig))
+    rec = file_rec(doc, rel)
+    assert (code, rec["kind"]) == (0, "changed")
+    assert codes_of(rec) == ["symlink_not_gateable"]
+    assert rec["mutation_reason"] == "blocked_by:symlink_not_gateable"
+
+
+def test_sym2_a_symlink_turned_back_into_a_regular_file_is_gated_normally(rig):
+    rel = "scripts/framework/m.py"
+    rig.base()
+    (rig.root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (rig.root / rel).symlink_to("../../README.md")
+    rig.commit("link")
+    (rig.root / rel).unlink()
+    rig.write(rel, lines_text(3))
+    rig.commit("regular")
+    rig.coverage({rel: {"tests/t.py::t|run": [1, 2, 3]}})
+    rig.sidecar()
+    doc, code = rig.measure(FakeRunner(rig), base_ref="HEAD~1")
+    rec = file_rec(doc, rel)
+    assert code == 0 and codes_of(rec) != ["symlink_not_gateable"]
+    assert rec["gated_statements"] == 3
+
+
+def test_a_tracked_symlink_that_a_pr_did_not_touch_is_not_gated(std):
+    rig, runner = std
+    (rig.root / "scripts/framework/old.py").symlink_to("calc.py")
+    rig.commit("old link")
+    rig.git("checkout", "-q", "-b", "next")
+    rig.write("docs/n.md", "x\n")
+    rig.commit("docs")
+    rig.coverage({CALC_PATH: {TEST_CALC_ID + "|run": CALC_LINES}})
+    rig.sidecar()
+    doc, code = rig.measure(runner, base_ref="HEAD~1")
+    assert code == 0 and doc["files"] == []
 
 
 # --------------------------------------------------------------------------
@@ -2114,6 +2315,13 @@ def test_env_label_flag_cannot_turn_fail_to_pass(rig, monkeypatch, capsys):
 
 
 RUN = {"run_id": "9", "run_attempt": "1"}
+PR = 7
+
+
+def ci_doc(rig, runner, **override):
+    """Records as a CI `measure` writes them (mode ci, this PR), measured in process."""
+    doc, _ = rig.measure(runner, **RUN)
+    return dict(doc, **{"mode": "ci", "pr": PR, **override})
 
 
 def write_records(rig, doc):
@@ -2133,8 +2341,9 @@ def verdict_inputs(rig, doc, **override):
     values = {
         "records_dir": staged,
         "gated_sha": rig.head(),
+        "pr": PR,
         "run_id": "9",
-        "run_attempt": "1",
+        "run_attempt": 1,
         "measure_result": "success",
     }
     values.update(override)
@@ -2149,10 +2358,12 @@ def verdict_argv(rig, doc, **override):
         str(inputs.records_dir),
         "--gated-sha",
         inputs.gated_sha,
+        "--pr",
+        str(inputs.pr),
         "--run-id",
         inputs.run_id,
         "--run-attempt",
-        inputs.run_attempt,
+        str(inputs.run_attempt),
         "--measure-result",
         inputs.measure_result,
         "--out",
@@ -2169,7 +2380,7 @@ def run_verdict(rig, inputs):
 
 def test_verdict_writes_artifact_and_summary_and_exit_code(std):
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     code, out, summary = run_verdict(rig, verdict_inputs(rig, doc))
     assert code == 0
     vdoc = json.loads(out.read_text())
@@ -2180,7 +2391,7 @@ def test_verdict_writes_artifact_and_summary_and_exit_code(std):
 
 def test_verdict_upstream_not_success_exits_3_after_rendering(std):
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     code, out, summary = run_verdict(rig, verdict_inputs(rig, doc, measure_result="cancelled"))
     assert code == 3
     assert "upstream job not successful: cancelled" in summary.read_text()
@@ -2189,14 +2400,14 @@ def test_verdict_upstream_not_success_exits_3_after_rendering(std):
 
 def test_verdict_with_an_empty_measure_result_is_not_success(std):
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     assert run_verdict(rig, verdict_inputs(rig, doc, measure_result=""))[0] == 3
 
 
 @pytest.mark.parametrize("damage", ["missing", "garbage", "schema", "sha"])
 def test_verdict_with_bad_records_exits_3_and_still_writes_files(std, damage):
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     records = write_records(rig, doc)
     if damage == "missing":
         records.unlink()
@@ -2216,46 +2427,115 @@ def test_verdict_with_bad_records_exits_3_and_still_writes_files(std, damage):
 def test_verdict_of_measure_with_internal_error_is_exit_3(std):
     rig, runner = std
     doc, code = rig.measure(runner, tests_result="failure", **RUN)
-    assert run_verdict(rig, verdict_inputs(rig, doc))[0] == 3
+    assert run_verdict(rig, verdict_inputs(rig, dict(doc, mode="ci", pr=PR)))[0] == 3
+
+
+BIND_MESSAGE = "records not bound to this run: "
 
 
 @pytest.mark.parametrize(
     "override,detail",
     [
         ({"gated_sha": "d" * 40}, "gated_sha is "),
+        ({"pr": 8}, "pr is 7, expected 8"),
         ({"run_id": "10"}, "run_id is 9, expected 10"),
-        ({"run_attempt": "2"}, "run_attempt is 1, expected 2"),
     ],
-    ids=["other-sha", "other-run", "other-attempt"],
+    ids=["other-sha", "other-pr", "other-run"],
 )
-def test_verdict_refuses_records_from_another_commit_or_run(std, override, detail):
-    """F5: a stale or foreign records artifact must not pass this run's verdict."""
+def test_bind1_to_3_verdict_refuses_records_from_another_commit_pr_or_run(std, override, detail):
+    """BIND-1..3 (F5, RV-7): a stale or foreign records artifact must not pass this run's verdict."""
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     code, out, summary = run_verdict(rig, verdict_inputs(rig, doc, **override))
     assert code == 3
     vdoc = json.loads(out.read_text())
     assert vdoc["overall"] == "fail" and vdoc["files"] == []
     message = vdoc["internal_errors"][0]["message"]
-    assert message.startswith("records do not belong to this run: ") and detail in message
+    assert message.startswith(BIND_MESSAGE) and detail in message
+    assert BIND_MESSAGE in summary.read_text()
+
+
+def test_bind4_a_later_attempt_is_refused_and_an_equal_or_earlier_one_is_accepted(std):
+    rig, runner = std
+    doc = ci_doc(rig, runner, run_attempt="3")
+    code, out, _ = run_verdict(rig, verdict_inputs(rig, doc, run_attempt=2))
+    assert code == 3
+    message = json.loads(out.read_text())["internal_errors"][0]["message"]
+    assert message == BIND_MESSAGE + "run_attempt is 3, expected an integer of at most 2"
+    for attempt in (3, 4):
+        assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=attempt))[0] == 0
+    write_records(rig, ci_doc(rig, runner, run_attempt="1"))
+    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=5))[0] == 0
+    write_records(rig, ci_doc(rig, runner, run_attempt=1))
+    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=1))[0] == 0
+    write_records(rig, ci_doc(rig, runner, run_attempt="x"))
+    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=1))[0] == 3
+
+
+def test_bind4_a_verdict_only_rerun_reads_the_first_attempts_records(std):
+    """RV-7: re-running only `new-code-gate` (attempt 2) must judge the attempt-1 records."""
+    rig, runner = std
+    doc = ci_doc(rig, runner)
+    assert doc["run_attempt"] == "1"
+    argv = verdict_argv(rig, doc, run_attempt=2)
+    assert argv[argv.index("--run-attempt") + 1] == "2" and gate.main(argv) == 0
+
+
+def test_bind4_records_that_are_not_ci_records_are_refused(std):
+    rig, runner = std
+    doc = ci_doc(rig, runner, mode="local")
+    code, out, _ = run_verdict(rig, verdict_inputs(rig, doc))
+    assert code == 3
+    assert (
+        json.loads(out.read_text())["internal_errors"][0]["message"]
+        == BIND_MESSAGE + "mode is local, expected ci"
+    )
+
+
+def test_bind4_a_records_file_that_is_a_symlink_is_refused(std):
+    rig, runner = std
+    doc = ci_doc(rig, runner)
+    real = rig.tmp / "real-records"
+    real.mkdir()
+    (real / gate.RECORDS_FILENAME).write_text(json.dumps(doc), encoding="utf-8")
+    linked = rig.tmp / "linked"
+    linked.mkdir()
+    (linked / gate.RECORDS_FILENAME).symlink_to(real / gate.RECORDS_FILENAME)
+    inputs = verdict_inputs(rig, doc)._replace(records_dir=linked)
+    code, out, _ = run_verdict(rig, inputs)
+    assert code == 3
+    assert "as a regular file" in json.loads(out.read_text())["internal_errors"][0]["message"]
 
 
 def test_verdict_cli_passes_with_every_binding_flag_and_exits_3_on_a_mismatch(std):
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     assert gate.main(verdict_argv(rig, doc)) == 0
     assert gate.main(verdict_argv(rig, doc, run_id="10")) == 3
     assert gate.main(verdict_argv(rig, doc, gated_sha="c" * 40)) == 3
+    assert gate.main(verdict_argv(rig, doc, pr=8)) == 3
+    write_records(rig, ci_doc(rig, runner, run_attempt="2"))
+    assert gate.main(verdict_argv(rig, doc)) == 3
+    assert gate.main(verdict_argv(rig, doc, run_attempt=2)) == 0
 
 
 @pytest.mark.parametrize(
     "omit",
-    ["--records-dir", "--gated-sha", "--run-id", "--run-attempt", "--measure-result"],
+    [
+        "--records-dir",
+        "--gated-sha",
+        "--pr",
+        "--run-id",
+        "--run-attempt",
+        "--measure-result",
+        "--out",
+        "--summary",
+    ],
 )
 def test_verdict_cli_requires_every_binding_flag(std, omit, capsys):
     """F5: leaving a flag out must be a usage error (exit 2), never a default that reads as success."""
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     argv = verdict_argv(rig, doc)
     at = argv.index(omit)
     with pytest.raises(SystemExit) as raised:
@@ -2297,6 +2577,7 @@ def test_measure_cli_requires_the_ci_binding_flags(omit, capsys):
 def test_verdict_refuses_records_written_without_a_run_id(std):
     rig, runner = std
     doc, _ = rig.measure(runner)
+    doc = dict(doc, mode="ci", pr=PR)
     assert doc["run_id"] is None
     assert run_verdict(rig, verdict_inputs(rig, doc))[0] == 3
 
@@ -2304,7 +2585,7 @@ def test_verdict_refuses_records_written_without_a_run_id(std):
 def test_verdict_reads_only_a_directory_holding_exactly_the_records_file(std):
     """F5: the checkout (or any directory with other files in it) is not a records directory."""
     rig, runner = std
-    doc, _ = rig.measure(runner, **RUN)
+    doc = ci_doc(rig, runner)
     inputs = verdict_inputs(rig, doc)
     (inputs.records_dir / "extra.json").write_text("{}", encoding="utf-8")
     code, out, _summary = run_verdict(rig, inputs)
@@ -2339,6 +2620,7 @@ def test_main_meta_writes_sidecar_and_measure_runs_end_to_end_on_a_noop_diff(
     rig.coverage({"x.py": {"tests/t.py::t|run": [1]}})
     monkeypatch.chdir(rig.root)
     monkeypatch.setenv("COVERAGE_CORE", "ctrace")
+    monkeypatch.setenv("GITHUB_RUN_ID", "9")
     cov, meta = str(rig.tmp / ".coverage"), rig.tmp / "meta.json"
     assert gate.main(["meta", "--coverage-file", cov, "--out", str(meta)]) == 0
     sidecar = json.loads(meta.read_text())
@@ -2346,6 +2628,7 @@ def test_main_meta_writes_sidecar_and_measure_runs_end_to_end_on_a_noop_diff(
         sidecar["head_sha"] == rig.head()
         and sidecar["clean"] is True
         and sidecar["coverage_core"] == "ctrace"
+        and sidecar["run_id"] == "9"
     )
     assert sidecar["tool_versions"] == gate.installed_versions() == dict(ncg.PINNED)
     assert sidecar["measured_sources"] == list(ncg.MEASURED_SOURCES) and sidecar[
@@ -2388,6 +2671,7 @@ def test_main_meta_flags_a_dirty_tree_and_a_missing_coverage_file(rig, monkeypat
     rig.write("scripts/a.py", "a = 1\n")
     rig.commit("a")
     monkeypatch.chdir(rig.root)
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     (rig.root / "scripts/a.py").write_text("a = 2\n")
     meta = rig.tmp / "meta.json"
     cov = rig.tmp / ".coverage"
@@ -2397,6 +2681,10 @@ def test_main_meta_flags_a_dirty_tree_and_a_missing_coverage_file(rig, monkeypat
     assert gate.main(["meta", "--coverage-file", str(cov), "--out", str(meta)]) == 0
     sidecar = json.loads(meta.read_text())
     assert sidecar["clean"] is False and sidecar["dirty_paths"] == ["scripts/a.py"]
+    assert sidecar["run_id"] is None
+    monkeypatch.setenv("GITHUB_RUN_ID", "")
+    gate.main(["meta", "--coverage-file", str(cov), "--out", str(meta)])
+    assert json.loads(meta.read_text())["run_id"] is None
     many = [f"scripts/m{i}.py" for i in range(30)]
     for rel in many:
         rig.write(rel, "a = 1\n")
@@ -2658,6 +2946,97 @@ def test_subprocess_runner_gives_up_on_a_pipe_held_by_a_process_outside_the_grou
     finally:
         os.kill(int(marker.read_text()), 9)
         assert wait_until_gone(int(marker.read_text()))
+
+
+@contextlib.contextmanager
+def interrupt_after(seconds, exc):
+    """Raise `exc` in the main thread after `seconds`, as Ctrl-C or the SIGTERM handler would."""
+
+    def raiser(signum, frame):
+        raise exc
+
+    previous = signal.signal(signal.SIGALRM, raiser)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit], ids=["ctrl-c", "sigterm-exit"])
+def test_int1_an_interrupt_kills_the_whole_child_group_and_is_re_raised(tmp_path, exc):
+    """RV-4: nothing is left running when the gate is interrupted, even a SIGTERM-ignoring child."""
+    marker = tmp_path / "pids.txt"
+    script = textwrap.dedent(
+        f"""
+        import os, signal, subprocess, sys, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        member = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+            ]
+        )
+        open({str(marker)!r}, "w").write(f"{{os.getpid()}} {{member.pid}}")
+        time.sleep(60)
+        """
+    )
+    started = gate.Clock().monotonic()
+    with pytest.raises(exc):
+        with interrupt_after(3.0, exc):
+            gate.SubprocessRunner(grace=0.5).run(
+                "x", spec_for([sys.executable, "-c", script], timeout=120.0, cwd=tmp_path)
+            )
+    assert gate.Clock().monotonic() - started < 40
+    leader, member = (int(pid) for pid in marker.read_text().split())
+    assert wait_until_gone(leader) and wait_until_gone(member)
+
+
+def test_int1_an_interrupt_in_a_phase_removes_every_workspace_and_is_not_swallowed(std):
+    rig, runner = std
+    seen = {}
+
+    def hook(phase, spec):
+        if phase == gate.PHASE_MUTMUT:
+            seen["workspaces"] = len(list(rig.work.glob("ncg-*")))
+            raise KeyboardInterrupt
+
+    runner.hook = hook
+    with pytest.raises(KeyboardInterrupt):
+        rig.measure(runner)
+    assert seen["workspaces"] == 1
+    assert list(rig.work.iterdir()) == []
+
+
+def test_the_sigterm_handler_turns_the_signal_into_system_exit_143():
+    gate.install_sigterm_handler()
+    assert signal.getsignal(signal.SIGTERM) is gate.exit_on_sigterm
+    with pytest.raises(SystemExit) as raised:
+        signal.raise_signal(signal.SIGTERM)
+    assert raised.value.code == gate.EXIT_SIGTERM == 143
+
+
+def test_only_measure_and_run_install_the_sigterm_handler(std, monkeypatch, capsys):
+    rig, runner = std
+    calls = []
+    monkeypatch.setattr(gate, "install_sigterm_handler", lambda: calls.append("installed"))
+    monkeypatch.setattr(gate, "local_options", lambda args, repo: rig.options())
+    monkeypatch.setattr(gate, "SubprocessRunner", lambda: runner)
+    monkeypatch.setattr(tempfile, "tempdir", str(rig.work))
+    assert gate.main(["run", "--base", "main"]) == 0
+    assert calls == ["installed"]
+    out = rig.tmp / "r.json"
+    argv = ["measure", "--gated-sha", "a", "--pr-head-sha", "b", "--pr", "1"]
+    argv += ["--coverage-file", "c", "--meta", "m", "--out", str(out)]
+    argv += ["--tests-result", "failure", "--run-id", "9", "--run-attempt", "1"]
+    assert gate.main(argv) == 3
+    assert calls == ["installed", "installed"]
+    monkeypatch.setattr(gate, "collect_child", lambda rel, cwd: {})
+    assert gate.main(["_collect", "--file", "a.py"]) == 0
+    assert calls == ["installed", "installed"]
+    capsys.readouterr()
 
 
 def test_as_text_accepts_bytes_text_and_nothing():

@@ -220,8 +220,17 @@ def pinned_from_source():
 
 
 def test_requirements_pin_exactly_the_versions_the_gate_enforces():
-    """R-PIN: requirements.txt and PINNED agree on all five tools."""
+    """R-PIN: requirements.txt and PINNED agree on all six tools (RV-1 added pytest-rerunfailures)."""
     pinned = pinned_from_source()
+    assert sorted(pinned) == [
+        "coverage",
+        "libcst",
+        "mutmut",
+        "pytest",
+        "pytest-cov",
+        "pytest-rerunfailures",
+    ]
+    assert pinned["pytest-rerunfailures"] == "16.7"
     lines = [
         line.split("#")[0].strip()
         for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
@@ -232,6 +241,36 @@ def test_requirements_pin_exactly_the_versions_the_gate_enforces():
 
 
 RUN_TESTS = FRAMEWORK / "run_tests.sh"
+
+
+def enclosing_function_names(tree, callee):
+    """Name of the function (or `<module>`) that holds each call to `callee`."""
+    found = []
+
+    def visit(node, scope):
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, ast.FunctionDef) else scope
+            if isinstance(child, ast.Call) and getattr(child.func, "id", "") == callee:
+                found.append(scope)
+            visit(child, inner)
+
+    visit(tree, "<module>")
+    return found
+
+
+def test_only_measure_and_run_install_the_sigterm_handler():
+    """RV-4: never at import, never in the hidden `_enumerate` / `_collect` children."""
+    tree = parse(FRAMEWORK / "new_code_gate.py")
+    assert sorted(enclosing_function_names(tree, "install_sigterm_handler")) == [
+        "command_measure",
+        "command_run",
+    ]
+    signal_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "signal.signal"
+    ]
+    assert len(signal_calls) == 1
 
 
 def measured_sources_from_source():
@@ -311,6 +350,7 @@ def test_tests_job_keeps_its_shape_and_uploads_the_coverage_contexts():
     assert upload["with"]["retention-days"] == 7
     assert upload["with"]["if-no-files-found"] == "error"
     assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["overwrite"] is True
 
 
 def test_workflow_permissions_stay_read_only_everywhere():
@@ -437,6 +477,84 @@ def test_downloads_tolerate_a_missing_artifact_so_the_gate_reports_it(job, name)
     download = step_using(job, "actions/download-artifact@")
     assert download["continue-on-error"] is True
     assert download["with"]["name"] == name
+
+
+INPUT_ROOT = "${{ runner.temp }}/ncg-in"
+
+
+def flag_values(command, flag):
+    """Every value that follows `flag` in a folded command line (an expression is one value)."""
+    value = r"(\$\{\{ [^}]+ \}\}\S*|\S+)"
+    return re.findall(rf"(?:^| ){re.escape(flag)} {value}", command)
+
+
+def test_downloads_land_in_fresh_directories_under_runner_temp():
+    """RV-7: no artifact is downloaded into the checkout, where PR code can pre-place files."""
+    paths = {
+        "new-code-measure": f"{INPUT_ROOT}/coverage",
+        "new-code-gate": f"{INPUT_ROOT}/records",
+    }
+    for job, expected in paths.items():
+        download = step_using(job, "actions/download-artifact@")
+        assert download["with"]["path"] == expected, job
+        assert expected.startswith("${{ runner.temp }}/")
+
+
+def test_no_gate_input_path_is_checkout_relative():
+    """RV-7: the coverage data, sidecar and records are read from the download directories only."""
+    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
+    assert flag_values(measure_cmd, "--coverage-file") == [f"{INPUT_ROOT}/coverage/.coverage"]
+    assert flag_values(measure_cmd, "--meta") == [f"{INPUT_ROOT}/coverage/coverage-meta.json"]
+    assert flag_values(gate_cmd, "--records-dir") == [f"{INPUT_ROOT}/records"]
+    assert "--records " not in gate_cmd
+    inputs = [
+        *flag_values(measure_cmd, "--coverage-file"),
+        *flag_values(measure_cmd, "--meta"),
+        *flag_values(gate_cmd, "--records-dir"),
+    ]
+    assert inputs and all(p.startswith("${{ runner.temp }}/") for p in inputs)
+    for output in (*flag_values(measure_cmd, "--out"), *flag_values(gate_cmd, "--out")):
+        assert "/" not in output
+    assert flag_values(gate_cmd, "--summary") == ["new-code-summary.md"]
+
+
+def test_verdict_is_passed_all_four_binding_values_and_each_measure_value():
+    """RV-7: gated SHA, PR number, run ID and run attempt, exactly as the platform states them."""
+    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
+    assert flag_values(gate_cmd, "--gated-sha") == ["${{ github.sha }}"]
+    assert flag_values(gate_cmd, "--pr") == ["${{ github.event.pull_request.number }}"]
+    assert flag_values(gate_cmd, "--run-id") == ["${{ github.run_id }}"]
+    assert flag_values(gate_cmd, "--run-attempt") == ["${{ github.run_attempt }}"]
+    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+    assert flag_values(measure_cmd, "--run-id") == ["${{ github.run_id }}"]
+    assert flag_values(measure_cmd, "--run-attempt") == ["${{ github.run_attempt }}"]
+    assert flag_values(measure_cmd, "--pr") == ["${{ github.event.pull_request.number }}"]
+
+
+def test_every_upload_replaces_an_earlier_attempts_artifact():
+    """RV-5: a re-run of one job must not fail on a same-name artifact from an earlier attempt."""
+    uploads = [
+        (job, step)
+        for job, body in workflow_jobs().items()
+        for step in body["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert sorted(step["with"]["name"] for _job, step in uploads) == [
+        "coverage-contexts",
+        "new-code-records",
+        "new-code-verdict",
+    ]
+    assert all(step["with"]["overwrite"] is True for _job, step in uploads)
+
+
+def test_the_new_jobs_stay_read_only_and_run_even_when_upstream_fails():
+    """RV-5/7 keep the TD 5.17 shape: contents: read, `if: always()`, explicit upstream results."""
+    jobs = workflow_jobs()
+    for job in NEW_JOBS:
+        assert jobs[job].get("permissions") == {"contents": "read"}
+        assert jobs[job]["if"] == "always()"
+    assert "secrets." not in workflow_text()
 
 
 def test_no_cache_in_gate_jobs_or_code():

@@ -67,7 +67,7 @@ isort>=5.13,<6.0
 mypy>=1.8
 
 # Testing
-# The five new-code-gate tools are pinned EXACTLY (#2304 AF-1, ADR-A7): the gate
+# The six new-code-gate tools are pinned EXACTLY (#2304 AF-1, ADR-A7): the gate
 # refuses to run when an installed version differs from scripts/framework/
 # new_code_gate_logic.py PINNED, so this file and PINNED change together.
 pytest==9.2.0
@@ -79,7 +79,9 @@ libcst==1.9.0
 # definition and must not block; a test that fails twice under identical
 # conditions is a real failure and blocks, full stop. --reruns 1 in
 # run_tests.sh implements the "2 total attempts" policy.
-pytest-rerunfailures>=14.0
+# Pinned exactly (#2304 ADR-2304 s2e RV-1): the gate's mutation workspace passes
+# --reruns 1 too, so these rerun semantics decide each mutant's exit code.
+pytest-rerunfailures==16.7
 # mutmut is version-PINNED to a major series, same rationale as black above:
 # 3.x rewrote its config format (paths_to_mutate/tests_dir/runner/dict_synonyms
 # were dropped for source_paths/pytest_add_cli_args_test_selection, and the

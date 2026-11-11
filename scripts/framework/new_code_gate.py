@@ -42,6 +42,7 @@ PLUGIN_RELPATH = "scripts/framework/new_code_gate_pytest_plugin.py"
 PLUGIN_MODULE = "_ncg_tripwire"
 GATE_MODULE = "scripts.framework.new_code_gate"
 KILL_GRACE_SECONDS = 10.0
+EXIT_SIGTERM = 143
 OUTPUT_TAIL_LINES = 40
 OUTPUT_TAIL_CHARS = 4000
 MAX_BLOCKED_NAMES = 20
@@ -109,7 +110,7 @@ class Runner(Protocol):
 
 
 class SubprocessRunner:
-    """The real runner: a new session per child, SIGTERM then SIGKILL on timeout (TD 5.13)."""
+    """The real runner: a new session per child, SIGTERM then SIGKILL on timeout or interrupt (TD 5.13)."""
 
     def __init__(self, grace: float = KILL_GRACE_SECONDS) -> None:
         self.grace = grace
@@ -131,6 +132,12 @@ class SubprocessRunner:
             self.terminate(proc)
             out, err = self.drain(proc)
             return ProcResult(self.exit_code(proc), out, err, True)
+        except BaseException:
+            # An interrupt (KeyboardInterrupt, the SIGTERM handler's SystemExit) leaves no
+            # child group behind: the same bounded kill as a timeout, then the interrupt goes on.
+            self.terminate(proc)
+            self.drain(proc)
+            raise
         return ProcResult(proc.returncode, out, err, False)
 
     def terminate(self, proc: subprocess.Popen) -> None:
@@ -197,8 +204,9 @@ class MeasureOptions(NamedTuple):
 class VerdictInputs(NamedTuple):
     records_dir: Path
     gated_sha: str
+    pr: int
     run_id: str
-    run_attempt: str
+    run_attempt: int
     measure_result: str
 
 
@@ -254,6 +262,7 @@ class Context:
         self.meta: dict[str, Any] = {}
         self.cov: CoverageView | None = None
         self.tracked: list[str] = []
+        self.modes: dict[str, str] = {}
         self.workspaces: list[Workspace] = []
         self.sources: dict[str, str | None] = {}
         self.internal_errors: list[dict[str, Any]] = []
@@ -291,11 +300,10 @@ def blob_text(repo: Path, sha: str, path: str) -> str:
     return git_text(repo, ["show", f"{sha}:{path}"], f"could not read {path} at {sha[:12]}")
 
 
-def tracked_paths(repo: Path, sha: str) -> list[str]:
-    out = run_git(
-        repo, ["ls-tree", "-r", "-z", "--name-only", sha], f"could not list files at {sha[:12]}"
-    )
-    return [p for p in out.decode("utf-8").split("\0") if p]
+def tracked_modes(repo: Path, sha: str) -> dict[str, str]:
+    """Git mode of every tracked path at `sha`, read before any blob is parsed (symlinks: 120000)."""
+    out = run_git(repo, ["ls-tree", "-r", "-z", sha], f"could not list files at {sha[:12]}")
+    return ncg.parse_tree_modes(out.decode("utf-8"))
 
 
 def dirty_paths(porcelain_z: str) -> list[str]:
@@ -352,6 +360,7 @@ def build_meta(repo: Path, coverage_file: Path, environ: Mapping[str, str]) -> d
         "clean": dirty == [],
         "dirty_paths": dirty[: ncg.MAX_SIDECAR_PATHS],
         "coverage_core": environ.get("COVERAGE_CORE"),
+        "run_id": environ.get("GITHUB_RUN_ID") or None,
         "measured_sources": list(ncg.MEASURED_SOURCES),
         "tool_versions": installed_versions(),
         "python": python_version(),
@@ -732,14 +741,23 @@ def resolve_base(opts: MeasureOptions) -> str:
     return git_text(opts.repo, ["merge-base", str(opts.base_ref), opts.gated_sha], failed).strip()
 
 
+def require_regular_inputs(opts: MeasureOptions) -> None:
+    """The coverage data and sidecar must be regular files, never a link to somewhere else (RV-7)."""
+    for path in (opts.coverage_file, opts.meta_path):
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise GateError("coverage data missing contexts")
+
+
 def build_context(opts: MeasureOptions, runner: Runner, clock: Clock) -> Context:
     ctx = Context(opts, runner, clock)
     message = ncg.check_pins(opts.installed)
     if message is None:
+        require_regular_inputs(opts)
         ctx.meta = load_meta(opts.meta_path)
         message = ncg.check_sidecar_environment(ctx.meta, opts.installed, opts.python)
     if message is None:
-        message = ncg.check_sidecar_head(ctx.meta, opts.gated_sha)
+        ci_run = (opts.run_id or "") if opts.mode == "ci" else None
+        message = ncg.check_sidecar_head(ctx.meta, opts.gated_sha, ci_run)
     if message is None and opts.mode == "ci":
         listing = git_text(opts.repo, ["rev-list", "--parents", "-n", "1", opts.gated_sha]).split()
         message = ncg.check_merge_parents(listing[1:], opts.pr_head_sha)
@@ -747,7 +765,8 @@ def build_context(opts: MeasureOptions, runner: Runner, clock: Clock) -> Context
         raise GateError(message)
     ctx.cov = open_coverage(opts.coverage_file, ctx.meta["checkout_root"])
     ctx.base_sha = resolve_base(opts)
-    ctx.tracked = tracked_paths(opts.repo, opts.gated_sha)
+    ctx.modes = tracked_modes(opts.repo, opts.gated_sha)
+    ctx.tracked = list(ctx.modes)
     return ctx
 
 
@@ -807,6 +826,16 @@ def prepare_python(ctx: Context, change: ncg.ChangedPath) -> FileRun:
         return work
     executed = len(ctx.cov.lines(change.path) & set(work.gated))
     record.update(ncg.coverage_fields(len(work.gated), executed))
+    return work
+
+
+def prepare_symlink(ctx: Context, change: ncg.ChangedPath, scope: str) -> FileRun:
+    """A gated path that is a symlink fails closed; its link-target text is never read as source (RV-2)."""
+    kind = "shell" if scope == "shell" else str(change.kind)
+    record = ncg.blank_file_record(change.path, kind)
+    record["blob_sha"], record["pr_head_blob_sha"] = blob_shas(ctx, change.path)
+    work = FileRun(record, "")
+    work.block("symlink_not_gateable", ncg.MSG_SYMLINK, "blocked_by:symlink_not_gateable")
     return work
 
 
@@ -922,7 +951,11 @@ def enumerate_file(ctx: Context, work: FileRun) -> None:
     lines_file = ws.root / "gated-lines.json"
     lines_file.write_text(json.dumps(work.gated), encoding="utf-8")
     argv = child_argv(ctx, "_enumerate", work.path, ["--gated-lines-json", str(lines_file)])
-    result = run_phase(ctx, PHASE_ENUMERATE, argv, ws.tree, child_env(ctx))
+    enum_started = ctx.clock.monotonic()
+    try:
+        result = run_phase(ctx, PHASE_ENUMERATE, argv, ws.tree, child_env(ctx))
+    finally:
+        work.record["enumerate_seconds"] = round(ctx.clock.monotonic() - enum_started, 3)
     failure = f"mutant enumeration failed: {work.path}"
     doc = parse_child_json(result, ncg.SCHEMA_ENUM, work.path, failure)
     check_gate_file(doc.get("gate_file"), ws, ctx)
@@ -1216,11 +1249,14 @@ def prepare_files(ctx: Context) -> list[FileRun]:
     )
     works = []
     for change in sorted(ncg.parse_name_status(names), key=lambda c: c.path):
-        if change.kind is None:
+        scope = ncg.scope_of(change.path)
+        if change.kind is None or scope is None:
             continue
-        if ncg.in_python_scope(change.path):
+        if ncg.is_symlink_mode(ctx.modes.get(change.path)):
+            works.append(prepare_symlink(ctx, change, scope))
+        elif scope == "python":
             works.append(prepare_python(ctx, change))
-        elif ncg.in_shell_scope(change.path):
+        else:
             works.append(prepare_shell(ctx, change))
     return works
 
@@ -1380,10 +1416,10 @@ def records_file(records_dir: Path) -> Path:
 
 
 def bound_records(inputs: VerdictInputs) -> dict[str, Any]:
-    """Load the records and prove they were written by this run for this commit."""
+    """Load the records and prove they were written by this run, or an earlier attempt of it, for this commit."""
     records = load_records(records_file(inputs.records_dir))
     message = ncg.check_records_binding(
-        records, inputs.gated_sha, inputs.run_id, inputs.run_attempt
+        records, "ci", inputs.gated_sha, inputs.pr, inputs.run_id, inputs.run_attempt
     )
     if message is not None:
         raise GateError(message)
@@ -1410,6 +1446,16 @@ def write_json(path: Path, doc: Mapping[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def exit_on_sigterm(signum: int, frame: Any) -> None:
+    """Turn SIGTERM into SystemExit so the `finally` cleanup and the runner's child kill both run."""
+    raise SystemExit(EXIT_SIGTERM)
+
+
+def install_sigterm_handler() -> None:
+    """Only `measure` and `run` install it: never at import, never in the hidden child phases."""
+    signal.signal(signal.SIGTERM, exit_on_sigterm)
+
+
 def command_meta(args: argparse.Namespace) -> int:
     write_json(Path(args.out), build_meta(Path.cwd(), Path(args.coverage_file), os.environ))
     return 0
@@ -1434,6 +1480,7 @@ def command_measure(args: argparse.Namespace) -> int:
         environ=dict(os.environ),
         keep_workspace=False,
     )
+    install_sigterm_handler()
     doc, code = measure(opts, SubprocessRunner(), Clock())
     write_json(Path(args.out), doc)
     return code
@@ -1443,6 +1490,7 @@ def command_verdict(args: argparse.Namespace) -> int:
     inputs = VerdictInputs(
         records_dir=Path(args.records_dir),
         gated_sha=args.gated_sha,
+        pr=args.pr,
         run_id=args.run_id,
         run_attempt=args.run_attempt,
         measure_result=args.measure_result,
@@ -1484,7 +1532,11 @@ def local_options(args: argparse.Namespace, repo: Path) -> MeasureOptions:
 
 def command_run(args: argparse.Namespace) -> int:
     opts = local_options(args, Path.cwd())
+    install_sigterm_handler()
     records, _code = measure(opts, SubprocessRunner(), Clock())
+    message = ncg.check_records_binding(records, "local", opts.gated_sha, None, None, None)
+    if message is not None:
+        raise GateError(message)
     doc, text, code = build_verdict(records, None)
     out_dir = Path(tempfile.mkdtemp(prefix="ncg-run-"))
     write_json(out_dir / RECORDS_FILENAME, records)
@@ -1524,8 +1576,9 @@ def build_parser() -> argparse.ArgumentParser:
     verdict_p = sub.add_parser("verdict", help="decide pass or fail from the records")
     verdict_p.add_argument("--records-dir", required=True)
     verdict_p.add_argument("--gated-sha", required=True)
+    verdict_p.add_argument("--pr", type=int, required=True)
     verdict_p.add_argument("--run-id", required=True)
-    verdict_p.add_argument("--run-attempt", required=True)
+    verdict_p.add_argument("--run-attempt", type=int, required=True)
     verdict_p.add_argument("--measure-result", required=True)
     verdict_p.add_argument("--out", required=True)
     verdict_p.add_argument("--summary", required=True)

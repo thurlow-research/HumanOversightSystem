@@ -1164,17 +1164,142 @@ def test_blob_mismatches_lists_changed_and_missing_paths_sorted():
     assert ncg.blob_mismatches(expected, dict(expected)) == []
 
 
+BOUND = {"mode": "ci", "gated_sha": "g1", "pr": 5, "run_id": "7", "run_attempt": "2"}
+NOT_BOUND = "records not bound to this run: "
+
+
 def test_check_records_binding_names_the_first_field_that_differs():
-    records = {"gated_sha": "g1", "run_id": "7", "run_attempt": "2"}
-    assert ncg.check_records_binding(records, "g1", "7", "2") is None
-    assert ncg.check_records_binding(records, "g2", "7", "2") == (
-        "records do not belong to this run: gated_sha is g1, expected g2"
+    assert ncg.check_records_binding(BOUND, "ci", "g1", 5, "7", 2) is None
+    assert ncg.check_records_binding(BOUND, "local", "g1", 5, "7", 2) == (
+        NOT_BOUND + "mode is ci, expected local"
     )
-    assert "run_id is 7, expected 8" in ncg.check_records_binding(records, "g1", "8", "2")
-    assert "run_attempt is 2, expected 3" in ncg.check_records_binding(records, "g1", "7", "3")
-    assert "run_id is None, expected 7" in ncg.check_records_binding(
-        {"gated_sha": "g1", "run_attempt": "2"}, "g1", "7", "2"
+    assert ncg.check_records_binding(BOUND, "ci", "g2", 5, "7", 2) == (
+        NOT_BOUND + "gated_sha is g1, expected g2"
     )
+    assert ncg.check_records_binding(BOUND, "ci", "g1", 6, "7", 2) == (
+        NOT_BOUND + "pr is 5, expected 6"
+    )
+    assert ncg.check_records_binding(BOUND, "ci", "g1", 5, "8", 2) == (
+        NOT_BOUND + "run_id is 7, expected 8"
+    )
+    no_run = {k: v for k, v in BOUND.items() if k != "run_id"}
+    assert NOT_BOUND + "run_id is None, expected 7" == ncg.check_records_binding(
+        no_run, "ci", "g1", 5, "7", 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("written", "current", "ok"),
+    [
+        ("2", 2, True),
+        ("1", 2, True),
+        (1, 2, True),
+        ("3", 2, False),
+        (3, 2, False),
+        ("two", 2, False),
+        ("-1", 2, False),
+        ("٢", 2, False),
+        (True, 2, False),
+        (None, 2, False),
+        (2.0, 2, False),
+    ],
+)
+def test_binding_accepts_an_equal_or_earlier_integer_attempt_only(written, current, ok):
+    records = dict(BOUND, run_attempt=written)
+    message = ncg.check_records_binding(records, "ci", "g1", 5, "7", current)
+    if ok:
+        assert message is None
+    else:
+        assert message.startswith(NOT_BOUND + "run_attempt is ")
+        assert f"expected an integer of at most {current}" in message
+
+
+def test_local_binding_expects_no_run_id_no_attempt_and_no_pr():
+    local = {"mode": "local", "gated_sha": "g1", "pr": None, "run_id": None, "run_attempt": None}
+    assert ncg.check_records_binding(local, "local", "g1", None, None, None) is None
+    for field, value in (("run_id", "1"), ("pr", 1)):
+        message = ncg.check_records_binding(
+            dict(local, **{field: value}), "local", "g1", None, None, None
+        )
+        assert message == NOT_BOUND + f"{field} is {value}, expected None"
+    assert ncg.check_records_binding(
+        dict(local, run_attempt="1"), "local", "g1", None, None, None
+    ) == (NOT_BOUND + "run_attempt is 1, expected none")
+
+
+def test_binding_message_bounds_a_hostile_value():
+    message = ncg.check_records_binding(dict(BOUND, run_id="x" * 5000), "ci", "g1", 5, "7", 2)
+    assert len(message) < 1200 and message.endswith("expected 7")
+
+
+def test_attempt_number_reads_integers_and_ascii_digit_strings():
+    assert [ncg.attempt_number(v) for v in (4, "4", "04", True, "x", "", None, "४")] == [
+        4,
+        4,
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_sidecar_run_is_checked_only_when_a_run_id_is_given():
+    meta = {"head_sha": "abc", "clean": True, "coverage_core": "ctrace", "run_id": "9"}
+    assert ncg.check_sidecar_head(meta, "abc") is None
+    assert ncg.check_sidecar_head(meta, "abc", "9") is None
+    prefix = "coverage data stale or from a dirty tree: "
+    assert ncg.check_sidecar_head(meta, "abc", "10") == (
+        prefix + "run: sidecar was written by run 9, this is run 10"
+    )
+    assert ncg.check_sidecar_head({**meta, "run_id": None}, "abc", "10").endswith(
+        "written by run None, this is run 10"
+    )
+
+
+def test_tree_modes_read_every_entry_and_spot_only_symlinks():
+    entries = [
+        "100644 blob a1\ta.py",
+        "120000 blob b2\tlink.py",
+        "100755 blob c3\tdir/with space.sh",
+        "120000 blob d4\ttab\tname.py",
+    ]
+    listing = "\x00".join(entries) + "\x00"
+    modes = ncg.parse_tree_modes(listing)
+    assert modes == {
+        "a.py": "100644",
+        "link.py": "120000",
+        "dir/with space.sh": "100755",
+        "tab\tname.py": "120000",
+    }
+    assert [ncg.is_symlink_mode(m) for m in (*modes.values(), None)] == [
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert ncg.parse_tree_modes("") == {}
+
+
+def test_symlink_not_gateable_is_the_first_fail_code_and_never_ruling_eligible():
+    assert ncg.FAIL_ORDER[0] == "symlink_not_gateable"
+    assert "symlink_not_gateable" not in ncg.RULING_ELIGIBLE
+    assert "re-exports the target" in ncg.MSG_SYMLINK
+    record = ncg.blank_file_record("scripts/x.py", "new")
+    record["fail_reasons"] = [ncg.fail_reason("symlink_not_gateable", ncg.MSG_SYMLINK)]
+    ruling = [{"path": "scripts/x.py", "blob_sha": None}]
+    decision = ncg.decide({"files": [record]}, ruling, ncg.THRESHOLDS)
+    assert decision["files"][0]["outcome"] == "fail" and decision["exit_code"] == 1
+
+
+def test_enumerate_seconds_is_a_timing_field_outside_the_record_hash():
+    record = ncg.blank_file_record("scripts/x.py", "new")
+    assert record["enumerate_seconds"] == 0.0 and "enumerate_seconds" in ncg.FILE_FIELDS
+    slower = dict(record, seconds=9.0, enumerate_seconds=4.5)
+    assert ncg.records_sha256([record]) == ncg.records_sha256([slower])
+    assert ncg.TIMING_FIELDS == {"seconds", "enumerate_seconds"}
 
 
 def test_timeout_message_reports_phases_slowest_files_and_where_it_ran_out():
@@ -1215,6 +1340,41 @@ def test_generated_pytest_args_pin_report_chars():
     ]
     assert args[-2:] == ["-m", "not repo_copy"]
     assert ncg.mutmut_table(["a/"], "a/x.py", [], ["t"])["pytest_add_cli_args"] == args
+
+
+FORBIDDEN_RERUN_FLAGS = (
+    "--fail-on-flaky",
+    "--only-rerun",
+    "--rerun-except",
+    "--max-suite-reruns",
+    "--reruns-delay",
+    "-p no:rerunfailures",
+)
+
+
+def test_a4d_generated_args_rerun_once_and_never_change_how_reruns_are_judged():
+    """RV-1: `--reruns 1` matches the `tests` job; no other rerun option may appear."""
+    args = ncg.generated_pytest_args()
+    assert args.count("--reruns") == 1 and args[args.index("--reruns") + 1] == "1"
+    assert args == [
+        "--no-header",
+        "-rfE",
+        "--reruns",
+        "1",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "no:randomly",
+        "-p",
+        "_ncg_tripwire",
+        "-m",
+        "not repo_copy",
+    ]
+    joined = " ".join(args)
+    for flag in FORBIDDEN_RERUN_FLAGS:
+        assert flag not in joined
+    assert not [a for a in args if a.startswith("--reruns") and a != "--reruns"]
+    assert "rerunfailures" not in joined
 
 
 def test_generated_config_selection_equals_selection():

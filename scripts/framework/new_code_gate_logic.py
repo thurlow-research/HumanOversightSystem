@@ -45,6 +45,7 @@ PINNED = {
     "pytest-cov": "7.1.0",
     "libcst": "1.9.0",
     "pytest": "9.2.0",
+    "pytest-rerunfailures": "16.7",
 }
 
 # The six --cov roots of scripts/framework/run_tests.sh, in order (R-S1a).
@@ -85,6 +86,7 @@ MUTMUT_CLEAN_FAILED_MESSAGE = "Failed to run clean test"
 
 # Fail codes in the fixed order of TD 5.14. Reasons on a file are listed in this order.
 FAIL_ORDER = (
+    "symlink_not_gateable",
     "not_measured",
     "path_loaded_module",
     "shell_decision_logic",
@@ -115,6 +117,11 @@ MAX_SIDECAR_PATHS = 20
 MAX_TIMEOUT_FILES = 5
 MAX_BLOB_MISMATCHES = 10
 
+SYMLINK_MODE = "120000"
+MSG_SYMLINK = (
+    "this path is a symlink; replace it with a regular file, "
+    "or a module that re-exports the target"
+)
 MSG_NOT_MEASURED = (
     "file is outside the measured surface; add its top-level directory to "
     "run_tests.sh's --cov list"
@@ -162,6 +169,8 @@ SIMPLE_DECORATORS = frozenset({"staticmethod", "classmethod"})
 PYTEST_ADD_CLI_ARGS = (
     "--no-header",
     "-rfE",
+    "--reruns",
+    "1",
     "-p",
     "no:cacheprovider",
     "-p",
@@ -227,7 +236,11 @@ FILE_FIELDS = (
     "exception_path",
     "fail_reasons",
     "seconds",
+    "enumerate_seconds",
 )
+
+# Wall-clock fields: kept out of records_sha256 so two runs of one PR hash alike (AC-29).
+TIMING_FIELDS = frozenset({"seconds", "enumerate_seconds"})
 
 _DECISION_STMTS = (
     ast.If,
@@ -394,10 +407,13 @@ def _dirty_summary(meta: Mapping[str, Any]) -> str:
     return ", ".join(shown)
 
 
-def check_sidecar_head(meta: Mapping[str, Any], gated_sha: str) -> str | None:
+def check_sidecar_head(
+    meta: Mapping[str, Any], gated_sha: str, run_id: str | None = None
+) -> str | None:
     """The sidecar must describe the gated commit, from a clean tree, under ctrace.
 
-    The message names which of the three conditions failed (head, clean, core).
+    In CI (`run_id` given) it must also have been written by this workflow run.
+    The message names which conditions failed (head, clean, core, run).
     """
     failed = []
     if meta.get("head_sha") != gated_sha:
@@ -408,6 +424,9 @@ def check_sidecar_head(meta: Mapping[str, Any], gated_sha: str) -> str | None:
     if meta.get("coverage_core") != "ctrace":
         seen = bound_text(str(meta.get("coverage_core")), MAX_PATH_CHARS)
         failed.append(f"core: coverage_core is {seen}, not ctrace")
+    if run_id is not None and meta.get("run_id") != run_id:
+        seen = bound_text(str(meta.get("run_id")), MAX_PATH_CHARS)
+        failed.append(f"run: sidecar was written by run {seen}, this is run {run_id}")
     if not failed:
         return None
     return "coverage data stale or from a dirty tree: " + "; ".join(failed)
@@ -482,6 +501,20 @@ def parse_name_status(text: str) -> list[ChangedPath]:
         old = paths[0] if is_move else None
         out.append(ChangedPath(status, paths[-1], old, classify_change(status, old, paths[-1])))
     return out
+
+
+def parse_tree_modes(listing: str) -> dict[str, str]:
+    """Git mode of every path in a `git ls-tree -r -z` listing (`<mode> <type> <sha>\\t<path>\\0`)."""
+    modes = {}
+    for entry in listing.split("\0"):
+        head, tab, path = entry.partition("\t")
+        if tab:
+            modes[path] = head.split(" ")[0]
+    return modes
+
+
+def is_symlink_mode(mode: str | None) -> bool:
+    return mode == SYMLINK_MODE
 
 
 def parse_hunks(text: str) -> tuple[list[int], int]:
@@ -1431,6 +1464,7 @@ def blank_file_record(path: str, kind: str) -> dict[str, Any]:
         "exception_path": EXCEPTION_PATH_TEXT,
         "fail_reasons": [],
         "seconds": 0.0,
+        "enumerate_seconds": 0.0,
     }
 
 
@@ -1450,14 +1484,14 @@ def findings_fields(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _drop_seconds(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: _drop_seconds(v) for k, v in value.items() if k != "seconds"}
+        return {k: _drop_seconds(v) for k, v in value.items() if k not in TIMING_FIELDS}
     if isinstance(value, list):
         return [_drop_seconds(v) for v in value]
     return value
 
 
 def records_sha256(files: Sequence[Mapping[str, Any]]) -> str:
-    """sha256 of the canonical JSON of `files` with every `seconds` field removed (AC-29)."""
+    """sha256 of the canonical JSON of `files` with every timing field removed (AC-29)."""
     canonical = json.dumps(
         _drop_seconds(list(files)), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     )
@@ -1565,15 +1599,48 @@ def verify_measure_sha(records: Mapping[str, Any]) -> bool:
     return records.get("records_sha256") == records_sha256(records["files"])
 
 
+def attempt_number(value: Any) -> int | None:
+    """A run attempt as an integer, or None when the value is not an integer or a digit string."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
+
+
+def not_bound(name: str, got: Any, want: str) -> str:
+    return (
+        f"records not bound to this run: {name} is {bound_text(str(got), MAX_PATH_CHARS)}, {want}"
+    )
+
+
 def check_records_binding(
-    records: Mapping[str, Any], gated_sha: str, run_id: str, run_attempt: str
+    records: Mapping[str, Any],
+    mode: str,
+    gated_sha: str,
+    pr: int | None,
+    run_id: str | None,
+    run_attempt: int | None,
 ) -> str | None:
-    """The records must have been written by this run for this commit (a stale or foreign set is refused)."""
-    expected = {"gated_sha": gated_sha, "run_id": run_id, "run_attempt": run_attempt}
+    """The one run-binding check, shared by `verdict` (CI) and `run` (local, no run id).
+
+    The records must carry the mode, gated commit, PR and run id of this run, and an
+    attempt no greater than the current one: a verdict-only re-run reads the records
+    an earlier attempt wrote, while a record from a later attempt, another run or
+    another commit is refused (RV-7).
+    """
+    expected = {"mode": mode, "gated_sha": gated_sha, "pr": pr, "run_id": run_id}
     for name, want in expected.items():
         if records.get(name) != want:
-            got = bound_text(str(records.get(name)), MAX_PATH_CHARS)
-            return f"records do not belong to this run: {name} is {got}, expected {want}"
+            return not_bound(name, records.get(name), f"expected {want}")
+    written = records.get("run_attempt")
+    if run_attempt is None:
+        return None if written is None else not_bound("run_attempt", written, "expected none")
+    attempt = attempt_number(written)
+    if attempt is None or attempt > run_attempt:
+        return not_bound("run_attempt", written, f"expected an integer of at most {run_attempt}")
     return None
 
 
