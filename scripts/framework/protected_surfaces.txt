@@ -36,6 +36,11 @@ scripts/oversight/security_scan_logic.py
 # MCP approved list and its checker (#2197): an entry is valid only via CODEOWNER approval.
 scripts/oversight/mcp_approved_list.json
 scripts/oversight/mcp_policy_logic.py
+# Shell-logic scorer the new-code gate imports at measure time (#2304, ADR-2304 RV2-2):
+# a deletion-only edit here has no gated lines yet weakens the shell verdict, and the
+# module leaves its own directory first on sys.path. Exact paths, not a glob.
+scripts/oversight/validators/shell_logic_check.py
+scripts/oversight/validators/__init__.py
 .github/CODEOWNERS
 .github/workflows/**
 
