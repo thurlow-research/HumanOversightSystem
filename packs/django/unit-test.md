@@ -36,7 +36,7 @@ mutmut results
 mutmut show <id>
 ```
 
-Target: survived mutants / total non-equivalent mutants ≤ 25% (≥ 75% killed). Run mutmut after coverage targets are met; surviving mutants identify undertested logic branches, not just uncovered lines.
+Target: survived mutants / total mutants (equivalent mutants are not excluded; the 25% headroom absorbs them — #2304) ≤ 25% (≥ 75% killed). Run mutmut after coverage targets are met; surviving mutants identify undertested logic branches, not just uncovered lines.
 
 ---
 

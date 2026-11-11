@@ -56,8 +56,7 @@ Critical_findings_resolved: N/A
 Coverage_pct: 83
 Mutant_score_pct: 77
 Thresholds_met: true
-Surviving_equivalents: 2
-Equivalents_documented: true
+Surviving_equivalents: 2   # informational; never subtracted
 collection_errors: 0
 Notes: 80%/75% targets met after 3 rounds. Two surviving mutants documented as
   equivalent (see tests/test_booking_gates.py comments L234, L251).

@@ -318,11 +318,12 @@ Agent: unit-test
 Coverage_pct: 83
 Mutant_score_pct: 77
 Thresholds_met: true
-Surviving_equivalents: 2
-Equivalents_documented: true
+Surviving_equivalents: 2   # informational; never subtracted
 Iterations: 3
 Notes: ...
 ```
+
+`Coverage_pct` and `Mutant_score_pct` are measured numbers. For any step that changes Python they must be numeric, and `N/A`, `not run`, sampled or hand-computed values are non-compliant (§7 condition 4a). `N/A` is allowed only where a PACK disabled mutation for a non-Python stack. Equivalent mutants are not excluded from the denominator.
 
 ```markdown
 ## test-system | test-results | {datetime}
@@ -550,6 +551,7 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 2. Any required role entry is missing required §3 fields (`Status`, `Agent`, `Artifact`, `Iterations`)
 3. Any required role shows `Status: ESCALATED` without a `Human_resolution:` field in that entry
 4. `test-unit` declaration is missing `Thresholds_met: true`
+4a. `test-unit` declaration on a step whose diff changes a `.py` file has a non-numeric `Coverage_pct` or `Mutant_score_pct` → COMPLIANCE FAIL (#2304).
 5. `test-system` declaration is missing when `system_test_applicable: true`
 6. `process` sign-off missing when `system_test_applicable: true` (PM must sign off on test plan)
 7. **Effective human gate** (`manifest.human_gate_required == true` **OR** validated tier == CRITICAL): `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs; if missing, compliance fails immediately. The requirement is **re-derived from the validated tier**, not trusted from the manifest flag — `risk-assessor` ratchets the tier but nothing ratchets the flag, so a re-derived-CRITICAL step with `human_gate_required: false` must still hit the gate (same anti-gaming principle as conditions 9–10).
