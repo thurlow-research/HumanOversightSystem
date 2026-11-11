@@ -27,6 +27,19 @@ pytest_plugins = ["pytester"]
 
 PLUGIN_SOURCE = Path(plugin.__file__)
 THIS_FILE = Path(__file__)
+# Tests that read the plugin's text read the original: in a mutation workspace the imported plugin
+# is mutmut's trampolined copy under `mutants/`, and the untouched file is the root beside it.
+PLUGIN_TEXT = (
+    PLUGIN_SOURCE.parents[2].parent / "scripts/framework" / PLUGIN_SOURCE.name
+    if PLUGIN_SOURCE.parents[2].name == "mutants"
+    else PLUGIN_SOURCE
+)
+
+
+@pytest.fixture(autouse=True)
+def run_in_tmp_path(tmp_path, monkeypatch):
+    """A mutant that turns a computed path relative lands here, never in mutmut's cwd (RV3-7a)."""
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +112,7 @@ def test_plugin_reads_ncg_env_once_and_removes_it(monkeypatch, tmp_path):
 
 
 def test_plugin_reads_environ_only_in_load_state():
-    tree = ast.parse(PLUGIN_SOURCE.read_text(encoding="utf-8"))
+    tree = ast.parse(PLUGIN_TEXT.read_text(encoding="utf-8"))
     load_state = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_load_state"
     )
@@ -120,7 +133,12 @@ def test_plugin_reads_environ_only_in_load_state():
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.startswith("NCG_")
     }
     literals = {v for v in names if v.replace("_", "").isalnum() and v.isupper()}
-    assert literals == set(plugin.NCG_ENV)
+    # Read from the source, not `plugin.NCG_ENV`: a test that reads the plugin's text runs no
+    # plugin code (G-SRCREAD, RV3-3a), so a workspace's trampolined copy cannot fail it.
+    declared = next(
+        n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "NCG_ENV"  # type: ignore[attr-defined]
+    )
+    assert literals == set(ast.literal_eval(declared.value))
 
 
 SELF_CHECK = """
@@ -140,9 +158,12 @@ print(json.dumps([
 
 
 def test_plugin_has_no_q5_or_nq2_findings():
-    # Q5-SELF for this file (TD 5.19). A subprocess, so it earns no coverage context
-    # and never reads a trampolined copy of the plugin under mutation.
+    # Q5-SELF for this file (TD 5.19). A subprocess, so it earns no coverage context. In a mutation
+    # workspace this file sits in mutmut's `mutants/` copy, whose plugin is trampolined; the
+    # untouched original is the workspace root beside it, and that is the source to judge.
     repo = THIS_FILE.resolve().parents[2]
+    if repo.name == "mutants":
+        repo = repo.parent
     proc = subprocess.run(
         [sys.executable, "-c", SELF_CHECK, "scripts/framework/new_code_gate_pytest_plugin.py"],
         cwd=repo,
@@ -315,12 +336,17 @@ def test_git_copy_source_classification(active, tmp_path, build, expected):
     assert (found is not None) is expected
 
 
-def test_git_copy_source_uses_cwd_and_shell_strings(active, tmp_path):
+def test_git_copy_source_uses_cwd_and_shell_strings(active, tmp_path, monkeypatch):
     assert plugin.git_copy_source("git archive HEAD", active.ws / "mutants") is not None
     assert plugin.git_copy_source("git archive HEAD", tmp_path) == str(tmp_path.resolve())
     assert plugin.git_copy_source("git archive HEAD", tmp_path / "elsewhere") is None
     assert plugin.git_copy_source("git 'unbalanced", active.ws) is None
+    # No cwd means the process's own cwd: outside the workspace it is not a copy, inside it is.
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
     assert plugin.git_copy_source(["git", "archive", "HEAD"], None) is None
+    monkeypatch.chdir(active.ws)
+    assert plugin.git_copy_source(["git", "archive", "HEAD"], None) == str(active.ws.resolve())
 
 
 def test_popen_wrapper_raises_before_spawning(active, tmp_path):
@@ -363,6 +389,43 @@ def test_loader_wrappers_record_non_canonical_loads(active):
     ]
     assert all(e["canonical"] == "pkg.mod" and e["phase"] == "session" for e in found)
     assert all(e["importer"] == str(THIS_FILE) or e["importer"] == __file__ for e in found)
+
+
+def _called_from(filename, function, *args):
+    """Call `function(*args)` from a frame whose code object says it lives in `filename`."""
+    namespace = {}
+    exec(compile("def call(f, *a):\n    return f(*a)\n", str(filename), "exec"), namespace)
+    return namespace["call"](function, *args)
+
+
+def test_importer_skips_mutmut_trampoline_frames(active, tmp_path):
+    """IMP-TRAMP (RV3-3b): when the plugin itself is gated, its wrappers sit under mutmut's trampoline."""
+    path = _write_gated(active)
+    plugin.install()
+    trampoline = tmp_path / "mutmut" / "mutation" / "trampoline.py"
+    lookalike = tmp_path / "pkg" / "trampoline.py"
+    _called_from(trampoline, importlib.util.spec_from_file_location, "via_trampoline", path)
+    _called_from(lookalike, importlib.util.spec_from_file_location, "via_lookalike", path)
+    found = [e for e in active.events() if e["event"] == "path_load"]
+    assert [(e["loaded_as"], e["importer"]) for e in found] == [
+        ("via_trampoline", str(THIS_FILE)),
+        ("via_lookalike", str(lookalike)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("/site/mutmut/mutation/trampoline.py", True),
+        ("C:\\site\\mutmut\\mutation\\trampoline.py", True),
+        ("/site/mutmut/mutation/trampoline_templates.py", False),
+        ("/site/notmutmut/mutation/trampoline.py", False),
+        ("/site/mutmut/trampoline.py", False),
+        ("/site/mutmut/mutation/trampoline.pyc", False),
+    ],
+)
+def test_only_mutmuts_own_trampoline_module_is_skipped(name, expected):
+    assert plugin.is_trampoline_file(name) is expected
 
 
 def test_run_path_wrapper_records_and_still_runs(active):
@@ -424,7 +487,7 @@ def test_stem_of_handles_packages():
 
 
 def test_meta_path_observer_is_passive_static():
-    tree = ast.parse(PLUGIN_SOURCE.read_text(encoding="utf-8"))
+    tree = ast.parse(PLUGIN_TEXT.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "_Observer")
     method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "find_spec")
     returns = [n for n in ast.walk(method) if isinstance(n, ast.Return)]

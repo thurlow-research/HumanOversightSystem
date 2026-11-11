@@ -6,7 +6,9 @@ coverage context and drag the test into every selection (TD 5.19).
 """
 
 import ast
+import importlib.util
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -21,8 +23,25 @@ REPO = Path(__file__).resolve().parents[2]
 LOGIC_FILE = REPO / "scripts" / "framework" / "new_code_gate_logic.py"
 
 
+@pytest.fixture(autouse=True)
+def run_in_tmp_path(tmp_path, monkeypatch):
+    """A mutant that turns a computed path relative lands here, never in mutmut's cwd (RV3-7a)."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _src(text: str) -> str:
     return textwrap.dedent(text).lstrip("\n")
+
+
+def argv_safe_id(value):
+    """A parametrize id with no whitespace, so the gate never widens a selection to this module.
+
+    `sanitize_node_ids` widens an id with whitespace to its whole module, and then every test
+    in the module runs in every mutation workspace. Code text as a parameter needs an id like this.
+    """
+    if isinstance(value, str):
+        return re.sub(r"[^0-9A-Za-z]+", "_", value).strip("_")[:48] or "empty"
+    return None
 
 
 def _findings(source: str, lines=None):
@@ -358,6 +377,7 @@ def test_pragma_no_cover_on_gated_line_still_counted():
         "x = {i: 1 for i in y if i}\n",
         "x = (i for i in y if i)\n",
     ],
+    ids=argv_safe_id,
 )
 def test_has_decision_logic_each_node_type(source):
     gated = ncg.statement_map(source)[0]
@@ -372,6 +392,7 @@ def test_has_decision_logic_each_node_type(source):
         "import os\n",
         "x = f(1, 2)\nassert x\nwith a:\n    pass\n",
     ],
+    ids=argv_safe_id,
 )
 def test_no_decision_node_without_ifs_asserts_or_with(source):
     gated = ncg.statement_map(source)[0]
@@ -401,7 +422,7 @@ MODULE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("source,lines,construct", MODULE_CASES)
+@pytest.mark.parametrize("source,lines,construct", MODULE_CASES, ids=argv_safe_id)
 def test_module_level_decision_logic_fails_move_into_function(source, lines, construct):
     findings = _findings(source)
     assert any(f["construct"] == construct and f["region"] == "module" for f in findings)
@@ -453,7 +474,7 @@ CLASS_CASES = [
 ]
 
 
-@pytest.mark.parametrize("source,lines", CLASS_CASES)
+@pytest.mark.parametrize("source,lines", CLASS_CASES, ids=argv_safe_id)
 def test_class_level_decision_logic_fails(source, lines):
     expected = (
         f"class-level decision logic at m.py:{lines} — "
@@ -490,6 +511,7 @@ def test_enum_and_single_line_class_bodies_are_listed_with_region_class():
         "raise SystemExit(main())",
         "raise SystemExit(_main(sys.argv[1:]))",
     ],
+    ids=argv_safe_id,
 )
 def test_main_guard_carve_out_passes_exact_shape(call):
     source = f'if __name__ == "__main__":\n    {call}\n'
@@ -509,6 +531,7 @@ def test_main_guard_carve_out_passes_exact_shape(call):
         'if a:\n    if __name__ == "__main__":\n        main()\n',
         'class A:\n    if __name__ == "__main__":\n        main()\n',
     ],
+    ids=argv_safe_id,
 )
 def test_main_guard_near_misses_fail(source):
     assert any(c.endswith("_level_decision_logic") for c in _codes(source))
@@ -535,6 +558,7 @@ def test_main_guard_near_misses_fail(source):
         "raise SystemExit(**main())",
         "raise SystemExit(code=main())",
     ],
+    ids=argv_safe_id,
 )
 def test_main_guard_raise_near_misses_fail(body):
     source = f'if __name__ == "__main__":\n    {body}\n'
@@ -570,6 +594,7 @@ def test_main_guard_body_logic_is_still_judged():
             "except ImportError as e:\n    x = 2\n"
         ),
     ],
+    ids=argv_safe_id,
 )
 def test_import_fallback_carve_out_passes_exact_shape(source):
     assert _codes(source) == []
@@ -587,6 +612,7 @@ def test_import_fallback_carve_out_passes_exact_shape(source):
         "try:\n    import x\nexcept ImportError:\n    x = None\nfinally:\n    y = 1\n",
         "if TYPE_CHECKING:\n    try:\n        import x\n    except ImportError:\n        x = 1\n",
     ],
+    ids=argv_safe_id,
 )
 def test_import_fallback_near_misses_fail(source):
     assert "module_level_decision_logic" in _codes(source)
@@ -629,6 +655,7 @@ def test_type_checking_carve_out_passes_exact_shape():
         "if not TYPE_CHECKING:\n    import x\n",
         "if TYPE_CHECKING:\n    import x\nelse:\n    y = 1\n",
     ],
+    ids=argv_safe_id,
 )
 def test_type_checking_near_misses_fail(source):
     assert "module_level_decision_logic" in _codes(source)
@@ -763,6 +790,7 @@ def test_no_line_carries_both_q5_and_nq2_reasons():
             {"never_mutate_name"},
         ),
     ],
+    ids=argv_safe_id,
 )
 def test_never_mutate_name_reasons(source, expected):
     assert _reasons(source) == expected
@@ -1134,6 +1162,7 @@ def test_safe_echo_has_no_cr_or_lf_and_no_leading_command_marker():
         (["tests/a.py::t[a\nb]", "tests/a.py::u"], ["tests/a.py", "tests/a.py::u"]),
         ([], []),
     ],
+    ids=argv_safe_id,
 )
 def test_sanitize_node_ids_keeps_safe_ids_and_widens_odd_ones_to_their_module(ids, expected):
     assert ncg.sanitize_node_ids(ids) == expected
@@ -1152,6 +1181,7 @@ def test_sanitize_node_ids_keeps_safe_ids_and_widens_odd_ones_to_their_module(id
         "tests/a.txt",
         "",
     ],
+    ids=argv_safe_id,
 )
 def test_sanitize_node_ids_refuses_anything_that_could_be_a_pytest_option_or_escape(bad):
     with pytest.raises(ncg.GateError, match="unsafe test id in coverage contexts"):
@@ -1351,12 +1381,123 @@ def test_symlink_not_gateable_is_the_first_fail_code_and_never_ruling_eligible()
     assert decision["files"][0]["outcome"] == "fail" and decision["exit_code"] == 1
 
 
-def test_enumerate_seconds_is_a_timing_field_outside_the_record_hash():
+UNHASHED = {
+    "seconds",
+    "enumerate_seconds",
+    "workspace_seconds",
+    "mutmut_seconds",
+    "collect_seconds",
+    "isolation_failure",
+}
+
+
+def test_timings_and_isolation_evidence_are_outside_the_record_hash():
     record = ncg.blank_file_record("scripts/x.py", "new")
-    assert record["enumerate_seconds"] == 0.0 and "enumerate_seconds" in ncg.FILE_FIELDS
-    slower = dict(record, seconds=9.0, enumerate_seconds=4.5)
+    for name in UNHASHED - {"isolation_failure"}:
+        assert record[name] == 0.0 and name in ncg.FILE_FIELDS
+    assert record["isolation_failure"] is None
+    slower = dict(record, seconds=9.0, enumerate_seconds=4.5, workspace_seconds=1.0)
+    slower.update(mutmut_seconds=3.0, collect_seconds=0.5)
+    slower["isolation_failure"] = ncg.isolation_failure("stats", ["tests/t.py::a"], "x\n")
     assert ncg.records_sha256([record]) == ncg.records_sha256([slower])
-    assert ncg.TIMING_FIELDS == {"seconds", "enumerate_seconds"}
+    assert ncg.UNHASHED_FIELDS == UNHASHED
+    assert not hasattr(ncg, "TIMING_FIELDS")
+
+
+FAILURES_OUTPUT = (
+    "==== FAILURES ====\n"
+    "____ test_a ____\n"
+    "tests/t.py:3: in test_a\n"
+    "    assert 1 == 2\n"
+    "E   AssertionError\n"
+    "==== short test summary info ====\n"
+    "FAILED tests/t.py::test_a - AssertionError: <b>|x`\n"
+    "ERROR tests/t.py::test_b\n"
+    "==== 1 failed, 1 error in 0.1s ====\n"
+)
+
+
+def test_isolation_failure_keeps_the_summary_lines_verbatim_and_the_output_tail():
+    got = ncg.isolation_failure("clean", ["tests/t.py::test_a"], FAILURES_OUTPUT)
+    assert set(got) == {"stage", "node_ids", "summary_lines", "output_tail"}
+    assert got["stage"] == "clean" and got["node_ids"] == ["tests/t.py::test_a"]
+    assert got["summary_lines"] == [
+        "FAILED tests/t.py::test_a - AssertionError: <b>|x`",
+        "ERROR tests/t.py::test_b",
+    ]
+    assert got["output_tail"] == FAILURES_OUTPUT.strip()
+
+
+def test_isolation_failure_bounds_summary_tail_and_node_ids():
+    many = "==== short test summary info ====\n" + "".join(
+        f"FAILED tests/t.py::t{i} - {'x' * 3000}\n" for i in range(30)
+    )
+    long_id = "tests/" + "a" * 2000 + ".py::t"
+    got = ncg.isolation_failure("stats", [long_id], many)
+    assert len(got["summary_lines"]) == ncg.MAX_SUMMARY_LINES == 20
+    assert all(len(s) <= ncg.MAX_SUMMARY_LINE_CHARS == 2048 for s in got["summary_lines"])
+    assert got["summary_lines"][0].endswith(ncg.TRUNCATION_SUFFIX)
+    assert len(got["node_ids"][0]) == ncg.MAX_NODE_ID_CHARS == 1024
+    assert len(got["output_tail"]) <= ncg.ISOLATION_TAIL_CHARS == 8192
+    lines = "".join(f"line {i}\n" for i in range(100))
+    tail = ncg.isolation_failure("stats", [], lines)["output_tail"].splitlines()
+    assert ncg.ISOLATION_TAIL_LINES == 60
+    assert tail[0] == "line 40" and tail[-1] == "line 99" and len(tail) == 60
+
+
+def test_the_isolation_summary_line_is_escaped_and_only_the_first_is_shown():
+    rec = ncg.blank_file_record("scripts/x.py", "new")
+    rec["isolation_failure"] = ncg.isolation_failure(
+        "stats", ["tests/t.py::test_a"], FAILURES_OUTPUT
+    )
+    rec["outcome"] = "fail"
+    verdict = {"files": [rec], "overall": "fail", "internal_errors": []}
+    text = ncg.render_summary(verdict)
+    shown = "- FAILED tests/t.py::test_a - AssertionError: &lt;b&gt;\\|x\\`"
+    assert shown in text and "test_b" not in text
+    for odd in (None, {}, {"summary_lines": []}, {"summary_lines": "x"}, "x"):
+        rec["isolation_failure"] = odd
+        assert "FAILED" not in ncg.render_summary(verdict)
+
+
+def test_short_summary_lines_and_node_ids_come_from_the_last_section_only():
+    forged = "==== short test summary info ====\nFAILED tests/forged.py::t\n"
+    output = forged + "noise\n" + FAILURES_OUTPUT
+    assert ncg.short_summary_lines(output)[0].startswith("FAILED tests/t.py::test_a")
+    assert ncg.parse_short_summary(output) == ["tests/t.py::test_a", "tests/t.py::test_b"]
+    assert ncg.short_summary_lines("no section\n") == []
+
+
+def test_the_mutmut_output_paths_and_cache_dirs_are_pinned():
+    assert ncg.mutmut_output_paths("pkg/m.py") == {
+        "pkg/m.py",
+        "pkg/m.py.meta",
+        "pkg/m.py.spans",
+        "mutmut-stats.json",
+        "mutmut-cicd-stats.json",
+        "mutmut-debug.log",
+    }
+    assert ncg.is_mutmut_output_dir("__pycache__") and ncg.is_mutmut_output_dir(".pytest_cache")
+    assert not ncg.is_mutmut_output_dir("tests") and not ncg.is_mutmut_output_dir("pycache")
+
+
+def test_the_pinned_mutmut_output_names_are_the_ones_mutmut_writes():
+    """RV3-7b: the exclusion list is read from mutmut's own source, so a version bump breaks here."""
+    mutmut_dir = Path(importlib.util.find_spec("mutmut").submodule_search_locations[0])
+
+    def source(name):
+        return (mutmut_dir / name).read_text(encoding="utf-8")
+
+    assert '"mutants/mutmut-stats.json"' in source("stats.py")
+    assert '"mutants/mutmut-cicd-stats.json"' in source("__main__.py")
+    assert '"mutants/mutmut-debug.log"' in source("configuration.py")
+    assert '(str(path) + ".meta")' in source("mutation/data.py")
+    assert '(str(path) + ".spans")' in source("mutation/data.py")
+    assert ncg.MUTMUT_ROOT_OUTPUTS == {
+        "mutmut-stats.json",
+        "mutmut-cicd-stats.json",
+        "mutmut-debug.log",
+    }
 
 
 def test_timeout_message_reports_phases_slowest_files_and_where_it_ran_out():
@@ -1508,6 +1649,7 @@ def test_changed_original_lines_and_mapping():
         ("x" * 600 + ".x_a__mutmut_1", False),
         ("evil; rm -rf", False),
     ],
+    ids=argv_safe_id,
 )
 def test_mutant_key_pattern(key, ok):
     assert ncg.check_mutant_key(key) is ok
@@ -1537,7 +1679,7 @@ def test_timeout_status_counts_killed_segfault_does_not():
     assert ncg.mutant_score_pct(2, 5) == 40.0 and ncg.mutant_score_pct(0, 0) is None
 
 
-@pytest.mark.parametrize("status", ["caught by type check", "mystery"])
+@pytest.mark.parametrize("status", ["caught by type check", "mystery"], ids=argv_safe_id)
 def test_unexpected_mutant_status_raises(status):
     with pytest.raises(ncg.GateError, match="unexpected mutant status"):
         ncg.classify_statuses({"a": status}, ["a"])

@@ -23,6 +23,7 @@ full, so its module-level and class-level statements hold no decision logic (TD 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -476,8 +477,7 @@ def child_argv(ctx: Context, phase: str, rel: str, extra: Sequence[str] = ()) ->
 
 
 def output_tail(output: str) -> str:
-    lines = output.strip().splitlines()
-    return ncg.bound_text("\n".join(lines[-OUTPUT_TAIL_LINES:]), OUTPUT_TAIL_CHARS)
+    return ncg.tail_text(output, OUTPUT_TAIL_LINES, OUTPUT_TAIL_CHARS)
 
 
 def check_gate_file(gate_file: Any, ws: Workspace, ctx: Context) -> None:
@@ -684,10 +684,48 @@ def mutant_lines(original: str, name: str, orig_module: Any, mutated_module: Any
     return ncg.changed_original_lines(original, replaced.code)
 
 
-def enumerate_child(rel: str, gated_lines: Sequence[int], cwd: Path) -> dict[str, Any]:
-    """`_enumerate`: the file's full mutant set, and which mutants touch gated lines (TD 5.9.1-2)."""
+def scoped_mutant_lines(
+    name: str,
+    orig_module: Any,
+    mutated_module: Any,
+    positions: Any,
+    rendered: dict[Any, tuple[int, str]],
+) -> list[int]:
+    """The same lines as `mutant_lines`, from diffing only the mutated function (ADR-2304 RV3-1).
+
+    Every module line outside the target's rendering is identical in the two whole-module texts,
+    so diffing the target's own rendering and offsetting by its first line gives the same set.
+    `positions` must include the node's leading lines, as `code_for_node` renders them.
+    """
+    from mutmut.mutation.diff_apply import read_mutant_function
+    from mutmut.utils.format_utils import orig_function_and_class_names_from_key
+
+    func_name, class_name = orig_function_and_class_names_from_key(name)
+    target = find_original(orig_module, func_name.rpartition(".")[2], class_name)
+    if target is None:
+        return []
+    if target not in rendered:
+        rendered[target] = (positions[target].start.line, orig_module.code_for_node(target))
+    start, orig_text = rendered[target]
+    mut_text = orig_module.code_for_node(read_mutant_function(mutated_module, name))
+    return [start - 1 + n for n in ncg.changed_original_lines(orig_text, mut_text)]
+
+
+class Generated(NamedTuple):
+    """One file's mutmut output, parsed once: its text, mutant keys and both libcst trees."""
+
+    original: str
+    names: list[str]
+    orig_module: Any
+    mutated_module: Any
+    positions: Any
+
+
+def generate_mutants(rel: str, cwd: Path) -> Generated:
+    """Run mutmut's own generation on the workspace copy of `rel` and parse both versions (TD 5.9.1)."""
     require_mutmut_config(cwd, rel)
     import libcst as cst
+    from libcst.metadata import MetadataWrapper, WhitespaceInclusivePositionProvider
     from mutmut.configuration import reset_config
     from mutmut.mutation.file_mutation import mutate_file_contents
     from mutmut.utils.format_utils import get_mutant_name
@@ -696,14 +734,27 @@ def enumerate_child(rel: str, gated_lines: Sequence[int], cwd: Path) -> dict[str
     original = read_exact(cwd / rel)
     mutated = mutate_file_contents(rel, original, covered_lines=None, coverage_excluded_lines=None)
     names = sorted(get_mutant_name(Path(rel), n) for n in mutated.mutant_names)
-    statements, multiline = ncg.statement_map(original)
     orig_module = cst.parse_module(original)
-    mutated_module = cst.parse_module(mutated.code)
+    positions = MetadataWrapper(orig_module, unsafe_skip_copy=True).resolve(
+        WhitespaceInclusivePositionProvider
+    )
+    return Generated(original, names, orig_module, cst.parse_module(mutated.code), positions)
+
+
+def enumerate_child(rel: str, gated_lines: Sequence[int], cwd: Path) -> dict[str, Any]:
+    """`_enumerate`: the file's full mutant set, and which mutants touch gated lines (TD 5.9.1-2)."""
+    made = generate_mutants(rel, cwd)
+    original, names, orig_module = made.original, made.names, made.orig_module
+    statements, multiline = ncg.statement_map(original)
+    rendered: dict[Any, tuple[int, str]] = {}
     gated, line_map, unmappable = [], {}, []
     for name in names:
-        lines = ncg.map_mutant_lines(
-            mutant_lines(original, name, orig_module, mutated_module), statements, multiline
+        changed = scoped_mutant_lines(
+            name, orig_module, made.mutated_module, made.positions, rendered
         )
+        # A non-empty scoped result is final; an empty one falls back to the whole-module diff.
+        changed = changed or mutant_lines(original, name, orig_module, made.mutated_module)
+        lines = ncg.map_mutant_lines(changed, statements, multiline)
         line_map[name] = lines
         if not lines:
             unmappable.append(name)
@@ -980,6 +1031,7 @@ def enumerate_file(ctx: Context, work: FileRun) -> None:
         ws = make_workspace(ctx, work)
     finally:
         work.workspace_seconds = round(ctx.clock.monotonic() - started, 3)
+        work.record["workspace_seconds"] = work.workspace_seconds
         ctx.spend_phase("workspace", started)
     lines_file = ws.root / "gated-lines.json"
     lines_file.write_text(json.dumps(work.gated), encoding="utf-8")
@@ -1082,6 +1134,77 @@ def check_integrity(
         )
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def same_file(mutant: Path, original: Path) -> bool:
+    """A copy equals its original: both are files (links followed) of one size and one sha256."""
+    if not (mutant.is_file() and original.is_file()):
+        return False
+    if mutant.stat().st_size != original.stat().st_size:
+        return False
+    return sha256_file(mutant) == sha256_file(original)
+
+
+def tree_files(root: Path, skip_top: str | None) -> dict[str, Path]:
+    """Relative POSIX path -> path of every file or link under `root`, minus interpreter and pytest caches."""
+    found = {}
+    for current, dirs, files in os.walk(root):
+        base = Path(current)
+        pruned = [d for d in dirs if not ncg.is_mutmut_output_dir(d)]
+        dirs[:] = [d for d in pruned if base != root or d != skip_top]
+        for name in files + [d for d in dirs if (base / d).is_symlink()]:
+            path = base / name
+            found[path.relative_to(root).as_posix()] = path
+    return found
+
+
+def workspace_changes(tree: Path, gated: str) -> list[str]:
+    """Paths whose copy under `<tree>/mutants/` was added, changed or removed (RV3-7b), sorted.
+
+    mutmut copies every file of the workspace into `mutants/` (source paths, `also_copy`, tests,
+    config), so each regular original must have an equal copy and every copy an original.
+    """
+    root = tree / "mutants"
+    if root.is_symlink():
+        return ["mutants"]
+    if not root.exists():
+        # mutmut stopped before it made `mutants/`: nothing ran, so nothing was corrupted, and the
+        # exit code and output say why it stopped (TD 5.9 step 6, rule 7).
+        return []
+    skip = ncg.mutmut_output_paths(gated)
+    copies = tree_files(root, None)
+    originals = tree_files(tree, "mutants")
+    changed = {
+        rel for rel, path in copies.items() if rel not in skip and not same_file(path, tree / rel)
+    }
+    missing = {
+        rel
+        for rel, path in originals.items()
+        if rel not in skip and not path.is_symlink() and rel not in copies
+    }
+    return sorted(changed | missing)
+
+
+def check_workspace_unchanged(ws: Workspace, gated: str) -> None:
+    """TD 5.9 step 5.4: a mutant that writes into `mutants/` corrupts every later mutant's tests.
+
+    A failing test reads as `killed`, so a corrupted tree inflates the score (a false pass):
+    the run is refused, never scored.
+    """
+    changed = workspace_changes(ws.tree, gated)
+    if changed:
+        shown = ", ".join(
+            ncg.bound_text(p, ncg.MAX_PATH_CHARS) for p in changed[:MAX_BLOCKED_NAMES]
+        )
+        raise GateError(f"mutation run modified the workspace: {shown}")
+
+
 def runtime_findings(events: Sequence[Mapping[str, Any]], work: FileRun) -> list[dict[str, str]]:
     found = []
     for event in events:
@@ -1131,6 +1254,7 @@ def attribute_failure(ctx: Context, work: FileRun, result: ProcResult, output: s
     stage = isolation_stage(output)
     failed = ncg.parse_short_summary(output)
     if stage is not None and failed and all(ncg.is_attributable(n, work.selected) for n in failed):
+        work.record["isolation_failure"] = ncg.isolation_failure(stage, failed, output)
         fail_run(
             work,
             "selected_test_fails_in_isolation",
@@ -1153,9 +1277,13 @@ def record_mutants(ctx: Context, work: FileRun, expect_unrun: bool) -> None:
     """Read mutmut's results back in a `_collect` subprocess and score them (TD 5.9 steps 7 to 9)."""
     ws = work.workspace
     assert ws is not None
-    result = run_phase(
-        ctx, PHASE_COLLECT, child_argv(ctx, "_collect", work.path), ws.tree, child_env(ctx)
-    )
+    started = ctx.clock.monotonic()
+    try:
+        result = run_phase(
+            ctx, PHASE_COLLECT, child_argv(ctx, "_collect", work.path), ws.tree, child_env(ctx)
+        )
+    finally:
+        work.record["collect_seconds"] = round(ctx.clock.monotonic() - started, 3)
     unreadable = f"mutation results could not be read: {work.path}"
     doc = parse_child_json(result, ncg.SCHEMA_COLLECT, work.path, unreadable)
     check_gate_file(doc.get("gate_file"), ws, ctx)
@@ -1186,9 +1314,14 @@ def mutate_file(ctx: Context, work: FileRun) -> None:
     ws = work.workspace
     assert ws is not None
     argv = [ctx.opts.python_exe, "-m", "mutmut", "run", *work.gated_names]
-    result = run_phase(ctx, PHASE_MUTMUT, argv, ws.tree, mutation_env(ctx, work, ws))
+    started = ctx.clock.monotonic()
+    try:
+        result = run_phase(ctx, PHASE_MUTMUT, argv, ws.tree, mutation_env(ctx, work, ws))
+    finally:
+        work.record["mutmut_seconds"] = round(ctx.clock.monotonic() - started, 3)
     events = read_events(ws.events)
     check_integrity(events, ws, work.selected)
+    check_workspace_unchanged(ws, work.path)
     output = ncg.ANSI_RE.sub("", result.stdout + "\n" + result.stderr)
     copies = sorted({str(e.get("node")) for e in events if e.get("event") == "repo_copy"})
     found = runtime_findings(events, work)

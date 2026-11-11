@@ -153,12 +153,18 @@ def touches_protected_root(path: Path, roots: list[Path]) -> bool:
     return any(path == root or path in root.parents for root in roots)
 
 
+def is_trampoline_file(name: str) -> bool:
+    """mutmut's own trampoline module; it sits between a gated file's wrappers and the test."""
+    return os.path.normcase(name).replace("\\", "/").endswith("/mutmut/mutation/trampoline.py")
+
+
 def importer_file() -> str:
-    """The file of the first frame that is neither this plugin nor importlib."""
+    """The file of the first frame that is not this plugin, importlib or mutmut's trampoline."""
     frame: Any = sys._getframe(1)
     while frame is not None:
         name = frame.f_code.co_filename
-        if name != _THIS_FILE and not name.startswith("<frozen importlib"):
+        skipped = name == _THIS_FILE or name.startswith("<frozen importlib")
+        if not skipped and not is_trampoline_file(name):
             return name
         frame = frame.f_back
     return "?"

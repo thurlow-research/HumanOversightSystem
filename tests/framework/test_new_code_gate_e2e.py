@@ -25,6 +25,13 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
+
+@pytest.fixture(autouse=True)
+def run_in_tmp_path(tmp_path, monkeypatch):
+    """A relative path in a test lands in its tmp dir, never in the developer's checkout (RV3-7a)."""
+    monkeypatch.chdir(tmp_path)
+
+
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 GATE_FILES = (
     "scripts/__init__.py",

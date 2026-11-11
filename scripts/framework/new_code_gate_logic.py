@@ -253,10 +253,30 @@ FILE_FIELDS = (
     "fail_reasons",
     "seconds",
     "enumerate_seconds",
+    "workspace_seconds",
+    "mutmut_seconds",
+    "collect_seconds",
+    "isolation_failure",
 )
 
-# Wall-clock fields: kept out of records_sha256 so two runs of one PR hash alike (AC-29).
-TIMING_FIELDS = frozenset({"seconds", "enumerate_seconds"})
+# Durations and the isolation evidence (temp paths, test output): kept out of records_sha256 so
+# two runs of one PR hash alike (AC-29; ADR-2304 section 2g RV3-4).
+UNHASHED_FIELDS = frozenset(
+    {
+        "seconds",
+        "enumerate_seconds",
+        "workspace_seconds",
+        "mutmut_seconds",
+        "collect_seconds",
+        "isolation_failure",
+    }
+)
+MUTMUT_ROOT_OUTPUTS = frozenset({"mutmut-stats.json", "mutmut-cicd-stats.json", "mutmut-debug.log"})
+MUTMUT_OUTPUT_DIRS = frozenset({"__pycache__", ".pytest_cache"})
+MAX_SUMMARY_LINES = 20
+MAX_SUMMARY_LINE_CHARS = 2048
+ISOLATION_TAIL_LINES = 60
+ISOLATION_TAIL_CHARS = 8192
 
 _DECISION_STMTS = (
     ast.If,
@@ -1281,6 +1301,20 @@ def mutmut_also_copy(
     return sorted(dirs) + sorted(files)
 
 
+def mutmut_output_paths(gated_path: str) -> frozenset[str]:
+    """Paths under `mutants/` that mutmut 3.8.1 itself writes during a run (ADR-2304 RV3-7b).
+
+    The trampolined copy of the gated file and its two index files, plus the run's stats, CI stats
+    and debug log. Pinned against mutmut's source by a test, so a mutmut bump is a red build.
+    """
+    return MUTMUT_ROOT_OUTPUTS | {gated_path, f"{gated_path}.meta", f"{gated_path}.spans"}
+
+
+def is_mutmut_output_dir(name: str) -> bool:
+    """`__pycache__` and `.pytest_cache`: written by the interpreter and pytest inside `mutants/`."""
+    return name in MUTMUT_OUTPUT_DIRS
+
+
 def mutmut_table(
     source_paths: Sequence[str],
     gated_path: str,
@@ -1409,18 +1443,44 @@ def mutant_score_pct(killed: int, total: int) -> float | None:
     return percent_floor(killed, total)
 
 
-def parse_short_summary(output: str) -> list[str]:
-    """Node IDs from the LAST pytest short-summary section only (TD 5.9 step 6)."""
+def short_summary_lines(output: str) -> list[str]:
+    """The FAILED/ERROR lines of the LAST pytest short-summary section, verbatim (TD 5.9 step 6)."""
     lines = ANSI_RE.sub("", output).splitlines()
     headers = [i for i, line in enumerate(lines) if SUMMARY_HEADER_RE.match(line.strip())]
     if not headers:
         return []
-    ids = []
+    section = []
     for line in lines[headers[-1] + 1 :]:
         if not line.startswith(("FAILED ", "ERROR ")):
             break
-        ids.append(line.split(" ", 1)[1].split(" - ", 1)[0].strip())
-    return ids
+        section.append(line)
+    return section
+
+
+def parse_short_summary(output: str) -> list[str]:
+    """Node IDs from the LAST pytest short-summary section only (TD 5.9 step 6)."""
+    return [
+        line.split(" ", 1)[1].split(" - ", 1)[0].strip() for line in short_summary_lines(output)
+    ]
+
+
+def tail_text(output: str, max_lines: int, max_chars: int) -> str:
+    """The last `max_lines` lines of `output`, bounded to `max_chars` characters."""
+    lines = output.strip().splitlines()
+    return bound_text("\n".join(lines[-max_lines:]), max_chars)
+
+
+def isolation_failure(stage: str, node_ids: Sequence[str], output: str) -> dict[str, Any]:
+    """The evidence kept for `selected_test_fails_in_isolation` (ADR-2304 RV3-4a)."""
+    return {
+        "stage": stage,
+        "node_ids": [bound_text(n, MAX_NODE_ID_CHARS) for n in node_ids],
+        "summary_lines": [
+            bound_text(line, MAX_SUMMARY_LINE_CHARS)
+            for line in short_summary_lines(output)[:MAX_SUMMARY_LINES]
+        ],
+        "output_tail": tail_text(output, ISOLATION_TAIL_LINES, ISOLATION_TAIL_CHARS),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1551,10 @@ def blank_file_record(path: str, kind: str) -> dict[str, Any]:
         "fail_reasons": [],
         "seconds": 0.0,
         "enumerate_seconds": 0.0,
+        "workspace_seconds": 0.0,
+        "mutmut_seconds": 0.0,
+        "collect_seconds": 0.0,
+        "isolation_failure": None,
     }
 
 
@@ -1510,7 +1574,7 @@ def findings_fields(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _drop_seconds(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: _drop_seconds(v) for k, v in value.items() if k not in TIMING_FIELDS}
+        return {k: _drop_seconds(v) for k, v in value.items() if k not in UNHASHED_FIELDS}
     if isinstance(value, list):
         return [_drop_seconds(v) for v in value]
     return value
@@ -1709,6 +1773,15 @@ def _error_lines(verdict: Mapping[str, Any]) -> list[str]:
     ]
 
 
+def _isolation_lines(rec: Mapping[str, Any]) -> list[str]:
+    """The first parsed short-summary line of an isolation failure, escaped (RV3-4a)."""
+    failure = rec.get("isolation_failure")
+    lines = failure.get("summary_lines") if isinstance(failure, dict) else None
+    if not isinstance(lines, list) or not lines:
+        return []
+    return [f"- {_cell(lines[0])}"]
+
+
 def render_summary(verdict: Mapping[str, Any]) -> str:
     """The Markdown check summary (TD 5.16)."""
     files = verdict["files"]
@@ -1727,6 +1800,7 @@ def render_summary(verdict: Mapping[str, Any]) -> str:
         row = [rec["path"], rec["kind"], cov, score, rec["selection_method"], rec["outcome"], codes]
         out.append("| " + " | ".join(_cell(c) for c in row) + " |")
         details.extend(f"- {_cell(r['message'])}" for r in rec["fail_reasons"])
+        details.extend(_isolation_lines(rec))
     passed = sum(1 for r in files if r["outcome"] == "pass")
     out.append("")
     out.append(f"{len(files)} gated file(s): {passed} pass, overall {verdict['overall']}.")

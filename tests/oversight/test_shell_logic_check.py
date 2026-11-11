@@ -286,6 +286,16 @@ class TestDecisionLines:
     def test_scan_file_unreadable_returns_zero_none(self, tmp_path):
         assert _scan_file(str(tmp_path / "missing.sh")) == (0, None)
 
+    def test_scan_file_replaces_invalid_utf8(self, tmp_path):
+        """SLC-1 (#2304 RV3-5): bytes that are not UTF-8 are replaced, never fatal.
+
+        `UnicodeDecodeError` and `LookupError` are not `OSError`, so a wrong `errors` argument
+        would raise here instead of returning the construct's count and first line.
+        """
+        path = tmp_path / "binary_prefix.sh"
+        path.write_bytes(b'\xff\xfe\nif [ -z "$1" ]; then\n  echo a\nelse\n  echo b\nfi\n')
+        assert _scan_file(str(path)) == (1, 2)
+
     def test_decision_lines_sorted_duplicates_preserved(self, tmp_path):
         lines = NESTED_FORKS_SH.splitlines()
         assert decision_lines(lines) == [1, 2]

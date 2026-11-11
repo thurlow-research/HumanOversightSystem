@@ -149,6 +149,294 @@ def test_no_in_process_test_reads_the_real_git_or_claude(path):
     assert offenders == []
 
 
+GATE_SOURCE_MARKERS = ("new_code_gate", "shell_logic_check")
+SOURCE_READERS = {"read_text", "read_bytes", "open", "getsource", "getsourcelines", "read_exact"}
+GATE_ALIASES = {"ncg", "gate", "plugin"}
+FOUR_GATE_TEST_MODULES = (
+    TESTS / "framework" / "test_new_code_gate_logic.py",
+    TESTS / "framework" / "test_new_code_gate_measure.py",
+    TESTS / "framework" / "test_new_code_gate_plugin.py",
+    E2E,
+)
+
+
+def is_gate_module_name(name):
+    return name.startswith(GATE_PREFIX) or name.endswith("validators.shell_logic_check")
+
+
+def names_from_gate_imports(tree):
+    """Every local name bound by an import of a gate module or of something inside one."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if is_gate_module_name(module) or is_gate_module_name(f"{module}.{alias.name}"):
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            names.update(
+                (alias.asname or alias.name)
+                for alias in node.names
+                if is_gate_module_name(alias.name)
+            )
+    return names
+
+
+def mentions_gate_source(node, path_names):
+    for n in ast.walk(node):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            if any(marker in n.value for marker in GATE_SOURCE_MARKERS):
+                return True
+        if isinstance(n, ast.Name) and n.id in path_names:
+            return True
+        if isinstance(n, ast.Attribute) and n.attr == "__file__":
+            if isinstance(n.value, ast.Name) and n.value.id in GATE_ALIASES:
+                return True
+    return False
+
+
+def gate_source_path_names(tree):
+    """Module-level names assigned from an expression that names a gate file or a module's `__file__`."""
+    return {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign) and mentions_gate_source(node.value, set())
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+
+def reads_source(node):
+    return any(
+        isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Attribute) and n.func.attr in SOURCE_READERS)
+            or (isinstance(n.func, ast.Name) and n.func.id in SOURCE_READERS)
+        )
+        for n in ast.walk(node)
+    )
+
+
+def reads_gate_source(node, imported, path_names):
+    """A read of a gate file's text, or `inspect.getsource` of something a gate module defines."""
+    names_a_file = reads_source(node) and mentions_gate_source(node, path_names)
+    inspects_gate_code = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr.startswith("getsource")
+        and any(
+            (isinstance(a, ast.Name) and a.id in imported | GATE_ALIASES)
+            or (
+                isinstance(a, ast.Attribute)
+                and isinstance(a.value, ast.Name)
+                and a.value.id in imported | GATE_ALIASES
+            )
+            for a in n.args
+        )
+        for n in ast.walk(node)
+    )
+    return names_a_file or inspects_gate_code
+
+
+def gate_code_calls(node, imported):
+    return [
+        n
+        for n in ast.walk(node)
+        if (
+            isinstance(n, ast.Attribute)
+            and isinstance(n.value, ast.Name)
+            and n.value.id in GATE_ALIASES
+        )
+        or (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in imported)
+    ]
+
+
+@pytest.mark.parametrize("path", IN_PROCESS_TESTS + (E2E,), ids=lambda p: p.name)
+def test_source_reading_gate_tests_run_no_gate_code(path):
+    """G-SRCREAD (RV3-3a): a test that reads gate source in a workspace reads mutmut's copy and kills
+    nothing, and a test that also runs gate code is selected for it. So a test does one or the other.
+    """
+    tree = parse(path)
+    imported = names_from_gate_imports(tree)
+    path_names = gate_source_path_names(tree)
+    offenders = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name.startswith("test_")
+        and reads_gate_source(node, imported, path_names)
+        and gate_code_calls(node, imported)
+    ]
+    assert offenders == []
+
+
+def test_g_srcread_sees_what_it_is_meant_to_see():
+    reader = ast.parse(
+        "def test_a():\n    text = Path('scripts/framework/new_code_gate.py').read_text()\n"
+        "    assert ncg.X in text\n"
+    )
+    clean = ast.parse(
+        "def test_a():\n    text = Path('scripts/framework/new_code_gate.py').read_text()\n"
+        "    assert 'ncg.X' in text\n"
+    )
+    other = ast.parse("def test_a():\n    assert ncg.X\n    Path('notes.txt').read_text()\n")
+    called = ast.parse(
+        "from scripts.framework.new_code_gate_logic import helper\n"
+        "def test_a():\n    Path('new_code_gate.py').read_text()\n    helper()\n"
+    )
+    inspected = ast.parse(
+        "from scripts.oversight.validators.shell_logic_check import decision_lines\n"
+        "def test_a():\n    src = inspect.getsource(decision_lines)\n    decision_lines([])\n"
+    )
+    for tree, expected in (
+        (reader, True),
+        (clean, False),
+        (other, False),
+        (called, True),
+        (inspected, True),
+    ):
+        func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+        imported = names_from_gate_imports(tree)
+        flagged = reads_gate_source(func, imported, set()) and bool(gate_code_calls(func, imported))
+        assert flagged is expected
+
+
+def config_assignments(tree):
+    """(value node, line) of every assignment to a `_config` attribute, by `=` or by `setattr`."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            found.extend(
+                (node.value, node.lineno)
+                for t in node.targets
+                if isinstance(t, ast.Attribute) and t.attr == "_config"
+            )
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute):
+            if node.target.attr == "_config" and node.value is not None:
+                found.append((node.value, node.lineno))
+        elif isinstance(node, ast.Call) and len(node.args) >= 3:
+            if isinstance(node.args[1], ast.Constant) and node.args[1].value == "_config":
+                found.append((node.args[2], node.lineno))
+    return found
+
+
+def is_config_copy(value):
+    """`copy.copy(<anything>.config())`."""
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "copy"
+        and isinstance(value.func.value, ast.Name)
+        and value.func.value.id == "copy"
+        and len(value.args) == 1
+        and isinstance(value.args[0], ast.Call)
+        and isinstance(value.args[0].func, ast.Attribute)
+        and value.args[0].func.attr == "config"
+    )
+
+
+def allowed_config_values(tree):
+    """Names bound by `copy.copy(...config())`, plus the saved original."""
+    bound = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and is_config_copy(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    return bound, {"saved"}
+
+
+def refused_config_values(tree):
+    bound, saved = allowed_config_values(tree)
+    refused = []
+    for value, line in config_assignments(tree):
+        name = value.id if isinstance(value, ast.Name) else getattr(value, "attr", None)
+        ok = (isinstance(value, ast.Name) and value.id in bound | saved) or (
+            isinstance(value, ast.Attribute) and value.attr in saved
+        )
+        if not ok:
+            refused.append((line, name or type(value).__name__))
+    return refused
+
+
+@pytest.mark.parametrize("path", FOUR_GATE_TEST_MODULES, ids=lambda p: p.name)
+def test_no_gate_test_puts_a_non_config_in_mutmut_config(path):
+    """G-MUTSTATE (RV3-3c): the stats run's trampoline reads `config()` on every gated call, so a
+    sentinel in `mutmut.configuration._config` is a real `Config` copy, never `object()`."""
+    assert refused_config_values(parse(path)) == []
+
+
+def test_g_mutstate_refuses_what_it_should():
+    def refused(code):
+        return refused_config_values(ast.parse(code))
+
+    assert refused("m._config = object()\n") == [(1, "Call")]
+    assert refused("m._config = None\n") == [(1, "Constant")]
+    assert refused("setattr(m, '_config', object())\n") == [(1, "Call")]
+    assert refused("monkeypatch.setattr(m, '_config', 5)\n") == [(1, "Constant")]
+    assert refused("s = copy.copy(m.config())\nm._config = s\nm._config = saved\n") == []
+    assert refused("s = copy.copy(m.config())\nself.module._config = self.saved\n") == []
+    assert refused("s = copy.copy(m.cfg())\nm._config = s\n") == [(2, "s")]
+    assert refused("s = copy.deepcopy(m.config())\nm._config = s\n") == [(2, "s")]
+    assert refused("m._config: object = object()\n") == [(1, "Call")]
+    assert refused("m.other = object()\nx = 1\n") == []
+
+
+@pytest.mark.parametrize("path", FOUR_GATE_TEST_MODULES, ids=lambda p: p.name)
+def test_ws_integ_3_each_gate_test_module_starts_every_test_in_its_own_tmp_path(path):
+    """RV3-7a: a mutant that makes a computed path relative writes into the test's tmp dir."""
+    fixtures = [
+        node
+        for node in ast.walk(parse(path))
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(d, ast.Call)
+            and ast.unparse(d.func) == "pytest.fixture"
+            and any(
+                k.arg == "autouse" and getattr(k.value, "value", None) is True for k in d.keywords
+            )
+            for d in node.decorator_list
+        )
+    ]
+    changes_dir = [
+        f.name
+        for f in fixtures
+        if any(
+            isinstance(n, ast.Call)
+            and ast.unparse(n.func) == "monkeypatch.chdir"
+            and [ast.unparse(a) for a in n.args] == ["tmp_path"]
+            for n in ast.walk(f)
+        )
+        and [a.arg for a in f.args.args] == ["tmp_path", "monkeypatch"]
+    ]
+    assert len(changes_dir) == 1
+
+
+def collected_ids():
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+        + ["-o", "addopts="]
+        + [str(p.relative_to(ROOT)) for p in FOUR_GATE_TEST_MODULES + (Path(__file__).resolve(),)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return [line for line in proc.stdout.splitlines() if "::" in line]
+
+
+def test_every_gate_test_id_is_argv_safe_so_no_selection_widens_to_a_module():
+    """`sanitize_node_ids` widens an id with whitespace to its module, which runs every test in it
+    in every mutation workspace. Parameters made of code text need explicit ids."""
+    ids = collected_ids()
+    assert len(ids) > 500
+    unsafe = [i for i in ids if not re.fullmatch(r"tests/[\w./\-]+\.py(::\S+)?", i)]
+    assert unsafe == []
+
+
 def gate_decorators():
     found = []
     for path in GATE_MODULES:
