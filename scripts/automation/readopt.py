@@ -44,6 +44,8 @@ Exit codes
       ``delete-head``: 0 = head is gone (DELETED or ALREADY-GONE), 2 = error or
       uncertainty (nothing deleted, or outcome unknown after a push timeout),
       3 = refused by a safety rule (KEPT; a valid outcome, not a failure).
+      ``prune-attempts``: 3 = at least one branch was kept for ``archive-failed`` (others
+      may still have been deleted).
 
 Safety
 ------
@@ -521,6 +523,7 @@ def prune_attempts(
     open_pr: Optional[Callable[[str], Optional[bool]]] = None,
     base: str = "origin/main",
     issue_states: Optional[IssueStatesLookup] = None,
+    archive_failed: "Optional[list[str]]" = None,
 ) -> "list[str]":
     """Delete local ``worker-<issue>-*`` attempts. Closed issue: delete all,
     but only after the issue's state is verified ``closed`` server-side (an
@@ -540,7 +543,9 @@ def prune_attempts(
     Archive-before-delete (#2314): a tip not reachable from ``base`` is first written to
     ``refs/archive/reap/<branch>@<tip12>`` (``ARCHIVED`` line); on failure the branch is
     kept (``KEEP ... reason=archive-failed``). The remote delete follows the local one only,
-    so it is covered by the same archive."""
+    so it is covered by the same archive. Branches kept for a failed archive are appended
+    to ``archive_failed`` (the CLI then exits 3). A dry run prints ``archive=<ref>`` only
+    for a tip not on ``base``."""
     git = git or make_git(repo)
     if issue_closed:
         try:
@@ -592,11 +597,22 @@ def prune_attempts(
             continue
         recs = [rec for b, rec in records if b == branch]
         if dry_run:
-            print(f"WOULD-DELETE branch={branch}")
+            line = f"WOULD-DELETE branch={branch}"
+            if not _tip_on_base(git, tips[branch], base):
+                line += f" archive={_printable_name(_archive_ref(branch, tips[branch]))}"
+            print(line)
             deleted.append(branch)
             remote.step(branch, tips[branch], dry_run=True)
         elif not _archive_unlanded(git, branch, tips[branch], base):
-            print(f"KEEP branch={_printable_name(branch)} reason=archive-failed")
+            print(
+                f"KEEP branch={_printable_name(branch)} reason=archive-failed"
+                f" where=local tip={tips[branch]}"
+            )
+            cause = _one_line(getattr(git, "first_error", "") or "")
+            if cause:
+                print(f"WARN: archive of '{_printable_name(branch)}' failed: {cause}")
+            if archive_failed is not None:
+                archive_failed.append(branch)
         elif _delete_branch(git, branch, recs, tips[branch]):
             print(f"DELETED branch={branch}")
             deleted.append(branch)
@@ -606,13 +622,17 @@ def prune_attempts(
     return deleted
 
 
+def _tip_on_base(git: GitRunner, tip: str, base: str) -> bool:
+    rc, _ = git(["merge-base", "--is-ancestor", tip, base])
+    return rc == 0
+
+
 def _archive_unlanded(git: GitRunner, branch: str, tip: str, base: str) -> bool:
     """Archive-before-delete for a local branch about to be deleted (#2314). A tip
     already reachable from ``base`` needs no archive. Otherwise write the recovery ref
     and print the ARCHIVED line; False (caller keeps the branch) when the write fails.
     An unreadable ancestry check is treated as not landed: archiving is always safe."""
-    rc, _ = git(["merge-base", "--is-ancestor", tip, base])
-    if rc == 0:
+    if _tip_on_base(git, tip, base):
         return True
     if not _write_local_archive(git, branch, tip):
         return False
@@ -1876,6 +1896,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 remote_scope=args.remote_scope or "worker",
                 issue_closed=not args.no_issue_closed,
             )
+        kept_unarchived: "list[str]" = []
         prune_attempts(
             repo,
             args.issue,
@@ -1883,8 +1904,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             keep=args.keep,
             issue_closed=args.issue_closed,
             dry_run=args.dry_run,
+            archive_failed=kept_unarchived,
         )
-        return 0
+        return 3 if kept_unarchived else 0
     except GitError as exc:
         print(f"readopt: {_one_line(exc)}", file=sys.stderr)
         return 2

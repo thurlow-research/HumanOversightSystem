@@ -408,13 +408,38 @@ def test_prune_archive_failure_keeps_branch(attempts, capsys, monkeypatch):
     assert deleted == []
     assert {"worker-20-old", "worker-20-mid"} <= branches(attempts)
     out = capsys.readouterr().out
-    assert "KEEP branch=worker-20-old reason=archive-failed" in out
+    tip = git(attempts, "rev-parse", "worker-20-old")
+    assert f"KEEP branch=worker-20-old reason=archive-failed where=local tip={tip}" in out
     assert "DELETED" not in out
 
 
-def test_prune_dry_run_writes_no_archive(attempts):
+def test_prune_dry_run_writes_no_archive(attempts, capsys):
     readopt.prune_attempts(attempts, 20, dry_run=True)
     assert git(attempts, "for-each-ref", "refs/archive/") == ""
+    tip = git(attempts, "rev-parse", "worker-20-old")
+    assert (
+        f"WOULD-DELETE branch=worker-20-old archive=refs/archive/reap/worker-20-old@{tip[:12]}"
+        in capsys.readouterr().out
+    )
+
+
+def test_prune_dry_run_landed_tip_has_no_archive_field(repo, capsys):
+    make_branch(repo, "worker-30-a")
+    make_branch(repo, "worker-30-b")
+    land_into_main(repo, "worker-30-a")
+    git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    readopt.prune_attempts(repo, 30, keep="worker-30-b", dry_run=True)
+    assert "WOULD-DELETE branch=worker-30-a\n" in capsys.readouterr().out
+
+
+def test_prune_cli_exits_3_when_archive_failed(attempts, monkeypatch):
+    monkeypatch.setattr(readopt, "_write_local_archive", lambda *a: False)
+    assert readopt.main(["--repo", str(attempts), "prune-attempts", "--issue", "20"]) == 3
+    assert "worker-20-old" in branches(attempts)
+
+
+def test_prune_cli_exits_0_when_archived(attempts):
+    assert readopt.main(["--repo", str(attempts), "prune-attempts", "--issue", "20"]) == 0
 
 
 def test_fmt_archive_field_is_printable_escaped():
