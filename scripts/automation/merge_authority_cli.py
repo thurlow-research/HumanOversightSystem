@@ -1141,7 +1141,7 @@ def _write_bounce(
             pr["number"],
             cid=cid,
             reason_category=merge_authority.derive_reason_category(f.cls for f in to_bounce),
-            summary=merge_authority.bounce_summary(len(to_bounce), pr["head"]["sha"]),
+            summary=merge_authority.bounce_summary_for(to_bounce, pr["head"]["sha"]),
             repo_root=str(ctx.repo_root),
             head_sha=pr["head"]["sha"],
             findings=list(to_bounce),
