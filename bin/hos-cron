@@ -1772,6 +1772,10 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     _RB_EVENT_RE='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
     # WOULD-REAP (dry run only; #2313): same shape as REAPED plus an optional archive= ref.
     _RB_WOULD_RE='^WOULD-REAP branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote) pr=(#[0-9]+|-) tip=([0-9a-f]{40})( archive=[A-Za-z0-9._/@+-]+)?$'
+    # #2314: archive-before-delete lines. ARCHIVED carries the recovery ref; KEEP is audited
+    # only for reason=archive-failed so a run whose archive writes all fail is visible.
+    _RB_ARCHIVED_RE='^ARCHIVED branch=([A-Za-z0-9._/@+-]+) where=(local|remote) ref=([A-Za-z0-9._/@+-]+) tip=([0-9a-f]{40})$'
+    _RB_ARCHFAIL_RE='^KEEP branch=([A-Za-z0-9._/@+-]+) reason=archive-failed where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
     _RB_SUMMARY_RE='^SUMMARY reaped_local=[0-9]+ reaped_remote=[0-9]+ kept=([0-9]+) failed=[0-9]+ deferred=[0-9]+ api_calls=[0-9]+ aborted=([01])( [a-z_]+=[A-Za-z0-9_-]+)*$'
     # Loud signal (#2313): many git-error KEEPs in one run, e.g. a read-only .git.
     _RB_GITERR_RE='^WARN: git-error KEEPs=([0-9]+) exceeds ([0-9]+) — first stderr: (.*)$'
@@ -1788,6 +1792,13 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
         [[ "${BASH_REMATCH[1]}" == "REAPED" ]] || _rb_event="cycle-branch-reap-failed"
         _audit "$_rb_event" "role=overseer" "branch=${BASH_REMATCH[2]}" "reason=${BASH_REMATCH[3]}" \
           "where=${BASH_REMATCH[4]}" "pr=${BASH_REMATCH[6]:--}" "tip=${BASH_REMATCH[7]}"
+      elif [[ "$_rb_line" =~ $_RB_ARCHIVED_RE ]]; then
+        _audit cycle-branch-reap-archived "role=overseer" "branch=${BASH_REMATCH[1]}" \
+          "where=${BASH_REMATCH[2]}" "ref=${BASH_REMATCH[3]}" "tip=${BASH_REMATCH[4]}"
+      elif [[ "$_rb_line" =~ $_RB_ARCHFAIL_RE ]]; then
+        echo "$LOG_PREFIX WARN: readopt (overseer) could not archive ${BASH_REMATCH[1]} — branch kept (#2314)"
+        _audit cycle-branch-reap-archive-failed "role=overseer" "branch=${BASH_REMATCH[1]}" \
+          "where=${BASH_REMATCH[2]}" "tip=${BASH_REMATCH[5]}"
       elif [[ "$_rb_line" =~ $_RB_WOULD_RE ]]; then
         _rb_would=$((_rb_would + 1))
         if [[ "${BASH_REMATCH[3]}" == "local" ]]; then _rb_would_local=$((_rb_would_local + 1)); else _rb_would_remote=$((_rb_would_remote + 1)); fi

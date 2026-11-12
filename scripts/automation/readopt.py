@@ -56,7 +56,10 @@ its own line, ``ARCHIVED branch=<b> where=<local|remote> ref=<ref> tip=<sha>``, 
 before the delete; REAPED/REAP-FAILED lines are unchanged (bin/hos-cron audits them with an
 end-anchored regex). WOULD-REAP lines in a dry run carry ``archive=<ref>``. The ref lives
 outside ``refs/heads``
-so no branch selector sees it. ``--list-archives`` lists them with age and NEVER prunes;
+so no branch selector sees it. ``prune-attempts`` archives the same way (a tip not on
+base). ``delete-head`` needs none: ``refs/pull/N/head`` retains a closed PR's head.
+``--list-archives`` lists them with ``age_days`` = the TIP COMMIT's age, not the archive's
+(git records no ref creation time), and NEVER prunes;
 pruning archives is a separate human-authorized step. RESTORE:
 ``git fetch origin refs/archive/reap/<name>@<tip12>:refs/archive/reap/<name>@<tip12>``
 (if only on origin), then ``git branch <name> refs/archive/reap/<name>@<tip12>``.
@@ -532,7 +535,12 @@ def prune_attempts(
 
     After each successful local delete of attempt B at tip T, B's remote head is
     deleted too (#2286) iff it is still at T and has no open PR; any remote
-    problem is a WARN that never fails or undoes the local delete."""
+    problem is a WARN that never fails or undoes the local delete.
+
+    Archive-before-delete (#2314): a tip not reachable from ``base`` is first written to
+    ``refs/archive/reap/<branch>@<tip12>`` (``ARCHIVED`` line); on failure the branch is
+    kept (``KEEP ... reason=archive-failed``). The remote delete follows the local one only,
+    so it is covered by the same archive."""
     git = git or make_git(repo)
     if issue_closed:
         try:
@@ -587,6 +595,8 @@ def prune_attempts(
             print(f"WOULD-DELETE branch={branch}")
             deleted.append(branch)
             remote.step(branch, tips[branch], dry_run=True)
+        elif not _archive_unlanded(git, branch, tips[branch], base):
+            print(f"KEEP branch={_printable_name(branch)} reason=archive-failed")
         elif _delete_branch(git, branch, recs, tips[branch]):
             print(f"DELETED branch={branch}")
             deleted.append(branch)
@@ -594,6 +604,20 @@ def prune_attempts(
         else:
             print(f"WARN: could not delete '{branch}'")
     return deleted
+
+
+def _archive_unlanded(git: GitRunner, branch: str, tip: str, base: str) -> bool:
+    """Archive-before-delete for a local branch about to be deleted (#2314). A tip
+    already reachable from ``base`` needs no archive. Otherwise write the recovery ref
+    and print the ARCHIVED line; False (caller keeps the branch) when the write fails.
+    An unreadable ancestry check is treated as not landed: archiving is always safe."""
+    rc, _ = git(["merge-base", "--is-ancestor", tip, base])
+    if rc == 0:
+        return True
+    if not _write_local_archive(git, branch, tip):
+        return False
+    print(_archived_text(branch, "local", tip))
+    return True
 
 
 def _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug) -> "list[str]":
@@ -1010,7 +1034,7 @@ def _fmt(
         line += f" pr={d.pr}"
     line += f" tip={d.ref.tip}"
     if archive:
-        line += f" archive={archive}"
+        line += f" archive={_printable_name(archive)}"
     return line
 
 
@@ -1018,10 +1042,14 @@ def _archived_line(d: _Decision) -> str:
     """Printed after a successful archive write, before the delete. REAPED/REAP-FAILED
     lines must stay byte-identical to the pre-#2293 shape: bin/hos-cron audits them with an
     end-anchored regex, so the archive is reported on its own line instead."""
-    ref = _archive_ref(d.ref.name, d.ref.tip)
+    return _archived_text(d.ref.name, d.ref.where, d.ref.tip)
+
+
+def _archived_text(name: str, where: str, tip: str) -> str:
+    ref = _archive_ref(name, tip)
     return (
-        f"ARCHIVED branch={_printable_name(d.ref.name)} where={d.ref.where}"
-        f" ref={_printable_name(ref)} tip={d.ref.tip}"
+        f"ARCHIVED branch={_printable_name(name)} where={where}"
+        f" ref={_printable_name(ref)} tip={tip}"
     )
 
 
@@ -1588,7 +1616,11 @@ def delete_head(
     result line last on stdout and returns 0 (gone), 2 (error) or 3 (KEPT).
     Fails closed: every exception becomes ERROR with nothing deleted, and an open-PR
     lookup that is not a genuine list (404, empty body, dict) is KEPT
-    reason=pr-lookup-indeterminate [#2298]."""
+    reason=pr-lookup-indeterminate [#2298].
+
+    No archive ref is written (#2314): the head of a closed same-repo PR is retained by
+    GitHub's ``refs/pull/N/head`` (forks are KEPT), and the sha deleted is the PR head sha
+    (a moved branch is KEPT reason=moved), so the deleted tip stays recoverable."""
 
     def result(code: int, line: str) -> int:
         print(line)
@@ -1699,8 +1731,9 @@ def list_archives(
     age_days: int = DEFAULT_ARCHIVE_AGE_DAYS,
 ) -> int:
     """#2293: list local ``refs/archive/reap/*``. Read-only: no deletion, no GitHub or
-    network call. Git records no ref creation time, so the age is the tip COMMIT's age
-    (the same accepted limitation as the remote-head grace)."""
+    network call. Git records no ref creation time, so ``age_days`` is the tip COMMIT's
+    age, NOT the archive's age (#2314): a fresh archive of an old branch is flagged
+    ``older-than`` at once, so the flag alone must never authorise pruning."""
     git = git or make_git(repo)
     now = time.time() if now is None else now
     rc, out = git(
@@ -1781,8 +1814,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ro.add_argument(
         "--list-archives",
         action="store_true",
-        help="#2293: list refs/archive/reap/* with age and exit; deletes nothing. Pruning"
-        " archives is a separate human-authorized step",
+        help="#2293: list refs/archive/reap/* and exit; deletes nothing. age_days is the"
+        " TIP COMMIT's age, not the archive's age. Pruning archives is a separate"
+        " human-authorized step",
     )
     ro.add_argument("--archive-age-days", type=_positive_int, default=DEFAULT_ARCHIVE_AGE_DAYS)
     ro.add_argument(

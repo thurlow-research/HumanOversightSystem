@@ -316,8 +316,17 @@ Related audit events (role `overseer`):
 |---|---|
 | `cycle-branch-reap-dry-run` | Once per dry run: `would_reap`, `would_local`, `would_remote`, `kept`, `aborted`, `items` (capped at 500 chars). |
 | `cycle-branch-reap-git-error` | More than 3 KEEPs in one run were `git-error` (typically a read-only `.git`): `count`, `threshold`, `cause` (first git stderr line, sanitized, capped). A WARN is also logged. |
+| `cycle-branch-reap-archived` | A recovery ref was written before a delete (#2314): `branch`, `where`, `ref` (`refs/archive/reap/<branch>@<tip12>`), `tip`. |
+| `cycle-branch-reap-archive-failed` | The archive write failed, so the branch was kept (`KEEP reason=archive-failed`): `branch`, `where`, `tip`. A WARN is also logged. A run where every archive fails is inert, not silent. |
 | `cycle-review-worktree-cleanup` | Cycle-end review-worktree sweep: `removed`, `kept` counts. |
 | `cycle-review-worktree-kept` | One per kept review worktree (`head-moved`: a commit was made in it; a human must inspect): `pr`, `path`, `reason`. |
+
+Archive notes (#2314): `readopt reap-orphans --list-archives` reports `age_days` from the
+**tip commit's** date, not the archive's creation time (git records none), so a fresh archive of
+an old branch is flagged `older-than=90d` immediately. Never prune archives on that flag alone.
+GitHub acceptance of pushes to `refs/archive/*` from the worker App token is unverified; check it
+on the first attended remote reap (#2314 item 4). A `--force-with-lease` archive push is a
+possible hardening, not implemented.
 
 ### Active target release (`target_release`)
 

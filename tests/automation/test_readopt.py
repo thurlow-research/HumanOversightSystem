@@ -381,6 +381,82 @@ def test_prune_keeps_newest_and_deletes_duplicates_and_records(attempts):
     assert not rec_old.exists()
 
 
+def test_prune_archives_unlanded_tip_before_delete(attempts, capsys):
+    tip = git(attempts, "rev-parse", "worker-20-old")
+    readopt.prune_attempts(attempts, 20)
+    ref = f"refs/archive/reap/worker-20-old@{tip[:12]}"
+    assert git(attempts, "rev-parse", ref) == tip
+    assert f"ARCHIVED branch=worker-20-old where=local ref={ref} tip={tip}" in (
+        capsys.readouterr().out
+    )
+
+
+def test_prune_landed_tip_needs_no_archive(repo, capsys):
+    make_branch(repo, "worker-30-a")
+    make_branch(repo, "worker-30-b")
+    land_into_main(repo, "worker-30-a")
+    git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    readopt.prune_attempts(repo, 30, keep="worker-30-b")
+    assert "worker-30-a" not in branches(repo)
+    assert "ARCHIVED" not in capsys.readouterr().out
+    assert git(repo, "for-each-ref", "refs/archive/") == ""
+
+
+def test_prune_archive_failure_keeps_branch(attempts, capsys, monkeypatch):
+    monkeypatch.setattr(readopt, "_write_local_archive", lambda *a: False)
+    deleted = readopt.prune_attempts(attempts, 20)
+    assert deleted == []
+    assert {"worker-20-old", "worker-20-mid"} <= branches(attempts)
+    out = capsys.readouterr().out
+    assert "KEEP branch=worker-20-old reason=archive-failed" in out
+    assert "DELETED" not in out
+
+
+def test_prune_dry_run_writes_no_archive(attempts):
+    readopt.prune_attempts(attempts, 20, dry_run=True)
+    assert git(attempts, "for-each-ref", "refs/archive/") == ""
+
+
+def test_fmt_archive_field_is_printable_escaped():
+    d = readopt._Decision(readopt._Ref("b", "local", "a" * 40), True, "issue-closed")
+    assert "\x1b" not in readopt._fmt("WOULD-REAP", d, archive="refs/archive/x\x1b[31m")
+
+
+def test_delete_paths_are_archived_or_covered():
+    """Every call site of a branch-delete primitive must be listed here with its archive
+    story; a new unarchived delete path fails this test (#2314)."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(readopt))
+    primitives = {"_delete_branch", "_push_delete", "remote_delete"}
+    sites: "set[str]" = set()
+
+    def visit(node, owner):
+        for child in ast.iter_child_nodes(node):
+            nxt = owner
+            if isinstance(child, ast.ClassDef) or (
+                isinstance(child, ast.FunctionDef) and owner is None
+            ):
+                nxt = child.name
+            if isinstance(child, ast.Call):
+                f = child.func
+                called = f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+                if called in primitives and owner is not None:
+                    sites.add(owner)
+            visit(child, nxt)
+
+    visit(tree, None)
+    covered = {
+        "reap_landed": "tip ancestor of base, or merged-PR head (refs/pull/N/head)",
+        "prune_attempts": "_archive_unlanded gate before the delete",
+        "_PruneRemote": "remote delete follows the archived local delete",
+        "reap_orphans": "ARCHIVE_REASONS archive gate; other reasons are on base / in a PR head",
+        "delete_head": "closed same-repo PR head retained by refs/pull/N/head",
+    }
+    assert sites == set(covered), f"unreviewed delete path(s): {sites ^ set(covered)}"
+
+
 def test_prune_keep_honored(attempts):
     deleted = readopt.prune_attempts(attempts, 20, keep="worker-20-old")
     assert sorted(deleted) == ["worker-20-mid", "worker-20-new"]
@@ -2659,6 +2735,21 @@ def dh(repo, pr, **kw):
     return readopt.delete_head(
         repo, 7, git=readopt.make_git(repo), get_pull=lambda n: pr, slug=DH_SLUG, **kw
     )
+
+
+def test_dh_deletes_exactly_the_pr_head_sha_no_archive_needed(repo):
+    """#2314: a closed same-repo PR's head stays reachable via refs/pull/N/head, so no
+    archive ref is written; the CAS delete removes only a head still at the PR head sha."""
+    tip = push_head(repo, "fix/x")
+    deleted = []
+
+    def rdel(items):
+        deleted.extend(items)
+        return {b: True for b, _ in items}
+
+    assert dh(repo, make_pr("fix/x", tip), remote_delete=rdel) == 0
+    assert deleted == [("fix/x", tip)]
+    assert git(repo, "for-each-ref", "refs/archive/") == ""
 
 
 def test_dh1_closed_pr_head_deleted_on_origin(repo, capsys):
