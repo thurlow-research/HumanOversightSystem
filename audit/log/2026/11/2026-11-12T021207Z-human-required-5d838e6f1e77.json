@@ -1,0 +1,1 @@
+{"cid":"1973","event":"human-required","pr":2345,"reason_category":"SPEC_AMBIGUITY","summary":"PR implements #1973 as originally scoped; the 2026-11-11 re-scope comment (tracking-issue comments, temporary rule text, no Closes) is not reflected. Corrected verdict DECIDE posted on head 2b379e7c; protected surface .claude/agents/** also applies."}
