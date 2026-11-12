@@ -1324,11 +1324,15 @@ def _write_config(root: Path) -> None:
 
 @pytest.fixture
 def replay(tmp_path, monkeypatch):
+    return _build_replay(tmp_path, monkeypatch, None)
+
+
+def _build_replay(tmp_path, monkeypatch, findings_override):
     fx = json.loads(FIXTURE.read_text())
     root = tmp_path / "repo"
     _write_config(root)
     findings_path = tmp_path / "findings.json"
-    findings_path.write_text(json.dumps(fx["findings_file"]))
+    findings_path.write_text(json.dumps(findings_override or fx["findings_file"]))
     monkeypatch.setenv("HOS_BOT_LOGIN", OVERSEER)
 
     posts, gh_calls = [], []
@@ -1394,11 +1398,11 @@ def replay(tmp_path, monkeypatch):
         record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
         return rc, record
 
-    return go, posts, gh_calls, fx
+    return go, posts, gh_calls, fx, root
 
 
 def test_t_replay_pr_2207_bounces_and_never_goes_to_the_human(replay, capsys):
-    go, posts, gh_calls, fx = replay
+    go, posts, gh_calls, fx, _root = replay
     rc, record = go(capsys)
     assert rc == 0, record
     assert (record["disposition"], record["rule"], record["cid"]) == ("BOUNCE", "6e", "issue-2171")
@@ -1443,3 +1447,94 @@ def test_withdrawing_one_finding_does_not_drop_a_same_class_same_path_sibling():
         )
     )
     assert r.open_findings == (f2,)
+
+
+# --------------------------------------------------------------------------- #
+# #2346: REVIEW_CHAIN (incomplete review chain) through route --findings-file
+# --------------------------------------------------------------------------- #
+
+_CHAIN_FINDINGS = {
+    "findings": [
+        {
+            "class": "REVIEW_CHAIN",
+            "slug": "second-review-agy",
+            "summary": "No second review (agy) ran on this head.",
+        },
+        {
+            "class": "REVIEW_CHAIN",
+            "slug": "oversight-evaluator",
+            "summary": "No oversight-evaluator run on this head.",
+        },
+    ]
+}
+
+
+def test_t_2346_review_chain_replay_bounces_as_register_gap(tmp_path, monkeypatch, capsys):
+    go, posts, gh_calls, fx, root = _build_replay(tmp_path, monkeypatch, _CHAIN_FINDINGS)
+    rc, record = go(capsys)
+    assert rc == 0, record
+    assert (record["disposition"], record["cid"]) == ("BOUNCE", "issue-2171")
+    assert len(posts) == 1
+    assert "(REVIEW_CHAIN)" in posts[0]
+    assert "**Reason category:** REGISTER_GAP" in posts[0]
+    assert "**Summary:** incomplete-review-chain: oversight-evaluator, second-review-agy" in posts[0]
+    labels = [c[1]["stdin_json"] for c in gh_calls if c[0][0].endswith("/labels")]
+    assert labels == [{"labels": ["needs-ai"]}]
+
+    from scripts.oversight.lib import audit_log
+
+    events = [json.loads(b) for b in audit_log.read_stream(str(root))]
+    events = [e for e in events if e.get("event") == "pr-bounced"]
+    assert len(events) == 1
+    assert events[0]["reason_category"] == "REGISTER_GAP"
+    assert events[0]["summary"].startswith("incomplete-review-chain: oversight-evaluator, second-review-agy")
+
+
+def test_t_2346_review_chain_at_cap_escalates_like_other_classes(tmp_path, monkeypatch, capsys):
+    go, posts, gh_calls, fx, root = _build_replay(tmp_path, monkeypatch, _CHAIN_FINDINGS)
+    for n in (1, 2):
+        _bounce_event(root, n, "2026-10-29T03:00:00Z", cid="issue-2171", pr=2207)
+    rc, record = go(capsys)
+    assert rc == 0, record
+    assert (record["disposition"], record["rule"], record["trigger"]) == (
+        "ESCALATE",
+        "6d",
+        "bounce-cap",
+    )
+    assert posts == []
+
+
+@pytest.mark.parametrize(
+    "entry, fragment",
+    [
+        ({"class": "REVIEW_CHAIN", "slug": "made-up-role", "summary": "s"}, "slug"),
+        ({"class": "REVIEW_CHAIN", "slug": "oversight-evaluator", "summary": "s", "path": "docs/a.md"}, "path"),
+        ({"class": "REVIEW_CHAIN", "summary": "s"}, "slug"),
+    ],
+)
+def test_t_2346_review_chain_schema_refusals(entry, fragment):
+    with pytest.raises(FindingsSchemaError) as err:
+        canon([entry])
+    assert fragment in str(err.value)
+
+
+def test_t_2346_review_chain_keys_identity_and_summary():
+    got = canon(
+        [
+            {"class": "REVIEW_CHAIN", "slug": "second-review-codex", "summary": "s"},
+            {"class": "REVIEW_CHAIN", "slug": "security-reviewer", "summary": "s"},
+            merits(),
+        ]
+    )
+    assert [f.key for f in got] == [
+        "REVIEW_CHAIN:-:second-review-codex",
+        "REVIEW_CHAIN:-:security-reviewer",
+        "MERITS:docs/a.md:good-slug",
+    ]
+    assert got[0].identity != got[1].identity
+    assert ma.derive_reason_category(["REVIEW_CHAIN"]) == "REGISTER_GAP"
+    assert ma.derive_reason_category(["REVIEW_CHAIN", "MERITS"]) == "MIXED"
+    assert ma.bounce_summary_for(got, "a" * 40).startswith(
+        "incomplete-review-chain: second-review-codex, security-reviewer"
+    )
+    assert ma.bounce_summary_for(got[2:], "a" * 40) == ma.bounce_summary(1, "a" * 40)

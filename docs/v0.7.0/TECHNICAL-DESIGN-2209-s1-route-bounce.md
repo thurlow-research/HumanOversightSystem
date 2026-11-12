@@ -269,8 +269,8 @@ keyword-only parameters with defaults (§3.5, §3.6).
 |---|---|---|
 | `BOUNCE_CAP` | `2` (unchanged) | REQUIREMENTS §3 |
 | `EPOCH_RESETS_AT_ESCALATION` | `True` | **ARCH-ESC-1 (A).** Setting it to `False` is the whole of option (B). Its comment must say so and cite ARCH-ESC-1 |
-| `FINDING_CLASSES` | `("PROCEDURAL","REQUIRED_CHECK","CHECK","MERITS","SCOPE","REVIEW_FINDING")` | AD-1 |
-| `LLM_FINDING_CLASSES` | `frozenset({"CHECK","MERITS","SCOPE","REVIEW_FINDING"})` | The classes a findings file may use |
+| `FINDING_CLASSES` | `("PROCEDURAL","REQUIRED_CHECK","CHECK","MERITS","SCOPE","REVIEW_FINDING","REVIEW_CHAIN")` | AD-1; `REVIEW_CHAIN` added by #2346 |
+| `LLM_FINDING_CLASSES` | `frozenset({"CHECK","MERITS","SCOPE","REVIEW_FINDING","REVIEW_CHAIN"})` | The classes a findings file may use. `REVIEW_CHAIN` (#2346) is an incomplete review chain: key `REVIEW_CHAIN:-:<role>`, `slug` one of `REVIEW_CHAIN_ROLES`, no `path`; derives `REGISTER_GAP`; the bounce summary begins `incomplete-review-chain:` and lists the roles |
 | `ESCALATION_TRIGGERS` | `("upheld-dispute","bounce-cap","reviewer-conflict","decision")` | AD-6 |
 | `_BOUNCE_REASON_CATEGORIES` | the existing four plus `CHECK_FAILURE`, `MERITS_FINDING`, `SCOPE_SIZE`, `REVIEW_FINDING`, `MIXED` | AD-4, additive |
 | `SIZE_SOFT_FILES`, `SIZE_SOFT_COMMITS`, `SIZE_HARD_FILES` | `15`, `10`, `25` | Mirror `overseer.md:328-329`. The comment cites those lines |
