@@ -525,8 +525,11 @@ show a completed review is an orphan, not a stalled branch: re-run the full chai
    `git branch <branch> refs/archive/reap/<branch>@<tip12>`, after
    `git fetch origin refs/archive/reap/<branch>@<tip12>:refs/archive/reap/<branch>@<tip12>`
    if the ref is only on origin. `reap-orphans --list-archives` lists the archives, flagging
-   those older than 90 days. Pruning them is a separate, human-authorized step.
-   `prune-attempts` also deletes the remote head of each attempt it deletes.
+   those older than 90 days, where age is the age of the tip commit, not of the archive. Pruning
+   them is a separate, human-authorized step.
+   `prune-attempts` also archives an unlanded tip locally (`refs/archive/reap/...`) before
+   deleting it, keeping the branch on `reason=archive-failed`, and deletes the remote head of
+   each attempt it deletes.
 
 Never delete a worker branch with raw `git branch -D`; deletion goes through `readopt.py`.
 
