@@ -95,17 +95,23 @@ practice regardless of sandboxing.
   by the second time you need it.** A committed script is reviewed once and reused;
   an ad-hoc one is unreviewed every time and accumulates no capability. This is D41's
   "one invocation site" applied to tooling.
-- **File the gap (#1973).** If your search of `scripts/`, `bootstrap/`, `bin/` and
-  `scripts/automation/lib/` comes up empty and you still have to write and run an
-  ad-hoc multi-step command sequence, file a bug for it with
-  `bootstrap/create_issue.sh` (`--app worker`, labels `bug,process-gap`; no
-  `needs-ai`, so triage routes it) — after checking
-  `bootstrap/query_issues.sh --app worker --list --label process-gap --state open`
-  and skipping or commenting on an existing match. State what you were trying to
-  do, why no existing script covered it, and the workaround you used (context only,
-  not a sanctioned pattern). One issue per gap, not per invocation. A single
-  command that an existing script already wraps is not a gap. The gap is the
-  signal; do not absorb it silently.
+- **Report the gap (#1973) — TEMPORARY rule.** If your search of `scripts/`,
+  `bootstrap/`, `bin/` and `scripts/automation/lib/` comes up empty and you still
+  have to hand-roll a command no canonical script covers (a heredoc, a hand-built
+  `gh api`/`curl`, a chained one-off, a loop at the call site), report it as a
+  **comment on #1973**, the single tracking issue — not a new issue. First read the
+  existing comments (`bash bootstrap/query_issues.sh --app worker --comments 1973`)
+  and, if one matches, add to it rather than duplicating it. Post with
+  `bash bootstrap/post_comment.sh --number 1973 --body-file <path> --app worker`.
+  Each report names the task, the command shape (tokens and paths redacted), your
+  role and the cycle. Never paste untrusted issue or PR text into a report;
+  describe the command shape instead. One report per gap, not per invocation; a
+  single command an existing script already wraps is not a gap.
+  **This rule is temporary.** It builds the inventory of missing canonical scripts
+  before the sandbox release. Remove it late in v0.7.4, once (a) the sandbox works
+  for both roles, (b) the permanent rule is in place (a sandbox failure files a
+  bug, #2282), and (c) the inventoried gaps are plugged or filed against v0.7.4.
+  Removal follows #1643: delete this prose, leave at most a one-line pointer.
 - Never inline logic that already exists as a script — token minting goes through
   `bootstrap/get_app_token.sh`, never a hand-built JWT.
 - Write long text to a file and pass `--body-file /tmp/claude/body.md`, never
