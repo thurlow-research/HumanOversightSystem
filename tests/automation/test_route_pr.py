@@ -1477,7 +1477,9 @@ def test_t_2346_review_chain_replay_bounces_as_register_gap(tmp_path, monkeypatc
     assert len(posts) == 1
     assert "(REVIEW_CHAIN)" in posts[0]
     assert "**Reason category:** REGISTER_GAP" in posts[0]
-    assert "**Summary:** incomplete-review-chain: oversight-evaluator, second-review-agy" in posts[0]
+    assert (
+        "**Summary:** incomplete-review-chain: oversight-evaluator, second-review-agy" in posts[0]
+    )
     labels = [c[1]["stdin_json"] for c in gh_calls if c[0][0].endswith("/labels")]
     assert labels == [{"labels": ["needs-ai"]}]
 
@@ -1487,7 +1489,9 @@ def test_t_2346_review_chain_replay_bounces_as_register_gap(tmp_path, monkeypatc
     events = [e for e in events if e.get("event") == "pr-bounced"]
     assert len(events) == 1
     assert events[0]["reason_category"] == "REGISTER_GAP"
-    assert events[0]["summary"].startswith("incomplete-review-chain: oversight-evaluator, second-review-agy")
+    assert events[0]["summary"].startswith(
+        "incomplete-review-chain: oversight-evaluator, second-review-agy"
+    )
 
 
 def test_t_2346_review_chain_at_cap_escalates_like_other_classes(tmp_path, monkeypatch, capsys):
@@ -1508,7 +1512,15 @@ def test_t_2346_review_chain_at_cap_escalates_like_other_classes(tmp_path, monke
     "entry, fragment",
     [
         ({"class": "REVIEW_CHAIN", "slug": "made-up-role", "summary": "s"}, "slug"),
-        ({"class": "REVIEW_CHAIN", "slug": "oversight-evaluator", "summary": "s", "path": "docs/a.md"}, "path"),
+        (
+            {
+                "class": "REVIEW_CHAIN",
+                "slug": "oversight-evaluator",
+                "summary": "s",
+                "path": "docs/a.md",
+            },
+            "path",
+        ),
         ({"class": "REVIEW_CHAIN", "summary": "s"}, "slug"),
     ],
 )
