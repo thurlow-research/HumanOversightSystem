@@ -1,0 +1,1 @@
+{"cid":"2346","event":"human-required","pr":2347,"reason_category":"GATE_UNSATISFIED","summary":"Protected surface (merge_authority.py, overseer.md, overseer-cron-prompt.md) with no human approval on head 86282cb2; chain complete at HIGH per PR body, evaluator CONDITIONAL_PROCEED, no bounce condition."}
