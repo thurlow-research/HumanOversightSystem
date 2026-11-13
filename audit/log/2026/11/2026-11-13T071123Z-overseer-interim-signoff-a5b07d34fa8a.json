@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","disposition":"HUMAN_REQUIRED","event":"overseer-interim-signoff","event_requested":"comment","expected_action":"APPROVE","head_sha":"88f5ef69ee7b516b3c5cd0a5b4461ae26e397c14","marker_appended":true,"pr":2350,"repo":"thurlow-research/HumanOversightSystem","review_id":5887429733,"review_state":"COMMENTED","timestamp":"2026-11-13T07:11:23Z"}
