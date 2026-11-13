@@ -1,0 +1,1 @@
+{"event":"human-required","pr":2353,"reason_category":"GATE_UNSATISFIED","summary":"Protected-surface (bin/hos-cron, .claude/agents/worker.md) at HIGH tier, no verified human approval on head 64d472f9; content checks pass and required CI is green; code-review/security/reliability sign-offs predate the last two commits."}
