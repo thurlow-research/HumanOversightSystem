@@ -2435,7 +2435,14 @@ _build_context() {
       esac
     else
       printf 'NEW WORK: ALLOWED\n'
-      printf 'Reason: no open PRs authored by this worker.\n'
+      if [[ -n "${_pr_abandoned_nums:-}" ]]; then
+        # #2351: say so, rather than the false "no open PRs" — the worker must
+        # see that a draft was deliberately ignored (and should close it).
+        printf 'Reason: the only open worker PR(s) are abandoned drafts #%s (draft, neither `needs-ai` nor `needs-human`) — excluded from the in-flight count (#2351). Close them per .claude/agents/worker.md "Re-entry after a bounce" step 6.\n' \
+          "$(printf '%s' "$_pr_abandoned_nums" | sed 's/ /, #/g')"
+      else
+        printf 'Reason: no open PRs authored by this worker.\n'
+      fi
     fi
     printf '\n'
   fi

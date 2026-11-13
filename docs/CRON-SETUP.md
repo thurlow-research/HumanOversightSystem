@@ -319,6 +319,12 @@ Related audit events (role `overseer`):
 | `cycle-review-worktree-cleanup` | Cycle-end review-worktree sweep: `removed`, `kept` counts. |
 | `cycle-review-worktree-kept` | One per kept review worktree (`head-moved`: a commit was made in it; a human must inspect): `pr`, `path`, `reason`. |
 
+Related audit event (role `worker`, #2351):
+
+| Event | When |
+|---|---|
+| `cycle-pr-abandoned-draft` | Each cycle, once per open worker draft PR that carries neither `needs-ai` nor `needs-human`: `role`, `project`, `cycle_id`, `pr_num`. Nothing is pending on such a draft, so it is excluded from the in-flight count and the New work directive can read `ALLOWED`; the repeat each cycle is the signal to close it (`.claude/agents/worker.md` "Re-entry after a bounce" step 6). |
+
 ### Active target release (`target_release`)
 
 The `<project>_target_release` key tells the worker which GitHub milestone is

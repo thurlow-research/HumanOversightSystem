@@ -5410,6 +5410,9 @@ class TestCycleContextBlock:
         assert "abandoned draft" in r.stdout
         assert "NEW WORK: ALLOWED" in context
         assert "NEW WORK: BLOCKED" not in context
+        # The directive must not claim "no open PRs" — it names the ignored draft.
+        assert "abandoned drafts #856" in context
+        assert "no open PRs authored by this worker" not in context
 
     def test_context_block_abandoned_draft_cannot_hide_a_degraded_sibling(self, cron):
         """#2351 fail-closed: an abandoned draft (#856) next to a PR whose state
