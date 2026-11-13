@@ -5411,6 +5411,28 @@ class TestCycleContextBlock:
         assert "NEW WORK: ALLOWED" in context
         assert "NEW WORK: BLOCKED" not in context
 
+    def test_context_block_abandoned_draft_cannot_hide_a_degraded_sibling(self, cron):
+        """#2351 fail-closed: an abandoned draft (#856) next to a PR whose state
+        fetch fails (#857) must leave the routing `unknown` and #857 in the
+        blocked set — a failed read is never treated as abandoned."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "",
+                "HOS_TEST_PR_DETAIL_FAIL_PR": "857",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=unknown" in context
+        assert "#857" in context
+
     def test_context_block_draft_with_needs_human_still_blocks(self, cron):
         """A draft carrying `needs-human` is waiting on a human, not abandoned
         — it keeps counting (#2351 must not widen the exclusion)."""
