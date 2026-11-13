@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"64d472f963d59f6fe88ab2f1bd5e10fec9a82f64","pr":2353,"reason":"same-head full verdict already posted (HUMAN_REQUIRED/APPROVE interim sign-off); needs-human still set, no new human activity","timestamp":"2026-11-13T21:56:28Z"}
