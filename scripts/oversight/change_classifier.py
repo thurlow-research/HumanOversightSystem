@@ -105,9 +105,15 @@ ADDED_LINE_SIGNATURES: list[tuple[str, str]] = [
         r"PermissionRequiredMixin|AccessMixin|@roles?_required|@authorize|require_role)",
     ),
     (
+        # The `(?!s\))` lookaheads exclude only the English prose plural `path(s)`,
+        # `url(s)`, `Route(s)`, which matched test strings and docs and raised false
+        # Condition-10 escalations (#2254, same class as #2201/#2031). They are
+        # fixed-length, so no backtracking risk; a real call such as
+        # `path(route, view)` or `path(s, view)` still matches.
         "new-user-flow-or-route",
-        r"(\bpath\(|\bre_path\(|\burl\(|@app\.route|@router\.(get|post|put|delete|patch)|"
-        r"router\.(get|post|put|delete|patch)|\bRoute\(|createBrowserRouter|<Route\b)",
+        r"(\bpath\((?!s\))|\bre_path\((?!s\))|\burl\((?!s\))|@app\.route|"
+        r"@router\.(get|post|put|delete|patch)|"
+        r"router\.(get|post|put|delete|patch)|\bRoute\((?!s\))|createBrowserRouter|<Route\b)",
     ),
     (
         # No bare `new\s+state\b` prose alternative: it matched English text in
