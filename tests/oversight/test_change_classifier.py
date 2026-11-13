@@ -729,3 +729,86 @@ def test_propagation_import_bound_edges(line, expected):
 )
 def test_propagate_inject_extract_word_boundary(line, expected):
     assert _obs_signal("app/tracing.py", line) is expected
+
+
+def _route_signal(path, line):
+    sigs = {s["signal"] for s in cc.detect_structural([("M", path)], {path: [line]})}
+    return "new-user-flow-or-route" in sigs
+
+
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        (
+            "tests/oversight/test_gate_arg_grammar.py",
+            '    assert "changeset = 1 file(s) from 1 explicit path(s)" in res.stdout',
+        ),
+        ("tests/oversight/test_x.py", '    assert "1 url(s) fetched" in out'),
+        ("tests/oversight/test_x.py", '    assert "2 Route(s) found" in out'),
+        ("docs/x.md", "Pass one or more path(s) to scan."),
+        ("docs/x.md", "Each url(s) is checked."),
+        ("docs/x.md", "Every Route(s) entry is listed."),
+        ("docs/x.md", "Takes a path(s)."),
+        ("docs/x.md", "if path(s) and other"),
+    ],
+)
+def test_2254_prose_plural_is_not_route(path, line):
+    # #2254: `path(s)` / `url(s)` / `Route(s)` English plurals are not route definitions.
+    assert _route_signal(path, line) is False
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '    path("new/", views.home),',
+        "    path(route, view),",
+        '    re_path(r"^x/$", v),',
+        "    url(r'^x/$', v),",
+        '    Route("/a", handler),',
+        "    path(sx, view),",
+        "    path(s, view),",
+    ],
+)
+def test_2254_real_route_still_structural(line):
+    assert _route_signal("app/urls.py", line) is True
+
+
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        ("docs/x.md", "Each re_path(s) is checked."),
+        ("tests/oversight/test_x.py", '    assert "1 re_path(s) seen" in out'),
+    ],
+)
+def test_2254_prose_plural_re_path_is_not_route(path, line):
+    assert _route_signal(path, line) is False
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "    re_path(sx, view),",
+        "    re_path(s, view),",
+        "    url(sx, view),",
+        "    url(s, view),",
+        "    Route(sx, handler),",
+        "    Route(s, handler),",
+    ],
+)
+def test_2254_lookahead_excludes_only_exact_plural(line):
+    # Kills `(?!s\))` -> `(?!s)` over-exclusion on re_path/url/Route.
+    assert _route_signal("app/urls.py", line) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '@app.route("/x")',
+        "router.get('/x', h)",
+        "@router.post('/x')",
+        "<Route path='/x' />",
+        "const r = createBrowserRouter([])",
+    ],
+)
+def test_2254_unchanged_route_alternatives_still_signal(line):
+    assert _route_signal("app/urls.py", line) is True
