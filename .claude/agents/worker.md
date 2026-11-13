@@ -446,6 +446,14 @@ When your PR is bounced (`needs-ai` label + converted to draft + `pr-bounced` au
 3. Re-run step 8.9 until PASS.
 4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
 5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
+6. **Never abandon the bounced draft open (#2351).** If the re-entry escalates instead of
+   fixing (the issue goes to `needs-human`), or opens or will open a replacement PR from a
+   different branch, close the bounced PR via `bash bootstrap/edit_issue.sh --number <PR>
+   --state closed --app worker`, after a comment (`bootstrap/post_comment.sh`) naming the
+   issue, the local branch holding the work and the replacement plan. Never leave a worker PR
+   with neither `needs-ai` nor `needs-human` and no reviewer action pending — if no actor label
+   applies, close it. `bin/hos-cron` backstops this: a draft with neither label is excluded from
+   the in-flight count, but closing it is what leaves a clean record.
 
 Pushing a fix to a PR **this bot already authored** (step 1's CHANGES_REQUESTED path) is an
 update, not an open — a different, explicitly-declared operation. Existing PR authorship by
