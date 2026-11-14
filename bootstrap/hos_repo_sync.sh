@@ -37,7 +37,11 @@
 # `readopt reap-orphans --local-only --no-issue-closed`, so a local branch is
 # deleted only when its PR is merged or closed, or its content is already on main
 # (pr-merged, pr-closed, landed-ancestor, landed-content). The prune runs after
-# the state write and never changes this script's exit status.
+# the state write on a normal sync, and also on the recent-sync skip path (#2322;
+# it needs only local refs and the GitHub API). It does not run when the fetch
+# fails (a stale base makes landed-* decisions untrustworthy); that path prints
+# `prune skipped — fetch failed` when pruning is enabled. The prune never changes
+# this script's exit status.
 # Hardening (#2299): the readopt child runs under `env -u PYTHONPATH -u
 # HOS_TOKEN_APP_ROLE python3 -E -s`, so caller-set import paths and user site
 # packages cannot load code, and github.py cannot start a slow token re-mint.
@@ -82,13 +86,134 @@ if [ -f "$state_file" ]; then
   last_sync="${last_sync:-0}"
 fi
 
+cd "$repo_root" || exit 1
+
+# --- Local-branch prune (#2288 S3). Gate order P1..P6 per the TD; the first
+# failing gate decides. Nothing in here may change the exit status.
+_prune_skip() { echo "hos-repo-sync: prune skipped — $1"; }
+
+# P4b: is $1 (physical path) a registered worker/overseer root in projects.conf?
+# Returns 0 if so, 2 if any such entry has a non-empty value that is not an
+# existing directory (fail closed; the key is left in _registry_bad_key), else 1.
+# Values are read literally, as bin/hos-cron does: no quote stripping.
+_registry_bad_key=""
+_is_registered_cron_root() {
+  local conf="${HOME:-}/.config/hos/projects.conf" line key val phys matched=1
+  [ -f "$conf" ] && [ -r "$conf" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^([A-Za-z0-9_]+_(worker|overseer)_root)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      val="${BASH_REMATCH[3]}"
+      val="${val%"${val##*[![:space:]]}"}"  # trailing CR / whitespace
+      val="${val%/}"
+      [ -n "$val" ] || continue
+      if [ ! -d "$val" ]; then
+        _registry_bad_key="$key"
+        continue
+      fi
+      phys="$(cd "$val" 2>/dev/null && pwd -P)" && val="$phys"
+      [ "$val" = "$1" ] && matched=0
+    fi
+  done < "$conf"
+  [ -n "$_registry_bad_key" ] && return 2
+  return "$matched"
+}
+
+# Best-effort audit event for one validated local REAPED/REAP-FAILED line, guarded
+# like bootstrap/delete_branch.sh _audit_branch_delete. Always returns 0. Inputs
+# are already restricted by the caller's anchored regex, so no JSON escaping needed.
+_prune_audit() {
+  local event="$1" branch="$2" reason="$3" where="$4" pr="$5" tip="$6"
+  local audit_lib="$script_root/scripts/oversight/lib/audit_log.sh" json
+  [ -f "$audit_lib" ] || return 0
+  # shellcheck disable=SC1090
+  source "$audit_lib" 2>/dev/null || return 0
+  command -v audit_write_event >/dev/null 2>&1 || return 0
+  json="$(printf '{"event":"%s","actor":"human","branch":"%s","reason":"%s","where":"%s","pr":"%s","tip":"%s","timestamp":"%s"}' \
+    "$event" "$branch" "$reason" "$where" "$pr" "$tip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  audit_write_event "$json" "$script_root" >/dev/null 2>&1 </dev/null || true
+  return 0
+}
+
+_prune_local_branches() {
+  [ "${HOS_REPO_SYNC_PRUNE:-}" = "1" ] || return 0
+  # On the recent-sync skip path the main flow has not resolved it yet.
+  local default_branch="${default_branch:-}"
+  if [ -z "$default_branch" ]; then
+    default_branch="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+    default_branch="${default_branch:-main}"
+  fi
+  if [ "${HOS_TOKEN_APP_ROLE:-}" != "human" ]; then
+    _prune_skip "not the human role"; return 0
+  fi
+  local script_root root_phys reg_rc
+  script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)"
+  if [ -z "$script_root" ] || [ ! -f "$script_root/scripts/automation/readopt.py" ]; then
+    _prune_skip "scripts/automation/readopt.py not present"; return 0
+  fi
+  root_phys="$(cd "$repo_root" 2>/dev/null && pwd -P)"
+  if [ "$root_phys" != "$script_root" ]; then
+    _prune_skip "not this script's own clone"; return 0
+  fi
+  _is_registered_cron_root "$root_phys"; reg_rc=$?
+  if [ "$reg_rc" -eq 2 ]; then
+    _prune_skip "registry entry ${_registry_bad_key} does not resolve to a directory"; return 0
+  fi
+  if [ "$reg_rc" -eq 0 ]; then
+    _prune_skip "clone is a registered worker/overseer root"; return 0
+  fi
+  if [ "$default_branch" != "main" ] || ! git rev-parse --verify -q refs/remotes/origin/main >/dev/null; then
+    _prune_skip "default branch is not main"; return 0
+  fi
+  local tbin
+  tbin="$(command -v timeout || command -v gtimeout || true)"
+  if [ -z "$tbin" ]; then
+    _prune_skip "no timeout(1) available"; return 0
+  fi
+  local secs="${HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS:-}"
+  if ! [[ "$secs" =~ ^[0-9]+$ ]] || [ "$secs" -le 0 ]; then
+    secs=90
+  fi
+  local rc note="" line reaped=0 ev_re kind
+  # Anchored (log-forging guard); same shape as bin/hos-cron's _RB_EVENT_RE.
+  ev_re='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
+  # env -u / python -E -s: ignore caller-set PYTHONPATH and user site-packages, and
+  # drop HOS_TOKEN_APP_ROLE so github.py cannot start a slow token re-mint. Not -P:
+  # it drops the cwd that makes `-m scripts.*` importable.
+  "$tbin" --kill-after=10 "$secs" env -u PYTHONPATH -u HOS_TOKEN_APP_ROLE \
+      python3 -E -s -u -m scripts.automation.readopt \
+      --repo "$root_phys" reap-orphans --local-only --grace-days 1 --max-deletions 25 \
+      --no-issue-closed </dev/null 2>&1 \
+    | {
+        while IFS= read -r line || [ -n "$line" ]; do
+          printf '%s\n' "hos-repo-sync: prune: $line"
+          case "$line" in REAPED\ *) reaped=1 ;; esac
+          if [[ "$line" =~ $ev_re ]] && [ "${BASH_REMATCH[4]}" = "local" ]; then
+            kind="repo-sync-branch-reap"
+            [ "${BASH_REMATCH[1]}" = "REAPED" ] || kind="repo-sync-branch-reap-failed"
+            _prune_audit "$kind" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
+              "${BASH_REMATCH[6]:--}" "${BASH_REMATCH[7]}"
+          fi
+        done
+        if [ "$reaped" -eq 1 ]; then
+          echo "hos-repo-sync: prune: recover a deleted branch with: git branch <name> <tip>  (or git fetch origin pull/<N>/head:<name>)"
+        fi
+      }
+  rc="${PIPESTATUS[0]}"
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then note=" (timeout)"; fi
+    echo "hos-repo-sync: prune: WARN: readopt reap-orphans exited ${rc}${note} — branches were deleted only where a REAPED line appears above; sync result unaffected" >&2
+  fi
+  return 0
+}
+
 elapsed=$(( now - last_sync ))
 if [ "$elapsed" -lt "$interval" ]; then
   echo "hos-repo-sync: skipped, last synced ${elapsed}s ago (< ${interval}s) — $repo_root"
+  # The prune needs only local refs and the GitHub API, so it still runs here.
+  _prune_local_branches
   exit 0
 fi
-
-cd "$repo_root" || exit 1
 
 # Gate the .gitmodules stderr filter: only suppress gitmodules access warnings
 # if .gitmodules is not a real tracked file in this repo. Sandboxed dev
@@ -130,6 +255,8 @@ if [ "$fetch_status" -ne 0 ]; then
   else
     echo "hos-repo-sync: transient cause — likely network/auth; safe to retry next session." >&2
   fi
+  # Never prune against a stale base: landed-* decisions would be untrustworthy.
+  [ "${HOS_REPO_SYNC_PRUNE:-}" = "1" ] && _prune_skip "fetch failed"
   exit 1
 fi
 
@@ -206,118 +333,6 @@ cat > "$_tmpf" <<JSON
 JSON
 mv "$_tmpf" "$state_file"; sync_rc=$?
 
-# --- Local-branch prune (#2288 S3). Gate order P1..P6 per the TD; the first
-# failing gate decides. Nothing in here may change the exit status.
-_prune_skip() { echo "hos-repo-sync: prune skipped — $1"; }
-
-# P4b: is $1 (physical path) a registered worker/overseer root in projects.conf?
-# Returns 0 if so, 2 if any such entry has a non-empty value that is not an
-# existing directory (fail closed; the key is left in _registry_bad_key), else 1.
-# Values are read literally, as bin/hos-cron does: no quote stripping.
-_registry_bad_key=""
-_is_registered_cron_root() {
-  local conf="${HOME:-}/.config/hos/projects.conf" line key val phys matched=1
-  [ -f "$conf" ] && [ -r "$conf" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" =~ ^([A-Za-z0-9_]+_(worker|overseer)_root)=(.*)$ ]]; then
-      key="${BASH_REMATCH[1]}"
-      val="${BASH_REMATCH[3]}"
-      val="${val%"${val##*[![:space:]]}"}"  # trailing CR / whitespace
-      val="${val%/}"
-      [ -n "$val" ] || continue
-      if [ ! -d "$val" ]; then
-        _registry_bad_key="$key"
-        continue
-      fi
-      phys="$(cd "$val" 2>/dev/null && pwd -P)" && val="$phys"
-      [ "$val" = "$1" ] && matched=0
-    fi
-  done < "$conf"
-  [ -n "$_registry_bad_key" ] && return 2
-  return "$matched"
-}
-
-# Best-effort audit event for one validated local REAPED/REAP-FAILED line, guarded
-# like bootstrap/delete_branch.sh _audit_branch_delete. Always returns 0. Inputs
-# are already restricted by the caller's anchored regex, so no JSON escaping needed.
-_prune_audit() {
-  local event="$1" branch="$2" reason="$3" where="$4" pr="$5" tip="$6"
-  local audit_lib="$script_root/scripts/oversight/lib/audit_log.sh" json
-  [ -f "$audit_lib" ] || return 0
-  # shellcheck disable=SC1090
-  source "$audit_lib" 2>/dev/null || return 0
-  command -v audit_write_event >/dev/null 2>&1 || return 0
-  json="$(printf '{"event":"%s","actor":"human","branch":"%s","reason":"%s","where":"%s","pr":"%s","tip":"%s","timestamp":"%s"}' \
-    "$event" "$branch" "$reason" "$where" "$pr" "$tip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-  audit_write_event "$json" "$script_root" >/dev/null 2>&1 </dev/null || true
-  return 0
-}
-
-_prune_local_branches() {
-  [ "${HOS_REPO_SYNC_PRUNE:-}" = "1" ] || return 0
-  if [ "${HOS_TOKEN_APP_ROLE:-}" != "human" ]; then
-    _prune_skip "not the human role"; return 0
-  fi
-  local script_root root_phys reg_rc
-  script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)"
-  if [ -z "$script_root" ] || [ ! -f "$script_root/scripts/automation/readopt.py" ]; then
-    _prune_skip "scripts/automation/readopt.py not present"; return 0
-  fi
-  root_phys="$(cd "$repo_root" 2>/dev/null && pwd -P)"
-  if [ "$root_phys" != "$script_root" ]; then
-    _prune_skip "not this script's own clone"; return 0
-  fi
-  _is_registered_cron_root "$root_phys"; reg_rc=$?
-  if [ "$reg_rc" -eq 2 ]; then
-    _prune_skip "registry entry ${_registry_bad_key} does not resolve to a directory"; return 0
-  fi
-  if [ "$reg_rc" -eq 0 ]; then
-    _prune_skip "clone is a registered worker/overseer root"; return 0
-  fi
-  if [ "$default_branch" != "main" ] || ! git rev-parse --verify -q refs/remotes/origin/main >/dev/null; then
-    _prune_skip "default branch is not main"; return 0
-  fi
-  local tbin
-  tbin="$(command -v timeout || command -v gtimeout || true)"
-  if [ -z "$tbin" ]; then
-    _prune_skip "no timeout(1) available"; return 0
-  fi
-  local secs="${HOS_REPO_SYNC_PRUNE_TIMEOUT_SECS:-}"
-  if ! [[ "$secs" =~ ^[0-9]+$ ]] || [ "$secs" -le 0 ]; then
-    secs=90
-  fi
-  local rc note="" line reaped=0 ev_re kind
-  # Anchored (log-forging guard); same shape as bin/hos-cron's _RB_EVENT_RE.
-  ev_re='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
-  # env -u / python -E -s: ignore caller-set PYTHONPATH and user site-packages, and
-  # drop HOS_TOKEN_APP_ROLE so github.py cannot start a slow token re-mint. Not -P:
-  # it drops the cwd that makes `-m scripts.*` importable.
-  "$tbin" --kill-after=10 "$secs" env -u PYTHONPATH -u HOS_TOKEN_APP_ROLE \
-      python3 -E -s -u -m scripts.automation.readopt \
-      --repo "$root_phys" reap-orphans --local-only --grace-days 1 --max-deletions 25 \
-      --no-issue-closed </dev/null 2>&1 \
-    | {
-        while IFS= read -r line || [ -n "$line" ]; do
-          printf '%s\n' "hos-repo-sync: prune: $line"
-          case "$line" in REAPED\ *) reaped=1 ;; esac
-          if [[ "$line" =~ $ev_re ]] && [ "${BASH_REMATCH[4]}" = "local" ]; then
-            kind="repo-sync-branch-reap"
-            [ "${BASH_REMATCH[1]}" = "REAPED" ] || kind="repo-sync-branch-reap-failed"
-            _prune_audit "$kind" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
-              "${BASH_REMATCH[6]:--}" "${BASH_REMATCH[7]}"
-          fi
-        done
-        if [ "$reaped" -eq 1 ]; then
-          echo "hos-repo-sync: prune: recover a deleted branch with: git branch <name> <tip>  (or git fetch origin pull/<N>/head:<name>)"
-        fi
-      }
-  rc="${PIPESTATUS[0]}"
-  if [ "$rc" -ne 0 ]; then
-    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then note=" (timeout)"; fi
-    echo "hos-repo-sync: prune: WARN: readopt reap-orphans exited ${rc}${note} — branches were deleted only where a REAPED line appears above; sync result unaffected" >&2
-  fi
-  return 0
-}
 
 _prune_local_branches
 exit "$sync_rc"

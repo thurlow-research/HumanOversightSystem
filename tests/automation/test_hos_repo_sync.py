@@ -375,17 +375,45 @@ class TestPrune:
         assert calls[0]["cwd"] == clone_real
         assert "recover a deleted branch" not in r.stdout  # no REAPED line, no hint
 
-    def test_s2_interval_skip_does_not_prune(self, prune_repo, state_dir):
+    def test_s2_interval_skip_still_prunes(self, prune_repo, state_dir):
         env = _prune_env(prune_repo.tmp)
         assert _run_prune(prune_repo.clone, state_dir, env, interval=900).returncode == 0
         second = _run_prune(prune_repo.clone, state_dir, env, interval=900)
+        assert second.returncode == 0, second.stdout + second.stderr
         assert "skipped, last synced" in second.stdout
-        assert len(_calls(prune_repo.tmp)) == 1
+        assert len(_calls(prune_repo.tmp)) == 2
+
+    def test_s2b_interval_skip_gate_skip_is_never_silent(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp, HOS_TOKEN_APP_ROLE="worker")
+        assert _run_prune(prune_repo.clone, state_dir, env, interval=900).returncode == 0
+        second = _run_prune(prune_repo.clone, state_dir, env, interval=900)
+        assert second.returncode == 0
+        assert "skipped, last synced" in second.stdout
+        assert "prune skipped — not the human role" in second.stdout
+
+    def test_s2c_interval_skip_prune_off_is_silent(self, prune_repo, state_dir):
+        env = _prune_env(prune_repo.tmp, HOS_REPO_SYNC_PRUNE=None)
+        assert _run_prune(prune_repo.clone, state_dir, env, interval=900).returncode == 0
+        second = _run_prune(prune_repo.clone, state_dir, env, interval=900)
+        assert second.returncode == 0
+        assert "skipped, last synced" in second.stdout
+        assert "hos-repo-sync: prune" not in second.stdout + second.stderr
+        assert _calls(prune_repo.tmp) == []
 
     def test_s3_fetch_failure_does_not_prune(self, prune_repo, state_dir):
         _git("remote", "set-url", "origin", str(prune_repo.tmp / "nope.git"), cwd=prune_repo.clone)
         r = _run_prune(prune_repo.clone, state_dir, _prune_env(prune_repo.tmp))
         assert r.returncode == 1
+        assert "prune skipped — fetch failed" in r.stdout
+        assert _calls(prune_repo.tmp) == []
+
+    def test_s3b_fetch_failure_prune_off_is_silent(self, prune_repo, state_dir):
+        _git("remote", "set-url", "origin", str(prune_repo.tmp / "nope.git"), cwd=prune_repo.clone)
+        r = _run_prune(
+            prune_repo.clone, state_dir, _prune_env(prune_repo.tmp, HOS_REPO_SYNC_PRUNE=None)
+        )
+        assert r.returncode == 1
+        assert "hos-repo-sync: prune" not in r.stdout + r.stderr
         assert _calls(prune_repo.tmp) == []
 
     @pytest.mark.parametrize("flag", [None, "0"])
