@@ -85,7 +85,7 @@ Here is each local REAP reason, judged against the item text ("whose PR is merge
 
 | # | Gate | If it fails |
 |---|---|---|
-| P0 | The script reached the state-file write. The not-a-repo, state-dir ownership, interval-skip (`:64-68`) and fetch-failure (`:103-113`) paths all exit before that, so **none of them prune**. | Nothing runs. These paths exit before the prune step exists. |
+| P0 | The script reached the state-file write. The not-a-repo, state-dir ownership, interval-skip (`:64-68`) and fetch-failure (`:103-113`) paths all exit before that, so **none of them prune**. *[Amended by #2322: the interval-skip path now prunes, and the fetch-failure path prints `prune skipped — fetch failed` when `HOS_REPO_SYNC_PRUNE=1`; the not-a-repo and state-dir-ownership paths still do not prune.]* | Nothing runs. These paths exit before the prune step exists. |
 | P1 | `HOS_REPO_SYNC_PRUNE` is exactly `1` | **Silent** (no line). This is the default for every caller except `bin/hos-human`, so worker sessions and consumer installs see no noise. |
 | P2 | `HOS_TOKEN_APP_ROLE` is exactly `human` | One line: `prune skipped — not the human role`. This is a scoping backstop, not a security control. A stray global `HOS_REPO_SYNC_PRUNE=1` must never start the Worker clone's first real `reap-orphans` run, because TD-2286 §9.1 requires a human-reviewed dry run before that. |
 | P3 | `<script_root>/scripts/automation/readopt.py` is a regular file, where `script_root` is the parent of the script's own directory, resolved with `pwd -P` from `${BASH_SOURCE[0]}` | One line: `prune skipped — scripts/automation/readopt.py not present` (the consumer case, F6) |
@@ -176,8 +176,8 @@ It imports only the stdlib. The stub makes no network or `gh` call, which is the
 | ID | Setup | Expected |
 |---|---|---|
 | T-S1 (acceptance) | `PRUNE=1`, `ROLE=human`, stub present, `interval=0` | Stub invoked exactly once. argv is `--repo <clone realpath> reap-orphans --local-only --grace-days 1 --max-deletions 25 --no-issue-closed`, cwd is the clone, exit 0 |
-| T-S2 | As T-S1, run twice with `interval=900` | Stub invoked once in total, because the second run takes the skip path |
-| T-S3 | As T-S1, origin set to a nonexistent path (fetch fails) | Exit 1 (unchanged), stub not invoked |
+| T-S2 | As T-S1, run twice with `interval=900` | *[Amended by #2322]* Stub invoked twice: the second run takes the skip path and still prunes |
+| T-S3 | As T-S1, origin set to a nonexistent path (fetch fails) | Exit 1 (unchanged), stub not invoked, `prune skipped — fetch failed` printed *[#2322]* |
 | T-S4 | `PRUNE` unset, then `PRUNE=0`, with `ROLE=human` and the stub present | Not invoked, no `prune` text in the output, exit 0 |
 | T-S5 | `PRUNE=1`, `ROLE=worker`, then `ROLE` unset | Not invoked, `not the human role` line, exit 0 |
 | T-S6 (module absent) | `PRUNE=1`, `ROLE=human`, no stub | Exactly one `prune skipped — scripts/automation/readopt.py not present` line, exit 0 |
