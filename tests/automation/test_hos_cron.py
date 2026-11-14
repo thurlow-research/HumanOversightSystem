@@ -5389,6 +5389,72 @@ class TestCycleContextBlock:
         assert "routing=needs-fix-bounce" in context
         assert "routing=needs-attention" not in context
 
+    def test_context_block_abandoned_draft_does_not_block_new_work(self, cron):
+        """#2351 replay of the #2348 sequence: bounced (draft + `needs-ai`),
+        then the re-entry escalated and removed `needs-ai`, leaving a draft
+        with no actor label. Nothing is pending on it, so it must not count
+        as in-flight work — the directive is ALLOWED, not BLOCKED."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "abandoned draft" in r.stdout
+        assert "NEW WORK: ALLOWED" in context
+        assert "NEW WORK: BLOCKED" not in context
+        # The directive must not claim "no open PRs" — it names the ignored draft.
+        assert "abandoned drafts #856" in context
+        assert "no open PRs authored by this worker" not in context
+
+    def test_context_block_abandoned_draft_cannot_hide_a_degraded_sibling(self, cron):
+        """#2351 fail-closed: an abandoned draft (#856) next to a PR whose state
+        fetch fails (#857) must leave the routing `unknown` and #857 in the
+        blocked set — a failed read is never treated as abandoned."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "",
+                "HOS_TEST_PR_DETAIL_FAIL_PR": "857",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=unknown" in context
+        assert "#857" in context
+
+    def test_context_block_draft_with_needs_human_still_blocks(self, cron):
+        """A draft carrying `needs-human` is waiting on a human, not abandoned
+        — it keeps counting (#2351 must not widen the exclusion)."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "needs-human",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "abandoned draft" not in r.stdout
+
     def test_context_block_dirty_and_bounced_pr_routes_needs_fix(self, cron):
         """A PR that is BOTH conflicting and bounced must still route to plain
         `needs-fix` — the dirty check is ordered first (a merge conflict takes

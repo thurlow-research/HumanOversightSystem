@@ -1338,6 +1338,7 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
     _PR_ROUTING="awaiting-merge"
     _pr_degraded=0
     _pr_failed_nums=""
+    _pr_abandoned_nums=""
     while IFS= read -r _pr_num; do
       [[ -z "$_pr_num" ]] && continue
       # Check mergeable_state first via detail endpoint — a conflicting PR must
@@ -1366,6 +1367,21 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
         "import json,sys; print(json.load(sys.stdin).get('d', False))" 2>/dev/null || echo "False")
       _pr_labels=$(printf '%s' "$_pr_detail" | python3 -c \
         "import json,sys; print(' '.join(json.load(sys.stdin).get('labels', [])))" 2>/dev/null || echo "")
+      # #2351: an abandoned draft is not in-flight work. A draft carrying
+      # neither actor label (`needs-ai` = worker act, `needs-human` = human
+      # act) is not awaiting a worker fix, and the overseer never reviews
+      # drafts, so nothing is pending on it. Counting it blocked every worker
+      # cycle for ~7h after #2348's re-entry escalated and left it open.
+      # Checked before `dirty`: a conflict on a PR nobody owns is not
+      # actionable either. A bounced PR keeps `needs-ai` until its re-entry
+      # clears it, so a re-entry that fixes the same PR still blocks as before.
+      if [[ "$_pr_draft" == "True" && " $_pr_labels " != *" needs-ai "* \
+            && " $_pr_labels " != *" needs-human "* ]]; then
+        echo "$LOG_PREFIX PR #${_pr_num} is an abandoned draft (no needs-ai / needs-human) — excluded from in-flight count (#2351)"
+        _audit cycle-pr-abandoned-draft "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" "pr_num=${_pr_num}"
+        _pr_abandoned_nums="${_pr_abandoned_nums:+${_pr_abandoned_nums} }${_pr_num}"
+        continue
+      fi
       if [[ "$_pr_ms" == "dirty" ]]; then _PR_ROUTING="needs-fix"; break; fi
       # Bounce check: draft PR carrying `needs-ai` is the overseer's bounce
       # signal (record_pr_bounce()). Checked after `dirty` (a conflicting PR
@@ -1408,6 +1424,20 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       fi
       if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
     done <<< "$_OPEN_PR_NUMS"
+    # #2351: drop abandoned drafts from the in-flight set; if nothing is left,
+    # there is no routing and the directive falls through to ALLOWED.
+    if [[ -n "$_pr_abandoned_nums" ]]; then
+      _pr_kept=""
+      while IFS= read -r _pr_num; do
+        [[ -z "$_pr_num" ]] && continue
+        case " $_pr_abandoned_nums " in
+          *" $_pr_num "*) ;;
+          *) _pr_kept="${_pr_kept:+${_pr_kept}$'\n'}${_pr_num}" ;;
+        esac
+      done <<< "$_OPEN_PR_NUMS"
+      _OPEN_PR_NUMS="$_pr_kept"
+      [[ -z "$_OPEN_PR_NUMS" ]] && _PR_ROUTING=""
+    fi
     # #2171: a definite needs-fix above still wins (it breaks out); otherwise any
     # failed per-PR call makes the whole routing unknown, never awaiting-merge.
     if [[ "$_pr_degraded" == "1" && ( "$_PR_ROUTING" == "awaiting-merge" || "$_PR_ROUTING" == "needs-attention" ) ]]; then
@@ -2405,7 +2435,14 @@ _build_context() {
       esac
     else
       printf 'NEW WORK: ALLOWED\n'
-      printf 'Reason: no open PRs authored by this worker.\n'
+      if [[ -n "${_pr_abandoned_nums:-}" ]]; then
+        # #2351: say so, rather than the false "no open PRs" — the worker must
+        # see that a draft was deliberately ignored (and should close it).
+        printf 'Reason: the only open worker PR(s) are abandoned drafts #%s (draft, neither `needs-ai` nor `needs-human`) — excluded from the in-flight count (#2351). Close them per .claude/agents/worker.md "Re-entry after a bounce" step 6.\n' \
+          "$(printf '%s' "$_pr_abandoned_nums" | sed 's/ /, #/g')"
+      else
+        printf 'Reason: no open PRs authored by this worker.\n'
+      fi
     fi
     printf '\n'
   fi
