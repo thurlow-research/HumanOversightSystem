@@ -4345,6 +4345,7 @@ def test_shard_runs_from_a_valid_plan_without_coverage_input(rig):
         "index-high",
         "hash",
         "plan-n",
+        "plan-n-rehashed",
         "assignment-order",
         "internal-errors",
         "symlink",
@@ -4374,6 +4375,12 @@ def test_shard_refuses_unbound_or_tampered_plan(rig, case):
         rewrite_json(path, lambda d: d.update(W_ms=d["W_ms"] + 1))
     elif case == "plan-n":
         rewrite_json(path, lambda d: d.update(N=d["N"] + 1))
+    elif case == "plan-n-rehashed":
+        def bump_n(d):
+            d["N"] += 1
+            d["plan_hash"] = ncs.plan_hash(d)
+
+        rewrite_json(path, bump_n)
     elif case == "assignment-order":
         # A self-consistent hash over a plan whose assignment[0] claims another index.
         def reindex(d):

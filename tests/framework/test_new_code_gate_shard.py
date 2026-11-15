@@ -1258,6 +1258,33 @@ def test_files_decided_in_the_cheap_phase_pass_through_the_merge_unchanged():
 # --------------------------------------------------------------------------
 
 
+def test_plan_hash_covers_every_binding_field():
+    """SH-HASH(a): each plan binding field alone moves the plan hash."""
+    plan = band_plan(3)
+    for field, value in (
+        ("mode", "local"),
+        ("gated_sha", "e" * 40),
+        ("pr_head_sha", "e" * 40),
+        ("base_sha", "e" * 40),
+        ("gated_tree", "e" * 40),
+        ("pr", 8),
+        ("run_id", "100"),
+        ("run_attempt", 2),
+    ):
+        assert field in plan["binding"], field
+        other = copy.deepcopy(plan)
+        other["binding"][field] = value
+        assert ncs.plan_hash(other) != plan["plan_hash"], field
+
+
+def test_fragment_hash_covers_binding_index():
+    """SH-HASH(b)."""
+    frag = fragment(band_plan(3), 1)
+    other = copy.deepcopy(frag)
+    other["binding"]["index"] = 2
+    assert ncs.fragment_hash(other) != frag["fragment_sha256"]
+
+
 def test_document_drop_set_is_timing_only():
     assert not {"N", "plan_hash", "shards", "isolation_failure"} & ncs.DOCUMENT_HASH_DROPS
 
