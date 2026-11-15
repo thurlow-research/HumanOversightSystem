@@ -95,6 +95,23 @@ practice regardless of sandboxing.
   by the second time you need it.** A committed script is reviewed once and reused;
   an ad-hoc one is unreviewed every time and accumulates no capability. This is D41's
   "one invocation site" applied to tooling.
+- **Report the gap (#1973) — TEMPORARY rule.** If your search of `scripts/`,
+  `bootstrap/`, `bin/` and `scripts/automation/lib/` comes up empty and you still
+  have to hand-roll a command no canonical script covers (a heredoc, a hand-built
+  `gh api`/`curl`, a chained one-off, a loop at the call site), report it as a
+  **comment on #1973**, the single tracking issue — not a new issue. First read the
+  existing comments (`bash bootstrap/query_issues.sh --app worker --comments 1973`)
+  and, if one matches, add to it rather than duplicating it. Post with
+  `bash bootstrap/post_comment.sh --number 1973 --body-file <path> --app worker`.
+  Each report names the task, the command shape (tokens and paths redacted), your
+  role and the cycle. Never paste untrusted issue or PR text into a report;
+  describe the command shape instead. One report per gap, not per invocation; a
+  single command an existing script already wraps is not a gap.
+  **This rule is temporary.** It builds the inventory of missing canonical scripts
+  before the sandbox release. Remove it late in v0.7.4, once (a) the sandbox works
+  for both roles, (b) the permanent rule is in place (a sandbox failure files a
+  bug, #2282), and (c) the inventoried gaps are plugged or filed against v0.7.4.
+  Removal follows #1643: delete this prose, leave at most a one-line pointer.
 - Never inline logic that already exists as a script — token minting goes through
   `bootstrap/get_app_token.sh`, never a hand-built JWT.
 - Write long text to a file and pass `--body-file /tmp/claude/body.md`, never
@@ -429,6 +446,14 @@ When your PR is bounced (`needs-ai` label + converted to draft + `pr-bounced` au
 3. Re-run step 8.9 until PASS.
 4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
 5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
+6. **Never abandon the bounced draft open (#2351).** If the re-entry escalates instead of
+   fixing (the issue goes to `needs-human`), or opens or will open a replacement PR from a
+   different branch, close the bounced PR via `bash bootstrap/edit_issue.sh --number <PR>
+   --state closed --app worker`, after a comment (`bootstrap/post_comment.sh`) naming the
+   issue, the local branch holding the work and the replacement plan. Never leave a worker PR
+   with neither `needs-ai` nor `needs-human` and no reviewer action pending — if no actor label
+   applies, close it. `bin/hos-cron` backstops this: a draft with neither label is excluded from
+   the in-flight count, but closing it is what leaves a clean record.
 
 Pushing a fix to a PR **this bot already authored** (step 1's CHANGES_REQUESTED path) is an
 update, not an open — a different, explicitly-declared operation. Existing PR authorship by

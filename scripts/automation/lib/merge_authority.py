@@ -1408,8 +1408,21 @@ FINDING_CLASSES = (
     "MERITS",
     "SCOPE",
     "REVIEW_FINDING",
+    "REVIEW_CHAIN",
 )
-LLM_FINDING_CLASSES = frozenset({"CHECK", "MERITS", "SCOPE", "REVIEW_FINDING"})
+LLM_FINDING_CLASSES = frozenset({"CHECK", "MERITS", "SCOPE", "REVIEW_FINDING", "REVIEW_CHAIN"})
+# #2346: the closed set of roles a REVIEW_CHAIN finding may name as missing
+# from the review chain. The slug is a role name from the tier table, never
+# PR-body text, so the bounce summary stays code-templated.
+REVIEW_CHAIN_ROLES = (
+    "second-review-agy",
+    "second-review-codex",
+    "second-review",
+    "oversight-evaluator",
+    "security-reviewer",
+    "reliability-reviewer",
+)
+REVIEW_CHAIN_SUMMARY_PREFIX = "incomplete-review-chain:"
 ESCALATION_TRIGGERS = ("upheld-dispute", "bounce-cap", "reviewer-conflict", "decision")
 
 # Mirror .claude/agents/overseer.md:328-329 (15 files / 10 commits soft limits,
@@ -1613,8 +1626,8 @@ def finding_identity(
     cls: str, key: str, origin: str, path: Optional[str], check_run: Optional[str] = None
 ) -> tuple:
     """TD-D2: the same-head identity tuple, by origin and class."""
-    if origin == "code":
-        return (cls, key)
+    if origin == "code" or cls == "REVIEW_CHAIN":
+        return (cls, key)  # REVIEW_CHAIN has no path: the role slug is its identity
     if cls == "CHECK":
         return ("CHECK", check_run, path or "-")
     return (cls, path or "-")
@@ -1783,6 +1796,11 @@ def canonicalize_findings_ex(
                 )
             if not isinstance(slug, str) or not _SLUG_RE.match(slug):
                 _schema_fail(i, "slug", f"required, must match {_SLUG_RE.pattern}")
+            if cls == "REVIEW_CHAIN":
+                if path is not None:
+                    _schema_fail(i, "path", "not allowed on a REVIEW_CHAIN finding")
+                if slug not in REVIEW_CHAIN_ROLES:
+                    _schema_fail(i, "slug", f"must be one of {list(REVIEW_CHAIN_ROLES)}")
             key = f"{cls}:{path or '-'}:{slug}"
 
         source_url = entry.get("source_url")
@@ -2055,6 +2073,7 @@ _CLASS_REASON_CATEGORY = {
     "MERITS": "MERITS_FINDING",
     "SCOPE": "SCOPE_SIZE",
     "REVIEW_FINDING": "REVIEW_FINDING",
+    "REVIEW_CHAIN": "REGISTER_GAP",
 }
 
 
@@ -2261,6 +2280,21 @@ def _bounce_comment_body_findings(
 def bounce_summary(count: int, head_sha: str) -> str:
     """Templated summary — never LLM text."""
     return f"{count} finding(s) on {head_sha[:12]} must be fixed or disputed before this PR can proceed."
+
+
+def bounce_summary_for(findings: Sequence[Finding], head_sha: str) -> str:
+    """Templated summary; REVIEW_CHAIN findings lead with the missing roles (#2346).
+
+    The role names come from the closed REVIEW_CHAIN_ROLES slug set, so this is
+    still never LLM text.
+    """
+    roles = sorted({f.key.split(":", 2)[2] for f in findings if f.cls == "REVIEW_CHAIN"})
+    if not roles:
+        return bounce_summary(len(findings), head_sha)
+    return (
+        f"{REVIEW_CHAIN_SUMMARY_PREFIX} {', '.join(roles)} "
+        f"missing on {head_sha[:12]}; run the missing review(s) before this PR can proceed."
+    )
 
 
 def _convert_pr_to_draft(owner: str, repo: str, pr_number: int) -> None:

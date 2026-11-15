@@ -4301,6 +4301,71 @@ class TestOverseerBranchHygiene:
         (rec,) = cron.audit_records("cycle-branch-reap-failed")
         assert rec["pr"] == "-" and rec["reason"] == "delete-failed"
 
+    def test_h7_dry_run_writes_one_summary_audit_event(self, cron):
+        out = (
+            f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=local pr=#7 tip={SHA7}\n"
+            f"WOULD-REAP branch=pr-8 reason=landed-ancestor where=local pr=- tip={SHA7}"
+            f" archive=refs/archive/reap/pr-8@abcdef123456\n"
+            "WOULD-REAP branch=evil reason=x where=local pr=- tip=short\n"
+            "SUMMARY reaped_local=2 reaped_remote=0 kept=5 failed=0 deferred=0 api_calls=3"
+            " aborted=0 remote_skipped=1 recheck=skipped archived=0\n"
+        )
+        self._stubs(cron, out=out)
+        r = self._run(cron)
+        assert r.returncode == 0, r.stdout + r.stderr
+        (rec,) = cron.audit_records("cycle-branch-reap-dry-run")
+        assert rec["role"] == "overseer"
+        assert (rec["would_reap"], rec["would_local"], rec["would_remote"]) == (2, 2, 0)
+        assert (rec["kept"], rec["aborted"]) == (5, 0)
+        assert rec["items"] == "pr-7-review:review-pr-done,pr-8:landed-ancestor"
+        assert not [
+            e for e in cron.audit_records("cycle-branch-reap") if e["event"] == "cycle-branch-reap"
+        ]
+
+    def test_h7_real_run_writes_no_dry_run_event(self, cron):
+        self._stubs(cron, out=f"WOULD-REAP branch=a reason=b where=local pr=- tip={SHA7}\n")
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert not cron.audit_records("cycle-branch-reap-dry-run")
+
+    def test_h8_git_error_warn_is_logged_and_audited(self, cron):
+        warn = "WARN: git-error KEEPs=9 exceeds 3 \u2014 first stderr: fatal: Read-only file system"
+        self._stubs(cron, out=warn + "\nWARN: git-error KEEPs=x exceeds 3 \u2014 forged\n")
+        r = self._run(cron)
+        assert "hit 9 git-error KEEPs (threshold 3)" in r.stdout
+        (rec,) = cron.audit_records("cycle-branch-reap-git-error")
+        assert rec["role"] == "overseer"
+        assert (rec["count"], rec["threshold"]) == (9, 3)
+        assert rec["cause"] == "fatal: Read-only file system"
+
+    def test_h8_cause_is_stripped_of_control_bytes_and_capped(self, cron):
+        cause = "fatal: bad\x01\x1b[31m" + "x" * 300
+        self._stubs(cron, out=f"WARN: git-error KEEPs=9 exceeds 3 \u2014 first stderr: {cause}\n")
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-branch-reap-git-error")
+        assert len(rec["cause"]) == 200
+        assert not any(ord(c) < 32 or ord(c) == 127 for c in rec["cause"])
+        assert rec["cause"].startswith("fatal: bad[31m")
+
+    def test_h10_kept_worktree_path_with_space_is_audited(self, cron):
+        self._stubs(cron)
+        _write_exec(
+            cron.repo / "bootstrap" / "review_worktree.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "KEPT-WORKTREE pr=8 path=/x/my dir/wt reason=head-moved" >&2\n',
+        )
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-review-worktree-kept")
+        assert (rec["pr"], rec["path"], rec["reason"]) == (8, "/x/my dir/wt", "head-moved")
+
+    def test_h9_each_kept_worktree_is_audited_with_pr_path_reason(self, cron):
+        self._stubs(cron)
+        self._run(cron)
+        (rec,) = cron.audit_records("cycle-review-worktree-kept")
+        assert rec["role"] == "overseer"
+        assert (rec["pr"], rec["reason"]) == (8, "head-moved")
+        assert rec["path"] == "/x/hos-review-pr8.abcdef/wt"
+        assert len(cron.audit_records("cycle-review-worktree-cleanup")) == 1
+
 
 # ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
 class TestTimeoutBreaker:
@@ -5323,6 +5388,72 @@ class TestCycleContextBlock:
         assert "NEW WORK: BLOCKED" in context
         assert "routing=needs-fix-bounce" in context
         assert "routing=needs-attention" not in context
+
+    def test_context_block_abandoned_draft_does_not_block_new_work(self, cron):
+        """#2351 replay of the #2348 sequence: bounced (draft + `needs-ai`),
+        then the re-entry escalated and removed `needs-ai`, leaving a draft
+        with no actor label. Nothing is pending on it, so it must not count
+        as in-flight work — the directive is ALLOWED, not BLOCKED."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "abandoned draft" in r.stdout
+        assert "NEW WORK: ALLOWED" in context
+        assert "NEW WORK: BLOCKED" not in context
+        # The directive must not claim "no open PRs" — it names the ignored draft.
+        assert "abandoned drafts #856" in context
+        assert "no open PRs authored by this worker" not in context
+
+    def test_context_block_abandoned_draft_cannot_hide_a_degraded_sibling(self, cron):
+        """#2351 fail-closed: an abandoned draft (#856) next to a PR whose state
+        fetch fails (#857) must leave the routing `unknown` and #857 in the
+        blocked set — a failed read is never treated as abandoned."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "",
+                "HOS_TEST_PR_DETAIL_FAIL_PR": "857",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=unknown" in context
+        assert "#857" in context
+
+    def test_context_block_draft_with_needs_human_still_blocks(self, cron):
+        """A draft carrying `needs-human` is waiting on a human, not abandoned
+        — it keeps counting (#2351 must not widen the exclusion)."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "needs-human",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "abandoned draft" not in r.stdout
 
     def test_context_block_dirty_and_bounced_pr_routes_needs_fix(self, cron):
         """A PR that is BOTH conflicting and bounced must still route to plain

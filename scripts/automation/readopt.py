@@ -121,6 +121,9 @@ IssueStateLookup = Callable[[int], str]
 DEFAULT_MAX_LOOKUPS = 20
 # Circuit breaker: stop PR lookups for the run after this many consecutive failures.
 MAX_CONSECUTIVE_LOOKUP_FAILURES = 2
+# reap-orphans prints a WARN when more than this many KEEPs in one run are
+# ``git-error`` (e.g. a read-only .git makes every git call fail; #2313).
+GIT_ERROR_WARN_THRESHOLD = 3
 
 
 def _one_line(exc: object) -> str:
@@ -135,6 +138,11 @@ class GitError(RuntimeError):
 
 
 def make_git(repo: Path) -> GitRunner:
+    """Runner returning ``(rc, stdout)``. ``run.first_error`` keeps the first ``fatal:``/``error:``
+    stderr line (case-insensitive; ``warning:`` and other noise from benign probes are
+    ignored) of a failing call (raw; sanitize with ``_one_line`` before printing) so
+    reap-orphans can name the cause when many decisions end in ``git-error`` (#2313)."""
+
     def run(args: Sequence[str]) -> "tuple[int, str]":
         proc = subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -142,8 +150,14 @@ def make_git(repo: Path) -> GitRunner:
             text=True,
             check=False,
         )
+        if proc.returncode != 0 and not getattr(run, "first_error", ""):
+            for line in proc.stderr.splitlines():
+                if line.strip().lower().startswith(("fatal:", "error:")):
+                    run.first_error = line.strip()  # type: ignore[attr-defined]
+                    break
         return proc.returncode, proc.stdout.strip()
 
+    run.first_error = ""  # type: ignore[attr-defined]
     return run
 
 
@@ -1110,6 +1124,13 @@ def reap_orphans(
     ``--dry-run`` skips the pre-delete open-PR re-check (SUMMARY ``recheck=skipped``),
     so a WOULD-REAP can still become KEEP open-pr in the real run.
 
+    Rule D4 (review copies ``pr-N``/``pr-N-review``) applies to LOCAL refs only (#2329):
+    review copies are only ever created locally, so with ``remote_scope="all"`` a remote
+    head that merely has a review-copy name is decided by the other rules, or KEPT.
+
+    More than ``GIT_ERROR_WARN_THRESHOLD`` ``git-error`` KEEPs in one run print
+    ``WARN: git-error KEEPs=<n> exceeds <t> — first stderr: <line>``.
+
     ``issue_closed=False`` (CLI ``--no-issue-closed``, #2288 S3) suppresses rule D2 only:
     a closed-issue branch that has not landed is KEPT as ``issue-closed-unlanded``.
 
@@ -1346,6 +1367,13 @@ def reap_orphans(
     ]
     counts["kept"] = sum(1 for d in ordered if not d.reap)
     budget = max_deletions if max_deletions > 0 else None
+    git_errors = sum(1 for d in ordered if not d.reap and d.reason == "git-error")
+    if git_errors > GIT_ERROR_WARN_THRESHOLD:
+        cause = _one_line(getattr(git, "first_error", "") or "(none)")
+        print(
+            f"WARN: git-error KEEPs={git_errors} exceeds {GIT_ERROR_WARN_THRESHOLD}"
+            f" — first stderr: {cause}"
+        )
 
     if dry_run:
         for d in ordered:
@@ -1494,7 +1522,9 @@ def _decide_rest(
     # D4 (#2287): a local copy of a PR head that is no PR's own head.ref. Reaped only
     # when that PR's current head contains every commit of the tip (A1: not for a
     # real PR head, whose name merely looks like a review copy).
-    review = REVIEW_RE.fullmatch(ref.name)
+    # Local refs only (#2329): review copies are created locally, so a remote head with
+    # such a name is somebody's real branch and falls through to the other rules.
+    review = REVIEW_RE.fullmatch(ref.name) if ref.where == "local" else None
     if review and not plan["prs"]:
         number = int(review.group(1))
         target = plan["by_number"].get(number)

@@ -39,7 +39,7 @@
 ### AD-1: Findings use a closed schema. `route_pr()` alone maps them to a disposition. A finding is a rejection unless it carries a well-formed decision. (REQ-1, REQ-2, REQ-6.)
 
 - **Schema** (the CLI validates it and refuses unknown keys): `{class, key, summary, detail, source_url?, decision?: {question, options[≥2]}, conflicts_with?: {reviewer, ref}}`.
-  - **`class`** ∈ `PROCEDURAL` (a), `REQUIRED_CHECK` (b), `CHECK` (c), `MERITS` (d), `SCOPE` (e), `REVIEW_FINDING` (f).
+  - **`class`** ∈ `PROCEDURAL` (a), `REQUIRED_CHECK` (b), `CHECK` (c), `MERITS` (d), `SCOPE` (e), `REVIEW_FINDING` (f). Amendment (#2346): LLM class `REVIEW_CHAIN` (incomplete review chain; closed role slug, no path; reason category `REGISTER_GAP`).
   - **`source_url`**, when present, must be `https://github.com/<owner>/<repo>/…` for this repo. Anything else fails the schema.
 - **`key`, canonicalized by the CLI:**
   - code-collected findings: `<class>:<check_id>`;
