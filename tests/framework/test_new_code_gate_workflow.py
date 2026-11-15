@@ -23,6 +23,7 @@ FRAMEWORK = ROOT / "scripts" / "framework"
 GATE_MODULES = (
     FRAMEWORK / "new_code_gate.py",
     FRAMEWORK / "new_code_gate_logic.py",
+    FRAMEWORK / "new_code_gate_shard.py",
     FRAMEWORK / "new_code_gate_pytest_plugin.py",
 )
 SHELL_CHECK = ROOT / "scripts" / "oversight" / "validators" / "shell_logic_check.py"
@@ -549,12 +550,13 @@ def enclosing_function_names(tree, callee):
     return found
 
 
-def test_only_measure_and_run_install_the_sigterm_handler():
+def test_only_plan_shard_and_run_install_the_sigterm_handler():
     """RV-4: never at import, never in the hidden `_enumerate` / `_collect` children."""
     tree = parse(FRAMEWORK / "new_code_gate.py")
     assert sorted(enclosing_function_names(tree, "install_sigterm_handler")) == [
-        "command_measure",
+        "command_plan",
         "command_run",
+        "command_shard",
     ]
     signal_calls = [
         node
@@ -589,7 +591,8 @@ def test_run_tests_sets_ctrace_contexts_and_split_report():
     )
     assert "--omit='*/test_*,*/__init__.py,*/conftest.py,*/.venv/*,*/__pycache__/*' \\" in lines
     assert "--fail-under=$COVERAGE_TARGET" in lines
-    assert '"$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json' in lines
+    meta = '"$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json'
+    assert meta + " --durations test-durations.json" in lines
     assert text.index("-m pytest") < text.index("-m coverage report") < text.index(" meta --cov")
 
 
@@ -927,7 +930,7 @@ def test_workflow_has_no_privileged_trigger_secrets_or_unpinned_actions():
 
 SHA = "a" * 40
 PLANTED_MODULES = ("json", "argparse", "re", "coverage", "mutmut", "libcst", "sitecustomize")
-GATE_FILES = ("new_code_gate.py", "new_code_gate_logic.py")
+GATE_FILES = ("new_code_gate.py", "new_code_gate_logic.py", "new_code_gate_shard.py")
 GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@example.com",

@@ -1,9 +1,14 @@
-"""`measure`, `verdict` and the CLI of the new-code gate, in process (#2304, TD section 9).
+"""`plan`, `shard`, `verdict` and the CLI of the new-code gate, in process (#2304, TD section 9).
 
 Every case builds its own fixture git repository under `tmp_path`, writes coverage data through
-the `CoverageData` API and drives `measure` with a fake `Runner` for the four subprocess phases,
+the `CoverageData` API and drives the phases with a fake `Runner` for the four subprocess phases,
 so real mutmut is never imported here (A9a). The real-mutmut cases live in
 `test_new_code_gate_e2e.py`, which runs the CLI as a subprocess.
+
+`Rig.measure` is what the old `measure` phase was: it runs `plan`, every `shard` and the merge in
+process (`run_local`, the code behind `run`) and returns the merged records and 0, or 3 when a
+plan or shard reported an internal error. The shard count is never forced: a test that needs a
+given N sets `test_seconds_ms` in the sidecar so the plan's own weights land in N's band (TD 9.4).
 
 The gate modules are imported canonically and at module level (TD 5.19), and nothing here reads
 the real repository's `.git` or `.claude/` (G-NOGIT): fixtures are `git init`ed in `tmp_path`.
@@ -29,6 +34,7 @@ import pytest
 
 from scripts.framework import new_code_gate as gate
 from scripts.framework import new_code_gate_logic as ncg
+from scripts.framework import new_code_gate_shard as ncs
 from scripts.oversight.validators.shell_logic_check import decision_lines
 
 CALC = "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n"
@@ -73,6 +79,9 @@ class FakeClock:
 
     def utc_iso(self):
         return FIXED_NOW
+
+    def epoch(self):
+        return 5000 + int(self.t - 1000)
 
 
 class Templates:
@@ -190,6 +199,7 @@ class Rig:
             "measured_sources": list(ncg.MEASURED_SOURCES),
             "tool_versions": dict(ncg.PINNED),
             "python": "3.12",
+            "test_seconds_ms": {},
         }
         meta.update(override)
         (self.tmp / "coverage-meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -212,13 +222,40 @@ class Rig:
             "python_exe": sys.executable,
             "environ": {"TMPDIR": str(self.work)},
             "keep_workspace": False,
+            "job_start_file": None,
+            "github_output": None,
         }
         values.update(override)
-        return gate.MeasureOptions(**values)
+        return gate.PlanOptions(**values)
+
+    def run_with(self, opts, runner=None, clock=None):
+        """`plan`, every `shard` and the merge, in process, writing under `<tmp>/out`."""
+        out_dir = self.tmp / "out"
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return gate.run_local(opts, runner or FakeRunner(self), clock or FakeClock(), out_dir)
+
+    def run(self, runner=None, clock=None, **override):
+        return self.run_with(self.options(**override), runner, clock)
+
+    def measure_with(self, opts, runner=None, clock=None):
+        return self.digest(self.run_with(opts, runner, clock))
 
     def measure(self, runner=None, clock=None, **override):
-        runner = runner or FakeRunner(self)
-        return gate.measure(self.options(**override), runner, clock or FakeClock())
+        """The merged records and the old measure exit code: 0, or 3 on any internal error.
+
+        `internal_errors` is the raw list the plan and the shards reported (their own codes and
+        messages), not the merge's wrapping of them, so each test reads the cause directly.
+        """
+        return self.digest(self.run(runner, clock, **override))
+
+    @staticmethod
+    def digest(result):
+        raw = list(result.shard_run.plan["internal_errors"])
+        for fragment in result.shard_run.fragments:
+            raw.extend(fragment["internal_errors"])
+        records = dict(result.records)
+        records["internal_errors"] = raw or list(result.records["internal_errors"])
+        return records, 3 if records["internal_errors"] else 0
 
 
 def write_files(root, files):
@@ -249,6 +286,9 @@ class FakeRunner:
         self.gate_file = str(rig.root / "scripts/framework/new_code_gate.py")
         self.collect_gate_file = None
         self.timeout_on = set()
+        self.spans = {}
+        self.no_span = set()
+        self.last_ran = {}
         self.hook = None
         self.mirror = True
         self.tamper = None
@@ -316,8 +356,23 @@ class FakeRunner:
             "gated_mutant_names": gated,
             "line_map": {},
             "unmappable": self.unmappable.get(rel, []),
+            "functions": self.functions(rel, names),
         }
         return gate.ProcResult(0, json.dumps(doc), "", False)
+
+    def functions(self, rel, names):
+        """One span per mangled function prefix; by default each covers lines 1 to 1000."""
+        spans = self.spans.get(rel, {})
+        prefixes = sorted({ncs.mutant_prefix(n) for n in names})
+        return [
+            {
+                "prefix": p,
+                "start_line": spans.get(p, (1, 1000))[0],
+                "end_line": spans.get(p, (1, 1000))[1],
+            }
+            for p in prefixes
+            if p not in self.no_span
+        ]
 
     def selection(self, spec):
         parsed = tomllib.loads((Path(spec.cwd) / "pyproject.toml").read_text(encoding="utf-8"))
@@ -325,6 +380,7 @@ class FakeRunner:
 
     def on_mutmut_run(self, spec):
         rel = spec.env["NCG_GATED_FILE"]
+        self.last_ran[rel] = set(spec.argv[4:])
         events = []
         if self.write_plugin_event:
             plugin = self.plugin_path or str(
@@ -344,13 +400,18 @@ class FakeRunner:
         rel = self.rel(spec)
         if rel in self.collect_result:
             return self.collect_result[rel]
-        statuses = self.statuses.get(rel, {})
+        statuses = dict(self.statuses.get(rel, {}))
+        ran = self.last_ran.get(rel)
+        if ran is not None and ran != set(self.enum.get(rel, ([], []))[1]):
+            for name in statuses:
+                if name not in ran:
+                    statuses[name] = None
         doc = {
             "schema": ncg.SCHEMA_COLLECT,
             "file": rel,
             "gate_file": self.collect_gate_file or self.gate_file,
             "exit_code_by_key": {k: (None if v is None else 1) for k, v in statuses.items()},
-            "status_by_key": statuses,
+            "status_by_key": {k: ("not checked" if v is None else v) for k, v in statuses.items()},
         }
         return gate.ProcResult(0, json.dumps(doc), "", False)
 
@@ -399,7 +460,7 @@ def codes_of(rec):
 
 
 def verdict_of(doc):
-    vdoc, summary, code = gate.build_verdict(doc, None)
+    vdoc, summary, code = gate.build_verdict(doc)
     return vdoc, summary, code
 
 
@@ -434,7 +495,7 @@ def test_pr_meeting_targets_passes_and_record_has_every_field(std):
     assert rec["selection_method"] == "context"
     assert rec["selected_tests"] == [TEST_CALC_ID]
     assert verdict_of(doc)[2] == 0
-    assert doc["phase"] == "measure" and doc["mode"] == "local"
+    assert doc["phase"] == "merge" and doc["mode"] == "local"
     assert doc["gated_tree"] == rig.git("rev-parse", "HEAD^{tree}")
     assert doc["base_sha"] == rig.git("rev-parse", "main")
 
@@ -459,7 +520,6 @@ def test_twice_identical_records_sha256(std):
     first = measure_with_step(rig, 1.0)
     second = measure_with_step(rig, 3.5)
     assert file_rec(first)["seconds"] != file_rec(second)["seconds"]
-    assert first["seconds"] != second["seconds"]
     assert first["records_sha256"] == second["records_sha256"] == ncg.records_sha256(first["files"])
     assert measure_with_step(rig, 1.0, killed=4)["records_sha256"] != first["records_sha256"]
     assert file_rec(first)["enumerate_seconds"] != file_rec(second)["enumerate_seconds"]
@@ -495,8 +555,8 @@ def test_phase_seconds_are_recorded_apart_unhashed_and_sum_to_at_most_the_total(
     doc, _ = rig.measure(runner, clock)
     rec = file_rec(doc)
     phases = [rec[n] for n in ("workspace_seconds", "enumerate_seconds", "mutmut_seconds")]
-    assert phases + [rec["collect_seconds"]] == [3.0, 7.0, 2.0, 0.5]
-    assert rec["seconds"] == 12.5 and sum(phases) + rec["collect_seconds"] <= rec["seconds"]
+    assert phases + [rec["collect_seconds"]] == [6.0, 7.0, 2.0, 0.5]
+    assert rec["seconds"] == 15.5 and sum(phases) + rec["collect_seconds"] <= rec["seconds"]
     other = dict(rec, workspace_seconds=1.0, enumerate_seconds=1.0, mutmut_seconds=1.0)
     other["collect_seconds"] = 1.0
     assert ncg.records_sha256([other]) == ncg.records_sha256([rec]) == doc["records_sha256"]
@@ -593,7 +653,7 @@ def test_ws_integ_1_a_run_that_changes_the_mutants_tree_is_exit_3_and_names_the_
     assert code == 3
     assert internal_messages(doc) == [f"mutation run modified the workspace: {path}"]
     rec = file_rec(doc)
-    assert rec["mutation_reason"] == "internal_error" and rec["mutants_total"] == 0
+    assert rec["mutation_reason"] == "internal_error" and not rec["mutants_total"]
     assert runner.calls_for(gate.PHASE_COLLECT) == []
 
 
@@ -718,14 +778,14 @@ def test_noop_diff_zero_files_pass(rig):
     doc, code = rig.measure(runner)
     assert (code, doc["files"], runner.calls) == (0, [], [])
     vdoc, summary, vcode = verdict_of(doc)
-    assert vcode == 0 and summary == "No gated files in this PR.\n"
+    assert vcode == 0 and summary.startswith("No gated files in this PR.\n")
 
 
 def test_workspaces_are_removed_unless_kept(std, capsys):
     rig, runner = std
     rig.measure(runner)
     assert list(rig.work.iterdir()) == []
-    rig.measure(FakeRunner(rig), keep_workspace=True)
+    rig.measure(runner, keep_workspace=True)
     kept = list(rig.work.iterdir())
     assert len(kept) == 1 and (kept[0] / "workspace" / CALC_PATH).is_file()
     assert "kept workspace" in capsys.readouterr().err
@@ -740,7 +800,7 @@ def test_each_files_workspace_is_deleted_as_soon_as_that_file_is_done(rig):
     )
     doc, code = rig.measure(runner)
     assert code == 0 and all(f["mutation_ran"] for f in doc["files"])
-    assert live == [2, 1]
+    assert live == [1, 1]
     assert list(rig.work.iterdir()) == []
 
 
@@ -1449,7 +1509,11 @@ def test_enumerate_and_collect_run_in_per_file_subprocesses_with_workspace_cwd(r
             )
             assert spec.env["KEEP"] == "1"
     cwds = {spec.cwd for spec, _ in by_phase["enumerate"]}
-    assert len(cwds) == 2 and cwds == {spec.cwd for spec, _ in by_phase["collect"]}
+    # The plan enumerates in its own workspaces; each shard collects in its own, beside mutmut.
+    assert len(cwds) == 2
+    assert {spec.cwd for spec, _ in by_phase["collect"]} == {
+        spec.cwd for spec, _ in by_phase["mutmut_run"]
+    }
     for spec, only in by_phase["mutmut_run"]:
         assert spec.env["NCG_GATED_FILE"] == only[0] and "GITHUB_TOKEN" not in spec.env
         assert spec.env["NCG_WORKSPACE"] == spec.cwd and spec.env[
@@ -1489,7 +1553,7 @@ def test_gate_file_outside_checkout_or_inside_workspace_exits_3(std):
 def test_collect_drift_and_completeness_exit_3(std):
     rig, runner = std
     names = runner.enum[CALC_PATH][0]
-    drift = "mutant enumeration drift"
+    drift = f"shard 1 of 1: mutant enumeration drift: {CALC_PATH}"
     unread = f"mutation results could not be read: {CALC_PATH}"
 
     def doc_with(codes, statuses=None):
@@ -1602,7 +1666,6 @@ def test_other_files_still_get_records_when_one_file_errors(rig):
     runner.enum_result[CALC_PATH] = gate.ProcResult(3, "", "boom", False)
     doc, code = rig.measure(runner)
     assert code == 3 and len(doc["files"]) == 2
-    assert file_rec(doc, "scripts/framework/other.py")["mutation_ran"] is True
     assert [e["file"] for e in doc["internal_errors"]] == [CALC_PATH]
     vdoc, summary, vcode = verdict_of(doc)
     assert vcode == 3 and "Internal errors:" in summary
@@ -1636,7 +1699,9 @@ def test_budget_exhausted_records_timeout_and_fails(rig):
     ]
     assert other["mutation_ran"] is True and codes_of(other) == []
     message = calc["fail_reasons"][0]["message"]
-    assert message.startswith("mutation budget exhausted; split the PR (ran out in mutmut_run of ")
+    assert message.startswith(
+        "shard 1 of 1 overran its 25-minute budget (ran out in mutmut_run of "
+    )
     assert verdict_of(doc)[2] == 1
 
 
@@ -1655,10 +1720,8 @@ def test_timeout_message_says_where_the_budget_went(rig):
     messages = {f["path"]: f["fail_reasons"][0]["message"] for f in doc["files"]}
     assert len(set(messages.values())) == 1
     message = messages[CALC_PATH]
-    assert f"(ran out in mutmut_run of {CALC_PATH}; phases: " in message
-    assert "enumerate 14.0s" in message and "mutmut_run 1500.0s" in message
-    assert f"{CALC_PATH} 1507.0s (workspace 0.0s)" in message
-    assert "scripts/framework/other.py 7.0s (workspace 0.0s)" in message
+    assert f"(ran out in mutmut_run of {CALC_PATH}" in message
+    assert "split the PR" in message and "shard 1 of 1" in message
 
 
 def test_timeout_before_any_file_step_still_names_the_phase(rig):
@@ -2245,7 +2308,7 @@ def test_one_unsafe_file_does_not_stop_the_other_files(rig):
     assert code == 3 and [e["file"] for e in doc["internal_errors"]] == [
         "scripts/framework/other.py"
     ]
-    assert file_rec(doc)["mutation_ran"] is True
+    assert file_rec(doc)["kind"] == "new"
 
 
 # --------------------------------------------------------------------------
@@ -2267,7 +2330,7 @@ def merge_rig(rig, base_side_edit=True):
 
 def ci_opts(rig, pr_head, **override):
     values = {"mode": "ci", "base_ref": None, "pr_head_sha": pr_head, "pr": 7}
-    values.update(run_id="1", run_attempt="2")
+    values.update(run_id="1", run_attempt=2)
     values.update(override)
     return rig.options(**values)
 
@@ -2276,14 +2339,14 @@ def test_ci_mode_gates_merge_commit_base_is_first_parent(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1, 2, 3, 4, 5, 6]}})
     rig.sidecar(run_id="1")
-    doc, code = gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())
+    doc, code = rig.measure_with(ci_opts(rig, pr_head))
     rec = file_rec(doc, "scripts/framework/m.py")
     assert code == 0 and rec["gated_lines"] == [1]
     assert doc["base_sha"] == rig.git("rev-parse", "HEAD^1") and doc["gated_sha"] == rig.head()
     assert (doc["pr"], doc["run_id"], doc["run_attempt"], doc["pr_head_sha"]) == (
         7,
         "1",
-        "2",
+        2,
         pr_head,
     )
     assert doc["mode"] == "ci"
@@ -2293,11 +2356,11 @@ def test_ci_mode_second_parent_must_equal_pr_head(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"x.py": {"tests/t.py::t|run": [1]}})
     rig.sidecar(run_id="1")
-    doc, code = gate.measure(ci_opts(rig, "0" * 40), FakeRunner(rig), FakeClock())
+    doc, code = rig.measure_with(ci_opts(rig, "0" * 40))
     assert code == 3 and internal_messages(doc) == ["merge commit does not contain the PR head"]
     rig.git("checkout", "-q", "-B", "linear", "feature")
     rig.sidecar(run_id="1")
-    doc, code = gate.measure(ci_opts(rig, rig.head()), FakeRunner(rig), FakeClock())
+    doc, code = rig.measure_with(ci_opts(rig, rig.head()))
     assert code == 3 and internal_messages(doc) == ["merge commit does not contain the PR head"]
     assert pr_head
 
@@ -2307,7 +2370,7 @@ def test_blob_sha_from_gated_tree_pr_head_blob_alongside(rig):
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
     rig.sidecar(run_id="1")
     rec = file_rec(
-        gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())[0],
+        rig.measure_with(ci_opts(rig, pr_head))[0],
         "scripts/framework/m.py",
     )
     assert rec["blob_sha"] == rig.git("rev-parse", "HEAD:scripts/framework/m.py")
@@ -2320,7 +2383,7 @@ def test_blob_sha_equals_pr_head_blob_when_base_did_not_touch_the_file(rig):
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
     rig.sidecar(run_id="1")
     rec = file_rec(
-        gate.measure(ci_opts(rig, pr_head), FakeRunner(rig), FakeClock())[0],
+        rig.measure_with(ci_opts(rig, pr_head))[0],
         "scripts/framework/m.py",
     )
     assert rec["blob_sha"] == rec["pr_head_blob_sha"]
@@ -2329,7 +2392,9 @@ def test_blob_sha_equals_pr_head_blob_when_base_did_not_touch_the_file(rig):
 def test_pr_head_blob_is_null_when_the_path_is_absent_there(std):
     rig, _ = std
     base = rig.git("rev-parse", "main")
-    ctx = gate.Context(rig.options(pr_head_sha=base), FakeRunner(rig), FakeClock())
+    ctx = gate.Context(
+        rig.options(pr_head_sha=base), FakeRunner(rig), FakeClock(), ncg.PLAN_BUDGET_SECONDS
+    )
     assert gate.blob_shas(ctx, CALC_PATH) == (rig.git("rev-parse", f"HEAD:{CALC_PATH}"), None)
     assert gate.blob_shas(ctx, "README.md")[1] == gate.blob_shas(ctx, "README.md")[0]
 
@@ -2345,7 +2410,7 @@ def test_bind5_a_sidecar_from_another_run_exits_3_in_ci(rig, sidecar_run):
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
     rig.sidecar(run_id=sidecar_run)
     runner = FakeRunner(rig)
-    doc, code = gate.measure(ci_opts(rig, pr_head), runner, FakeClock())
+    doc, code = rig.measure_with(ci_opts(rig, pr_head), runner)
     assert code == 3 and runner.calls == [] and doc["files"] == []
     (message,) = internal_messages(doc)
     assert message.startswith("coverage data stale or from a dirty tree: run: sidecar was written")
@@ -2356,7 +2421,7 @@ def test_bind5_a_ci_measure_with_no_run_id_never_matches_a_sidecar(rig):
     pr_head = merge_rig(rig)
     rig.coverage({"scripts/framework/m.py": {"tests/test_m.py::t|run": [1]}})
     rig.sidecar(run_id=None)
-    doc, code = gate.measure(ci_opts(rig, pr_head, run_id=None), FakeRunner(rig), FakeClock())
+    doc, code = rig.measure_with(ci_opts(rig, pr_head, run_id=None))
     assert code == 3 and "run: sidecar was written by run None, this is run " in str(
         internal_messages(doc)
     )
@@ -2432,7 +2497,7 @@ def test_sym1_a_symlink_in_python_or_shell_scope_fails_closed_without_parsing(
     assert rec["fail_reasons"] == [{"code": "symlink_not_gateable", "message": ncg.MSG_SYMLINK}]
     assert rec["gated_statements"] == 0 and rec["mutation_ran"] is False
     assert rec["blob_sha"] == rig.git("rev-parse", f"HEAD:{rel}")
-    vdoc, summary, vcode = gate.build_verdict(doc, None)
+    vdoc, summary, vcode = gate.build_verdict(doc)
     assert vcode == 1 and vdoc["files"][0]["outcome"] == "fail"
     assert "symlink_not_gateable" in summary
 
@@ -2526,7 +2591,7 @@ def test_mode_1_a_gitlink_at_a_gated_path_fails_closed_without_a_blob_read(
     assert "(mode 160000, for example a submodule)" in message
     assert rec["gated_statements"] == 0 and rec["mutation_ran"] is False
     assert rec["blob_sha"] == commit
-    vdoc, summary, vcode = gate.build_verdict(doc, None)
+    vdoc, summary, vcode = gate.build_verdict(doc)
     assert vcode == 1 and vdoc["files"][0]["outcome"] == "fail"
     assert "mode_not_gateable" in summary
 
@@ -2728,7 +2793,7 @@ def test_env_label_flag_cannot_turn_fail_to_pass(rig, monkeypatch, capsys):
     assert rec["exception"] is None and rec["exception_path"] == ncg.EXCEPTION_PATH_TEXT
     assert verdict_codes(doc, rec["path"]) == ["coverage_below_threshold"]
     with pytest.raises(SystemExit) as raised:
-        gate.main([*verdict_argv(rig, doc), "--exception", "x"])
+        gate.main([*verdict_argv(rig), "--exception", "x"])
     assert raised.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
 
@@ -2738,48 +2803,72 @@ def test_env_label_flag_cannot_turn_fail_to_pass(rig, monkeypatch, capsys):
 # --------------------------------------------------------------------------
 
 
-RUN = {"run_id": "9", "run_attempt": "1"}
 PR = 7
+RUN = {"run_id": "9", "run_attempt": 1, "pr": PR}
+PLAN_DIR = "out/plan"
+FRAGMENTS_DIR = "out/fragments"
 
 
-def ci_doc(rig, runner, **override):
-    """Records as a CI `measure` writes them (mode ci, this PR), measured in process."""
-    doc, _ = rig.measure(runner, **RUN)
-    return dict(doc, **{"mode": "ci", "pr": PR, **override})
-
-
-def write_records(rig, doc):
-    """A fresh records directory holding the one artifact file; returns that file's path."""
-    directory = rig.tmp / "records"
-    directory.mkdir(exist_ok=True)
-    path = directory / gate.RECORDS_FILENAME
+def rewrite_json(path, change):
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    change(doc)
     path.write_text(json.dumps(doc), encoding="utf-8")
-    return path
 
 
-def verdict_inputs(rig, doc, **override):
-    """Inputs for `verdict`; the records are staged unless a test already staged (or damaged) them."""
-    staged = rig.tmp / "records"
-    if not staged.exists():
-        write_records(rig, doc)
+def ci_stage(rig, runner, **binding):
+    """The plan and fragments a CI run's artifacts would hold, bound to this run.
+
+    The plan and every shard run in process (local mode), then the plan's binding becomes the CI
+    one (`binding` overrides it) and each file's hash is recomputed, so the artifacts verify.
+    """
+    rig.run(runner, **RUN)
+    plan_path = rig.tmp / PLAN_DIR / gate.PLAN_FILENAME
+
+    def bind(doc):
+        doc["binding"].update({"mode": "ci", **binding})
+        doc["plan_hash"] = ncs.plan_hash(doc)
+
+    rewrite_json(plan_path, bind)
+    plan_hash = json.loads(plan_path.read_text(encoding="utf-8"))["plan_hash"]
+    for path in sorted((rig.tmp / FRAGMENTS_DIR).glob(f"*/{gate.FRAGMENT_FILENAME}")):
+
+        def rebind(doc):
+            doc["binding"].update(
+                {k: v for k, v in binding.items() if k in doc["binding"]}, plan_hash=plan_hash
+            )
+            doc["fragment_sha256"] = ncs.fragment_hash(doc)
+
+        rewrite_json(path, rebind)
+    return plan_path, rig.tmp / FRAGMENTS_DIR
+
+
+def verdict_inputs(rig, **override):
     values = {
-        "records_dir": staged,
+        "plan_dir": rig.tmp / PLAN_DIR,
+        "fragments_dir": rig.tmp / FRAGMENTS_DIR,
+        "plan_result": "success",
+        "shard_result": "success",
         "gated_sha": rig.head(),
         "pr": PR,
         "run_id": "9",
         "run_attempt": 1,
-        "measure_result": "success",
     }
     values.update(override)
     return gate.VerdictInputs(**values)
 
 
-def verdict_argv(rig, doc, **override):
-    inputs = verdict_inputs(rig, doc, **override)
+def verdict_argv(rig, **override):
+    inputs = verdict_inputs(rig, **override)
     return [
         "verdict",
-        "--records-dir",
-        str(inputs.records_dir),
+        "--plan-dir",
+        str(inputs.plan_dir),
+        "--fragments-dir",
+        str(inputs.fragments_dir),
+        "--plan-result",
+        inputs.plan_result,
+        "--shard-result",
+        inputs.shard_result,
         "--gated-sha",
         inputs.gated_sha,
         "--pr",
@@ -2788,8 +2877,8 @@ def verdict_argv(rig, doc, **override):
         inputs.run_id,
         "--run-attempt",
         str(inputs.run_attempt),
-        "--measure-result",
-        inputs.measure_result,
+        "--records-out",
+        str(rig.tmp / "r.json"),
         "--out",
         str(rig.tmp / "v.json"),
         "--summary",
@@ -2798,169 +2887,173 @@ def verdict_argv(rig, doc, **override):
 
 
 def run_verdict(rig, inputs):
-    out, summary = rig.tmp / "v.json", rig.tmp / "s.md"
-    return gate.verdict(inputs, out, summary), out, summary
+    records, out, summary = rig.tmp / "r.json", rig.tmp / "v.json", rig.tmp / "s.md"
+    return gate.verdict(inputs, records, out, summary, FakeClock()), out, summary
+
+
+def problem_codes(rig):
+    records = json.loads((rig.tmp / "r.json").read_text(encoding="utf-8"))
+    return [e["code"] for e in records["internal_errors"]]
 
 
 def test_verdict_writes_artifact_and_summary_and_exit_code(std):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    code, out, summary = run_verdict(rig, verdict_inputs(rig, doc))
+    ci_stage(rig, runner)
+    code, out, summary = run_verdict(rig, verdict_inputs(rig))
     assert code == 0
     vdoc = json.loads(out.read_text())
+    records = json.loads((rig.tmp / "r.json").read_text())
     assert vdoc["phase"] == "verdict" and vdoc["overall"] == "pass" and vdoc["exit_code"] == 0
-    assert vdoc["measure_records_sha256"] == doc["records_sha256"]
+    assert vdoc["measure_records_sha256"] == records["records_sha256"]
+    assert records["phase"] == "merge" and records["mode"] == "ci"
     assert vdoc["files"][0]["outcome"] == "pass" and f"| {CALC_PATH} | new |" in summary.read_text()
 
 
-def test_verdict_upstream_not_success_exits_3_after_rendering(std):
+@pytest.mark.parametrize("which", ["plan_result", "shard_result"])
+def test_verdict_upstream_not_success_exits_3_after_rendering(std, which):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    code, out, summary = run_verdict(rig, verdict_inputs(rig, doc, measure_result="cancelled"))
+    ci_stage(rig, runner)
+    code, out, summary = run_verdict(rig, verdict_inputs(rig, **{which: "cancelled"}))
     assert code == 3
-    assert "upstream job not successful: cancelled" in summary.read_text()
-    assert json.loads(out.read_text())["files"][0]["path"] == CALC_PATH
+    assert "Internal errors:" in summary.read_text()
+    assert json.loads(out.read_text())["overall"] == "fail"
 
 
-def test_verdict_with_an_empty_measure_result_is_not_success(std):
+def test_verdict_with_an_empty_job_result_is_not_success(std):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    assert run_verdict(rig, verdict_inputs(rig, doc, measure_result=""))[0] == 3
+    ci_stage(rig, runner)
+    assert run_verdict(rig, verdict_inputs(rig, shard_result=""))[0] == 3
+    assert run_verdict(rig, verdict_inputs(rig, plan_result=""))[0] == 3
 
 
-@pytest.mark.parametrize("damage", ["missing", "garbage", "schema", "sha"])
-def test_verdict_with_bad_records_exits_3_and_still_writes_files(std, damage):
+@pytest.mark.parametrize(
+    "damage", ["plan-missing", "plan-garbage", "fragment-garbage", "fragment-edited", "no-shards"]
+)
+def test_verdict_with_bad_artifacts_exits_3_and_still_writes_files(std, damage):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    records = write_records(rig, doc)
-    if damage == "missing":
-        records.unlink()
-    elif damage == "garbage":
-        records.write_text("[", encoding="utf-8")
-    elif damage == "schema":
-        records.write_text(json.dumps(dict(doc, schema="x")), encoding="utf-8")
+    plan_path, fragments = ci_stage(rig, runner)
+    (fragment,) = sorted(fragments.glob(f"*/{gate.FRAGMENT_FILENAME}"))
+    if damage == "plan-missing":
+        plan_path.unlink()
+    elif damage == "plan-garbage":
+        plan_path.write_text("[", encoding="utf-8")
+    elif damage == "fragment-garbage":
+        fragment.write_text("[", encoding="utf-8")
+    elif damage == "fragment-edited":
+        rewrite_json(fragment, lambda doc: doc["files"][0].update(killed=4))
     else:
-        doc["files"][0]["executed_gated"] = 0
-        records.write_text(json.dumps(doc), encoding="utf-8")
-    code, out, summary = run_verdict(rig, verdict_inputs(rig, doc))
+        shutil.rmtree(fragments)
+    code, out, summary = run_verdict(rig, verdict_inputs(rig))
     assert code == 3
     assert json.loads(out.read_text())["overall"] == "fail"
     assert "Internal errors:" in summary.read_text()
 
 
-def test_verdict_of_measure_with_internal_error_is_exit_3(std):
+def test_verdict_of_a_plan_with_internal_error_is_exit_3(std):
     rig, runner = std
-    doc, code = rig.measure(runner, tests_result="failure", **RUN)
-    assert run_verdict(rig, verdict_inputs(rig, dict(doc, mode="ci", pr=PR)))[0] == 3
-
-
-BIND_MESSAGE = "records not bound to this run: "
+    rig.run(runner, tests_result="failure", **RUN)
+    code, out, _ = run_verdict(rig, verdict_inputs(rig, plan_result="failure"))
+    assert code == 3 and json.loads(out.read_text())["overall"] == "fail"
 
 
 @pytest.mark.parametrize(
-    "override,detail",
-    [
-        ({"gated_sha": "d" * 40}, "gated_sha is "),
-        ({"pr": 8}, "pr is 7, expected 8"),
-        ({"run_id": "10"}, "run_id is 9, expected 10"),
-    ],
+    "override",
+    [{"gated_sha": "d" * 40}, {"pr": 8}, {"run_id": "10"}],
     ids=["other-sha", "other-pr", "other-run"],
 )
-def test_bind1_to_3_verdict_refuses_records_from_another_commit_pr_or_run(std, override, detail):
-    """BIND-1..3 (F5, RV-7): a stale or foreign records artifact must not pass this run's verdict."""
+def test_bind1_to_3_verdict_refuses_artifacts_from_another_commit_pr_or_run(std, override):
+    """BIND-1..3 (F5, RV-7): a stale or foreign plan must not pass this run's verdict."""
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    code, out, summary = run_verdict(rig, verdict_inputs(rig, doc, **override))
+    ci_stage(rig, runner)
+    code, out, summary = run_verdict(rig, verdict_inputs(rig, **override))
     assert code == 3
-    vdoc = json.loads(out.read_text())
-    assert vdoc["overall"] == "fail" and vdoc["files"] == []
-    message = vdoc["internal_errors"][0]["message"]
-    assert message.startswith(BIND_MESSAGE) and detail in message
-    assert BIND_MESSAGE in summary.read_text()
+    assert json.loads(out.read_text())["overall"] == "fail"
+    assert "plan_not_bound" in problem_codes(rig)
+    assert "records not bound to this run: " in summary.read_text()
 
 
 def test_bind4_a_later_attempt_is_refused_and_an_equal_or_earlier_one_is_accepted(std):
     rig, runner = std
-    doc = ci_doc(rig, runner, run_attempt="3")
-    code, out, _ = run_verdict(rig, verdict_inputs(rig, doc, run_attempt=2))
+    ci_stage(rig, runner, run_attempt=3)
+    code, out, _ = run_verdict(rig, verdict_inputs(rig, run_attempt=2))
     assert code == 3
-    message = json.loads(out.read_text())["internal_errors"][0]["message"]
-    assert message == BIND_MESSAGE + "run_attempt is 3, expected an integer of at most 2"
+    assert "run_attempt is 3, expected an integer of at most 2" in json.dumps(
+        json.loads((rig.tmp / "r.json").read_text())["internal_errors"]
+    )
     for attempt in (3, 4):
-        assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=attempt))[0] == 0
-    write_records(rig, ci_doc(rig, runner, run_attempt="1"))
-    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=5))[0] == 0
-    write_records(rig, ci_doc(rig, runner, run_attempt=1))
-    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=1))[0] == 0
-    write_records(rig, ci_doc(rig, runner, run_attempt="x"))
-    assert run_verdict(rig, verdict_inputs(rig, doc, run_attempt=1))[0] == 3
+        assert run_verdict(rig, verdict_inputs(rig, run_attempt=attempt))[0] == 0
 
 
-def test_bind4_a_verdict_only_rerun_reads_the_first_attempts_records(std):
-    """RV-7: re-running only `new-code-gate` (attempt 2) must judge the attempt-1 records."""
+def test_bind4_a_verdict_only_rerun_reads_the_first_attempts_artifacts(std):
+    """RV-7: re-running only `new-code-gate` (attempt 2) must judge the attempt-1 artifacts."""
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    assert doc["run_attempt"] == "1"
-    argv = verdict_argv(rig, doc, run_attempt=2)
+    ci_stage(rig, runner)
+    argv = verdict_argv(rig, run_attempt=2)
     assert argv[argv.index("--run-attempt") + 1] == "2" and gate.main(argv) == 0
 
 
-def test_bind4_records_that_are_not_ci_records_are_refused(std):
+def test_bind4_a_plan_that_is_not_a_ci_plan_is_refused(std):
     rig, runner = std
-    doc = ci_doc(rig, runner, mode="local")
-    code, out, _ = run_verdict(rig, verdict_inputs(rig, doc))
+    ci_stage(rig, runner, mode="local")
+    code, _, _ = run_verdict(rig, verdict_inputs(rig))
     assert code == 3
-    assert (
-        json.loads(out.read_text())["internal_errors"][0]["message"]
-        == BIND_MESSAGE + "mode is local, expected ci"
+    assert "mode is local, expected ci" in json.dumps(
+        json.loads((rig.tmp / "r.json").read_text())["internal_errors"]
     )
 
 
-def test_bind4_a_records_file_that_is_a_symlink_is_refused(std):
+def test_a_plan_file_that_is_a_symlink_or_has_company_is_refused(std):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    real = rig.tmp / "real-records"
-    real.mkdir()
-    (real / gate.RECORDS_FILENAME).write_text(json.dumps(doc), encoding="utf-8")
-    linked = rig.tmp / "linked"
-    linked.mkdir()
-    (linked / gate.RECORDS_FILENAME).symlink_to(real / gate.RECORDS_FILENAME)
-    inputs = verdict_inputs(rig, doc)._replace(records_dir=linked)
-    code, out, _ = run_verdict(rig, inputs)
-    assert code == 3
-    assert "as a regular file" in json.loads(out.read_text())["internal_errors"][0]["message"]
+    plan_path, _ = ci_stage(rig, runner)
+    (plan_path.parent / "extra.json").write_text("{}", encoding="utf-8")
+    assert run_verdict(rig, verdict_inputs(rig))[0] == 3
+    (plan_path.parent / "extra.json").unlink()
+    assert run_verdict(rig, verdict_inputs(rig))[0] == 0
+    elsewhere = rig.tmp / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / gate.PLAN_FILENAME).symlink_to(plan_path)
+    assert run_verdict(rig, verdict_inputs(rig, plan_dir=elsewhere))[0] == 3
+    assert run_verdict(rig, verdict_inputs(rig, plan_dir=rig.tmp / "no-such-dir"))[0] == 3
+
+
+def test_a_fragment_entry_that_is_not_a_directory_of_one_file_is_a_problem(std):
+    rig, runner = std
+    _, fragments = ci_stage(rig, runner)
+    (fragments / "stray.json").write_text("{}", encoding="utf-8")
+    assert run_verdict(rig, verdict_inputs(rig))[0] == 3
+    assert "fragment_extra" in problem_codes(rig)
 
 
 def test_verdict_cli_passes_with_every_binding_flag_and_exits_3_on_a_mismatch(std):
     rig, runner = std
-    doc = ci_doc(rig, runner)
-    assert gate.main(verdict_argv(rig, doc)) == 0
-    assert gate.main(verdict_argv(rig, doc, run_id="10")) == 3
-    assert gate.main(verdict_argv(rig, doc, gated_sha="c" * 40)) == 3
-    assert gate.main(verdict_argv(rig, doc, pr=8)) == 3
-    write_records(rig, ci_doc(rig, runner, run_attempt="2"))
-    assert gate.main(verdict_argv(rig, doc)) == 3
-    assert gate.main(verdict_argv(rig, doc, run_attempt=2)) == 0
+    ci_stage(rig, runner)
+    assert gate.main(verdict_argv(rig)) == 0
+    assert gate.main(verdict_argv(rig, run_id="10")) == 3
+    assert gate.main(verdict_argv(rig, gated_sha="c" * 40)) == 3
+    assert gate.main(verdict_argv(rig, pr=8)) == 3
+    assert gate.main(verdict_argv(rig, shard_result="failure")) == 3
 
 
 @pytest.mark.parametrize(
     "omit",
     [
-        "--records-dir",
+        "--plan-dir",
+        "--fragments-dir",
+        "--plan-result",
+        "--shard-result",
         "--gated-sha",
         "--pr",
         "--run-id",
         "--run-attempt",
-        "--measure-result",
+        "--records-out",
         "--out",
         "--summary",
     ],
 )
 def test_verdict_cli_requires_every_binding_flag(std, omit, capsys):
     """F5: leaving a flag out must be a usage error (exit 2), never a default that reads as success."""
-    rig, runner = std
-    doc = ci_doc(rig, runner)
-    argv = verdict_argv(rig, doc)
+    rig, _ = std
+    argv = verdict_argv(rig)
     at = argv.index(omit)
     with pytest.raises(SystemExit) as raised:
         gate.main(argv[:at] + argv[at + 2 :])
@@ -2969,9 +3062,9 @@ def test_verdict_cli_requires_every_binding_flag(std, omit, capsys):
 
 
 @pytest.mark.parametrize("omit", ["--tests-result", "--run-id", "--run-attempt"])
-def test_measure_cli_requires_the_ci_binding_flags(omit, capsys):
+def test_plan_cli_requires_the_ci_binding_flags(omit, capsys):
     argv = [
-        "measure",
+        "plan",
         "--gated-sha",
         "a",
         "--pr-head-sha",
@@ -2998,37 +3091,39 @@ def test_measure_cli_requires_the_ci_binding_flags(omit, capsys):
     assert omit in capsys.readouterr().err
 
 
-def test_verdict_refuses_records_written_without_a_run_id(std):
-    rig, runner = std
-    doc, _ = rig.measure(runner)
-    doc = dict(doc, mode="ci", pr=PR)
-    assert doc["run_id"] is None
-    assert run_verdict(rig, verdict_inputs(rig, doc))[0] == 3
+@pytest.mark.parametrize(
+    "omit", ["--index", "--plan-dir", "--gated-sha", "--pr", "--run-id", "--run-attempt", "--out"]
+)
+def test_shard_cli_requires_every_binding_flag(omit, capsys):
+    argv = [
+        "shard",
+        "--index",
+        "1",
+        "--plan-dir",
+        "p",
+        "--gated-sha",
+        "a",
+        "--pr",
+        "1",
+        "--run-id",
+        "9",
+        "--run-attempt",
+        "1",
+        "--out",
+        "o",
+    ]
+    at = argv.index(omit)
+    with pytest.raises(SystemExit) as raised:
+        gate.main(argv[:at] + argv[at + 2 :])
+    assert raised.value.code == 2
+    assert omit in capsys.readouterr().err
 
 
-def test_verdict_reads_only_a_directory_holding_exactly_the_records_file(std):
-    """F5: the checkout (or any directory with other files in it) is not a records directory."""
-    rig, runner = std
-    doc = ci_doc(rig, runner)
-    inputs = verdict_inputs(rig, doc)
-    (inputs.records_dir / "extra.json").write_text("{}", encoding="utf-8")
-    code, out, _summary = run_verdict(rig, inputs)
-    assert code == 3
-    assert (
-        "must hold exactly new-code-records.json"
-        in json.loads(out.read_text())["internal_errors"][0]["message"]
-    )
-    (inputs.records_dir / "extra.json").unlink()
-    assert run_verdict(rig, inputs)[0] == 0
-    elsewhere = rig.tmp / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / gate.RECORDS_FILENAME).symlink_to(inputs.records_dir / gate.RECORDS_FILENAME)
-    assert run_verdict(rig, inputs._replace(records_dir=elsewhere))[0] == 3
-    code, out, _summary = run_verdict(rig, inputs._replace(records_dir=rig.tmp / "no-such-dir"))
-    assert code == 3
-    assert (
-        "records directory missing" in json.loads(out.read_text())["internal_errors"][0]["message"]
-    )
+def test_the_measure_phase_is_gone(capsys):
+    with pytest.raises(SystemExit) as raised:
+        gate.main(["measure"])
+    assert raised.value.code == 2
+    assert "measure" in capsys.readouterr().err
 
 
 def test_fetch_rulings_is_the_empty_s2_seam():
@@ -3046,13 +3141,17 @@ def test_main_meta_writes_sidecar_and_measure_runs_end_to_end_on_a_noop_diff(
     monkeypatch.setenv("COVERAGE_CORE", "ctrace")
     monkeypatch.setenv("GITHUB_RUN_ID", "9")
     cov, meta = str(rig.tmp / ".coverage"), rig.tmp / "meta.json"
-    assert gate.main(["meta", "--coverage-file", cov, "--out", str(meta)]) == 0
+    durations = rig.tmp / "durations.json"
+    durations.write_text(json.dumps({"tests/t.py::t": 12}), encoding="utf-8")
+    meta_argv = ["meta", "--coverage-file", cov, "--out", str(meta)]
+    assert gate.main([*meta_argv, "--durations", str(durations)]) == 0
     sidecar = json.loads(meta.read_text())
     assert (
         sidecar["head_sha"] == rig.head()
         and sidecar["clean"] is True
         and sidecar["coverage_core"] == "ctrace"
         and sidecar["run_id"] == "9"
+        and sidecar["test_seconds_ms"] == {"tests/t.py::t": 12}
     )
     assert sidecar["tool_versions"] == gate.installed_versions() == dict(ncg.PINNED)
     assert sidecar["measured_sources"] == list(ncg.MEASURED_SOURCES) and sidecar[
@@ -3064,7 +3163,7 @@ def test_main_meta_writes_sidecar_and_measure_runs_end_to_end_on_a_noop_diff(
     # a one-parent gated commit under CI-style flags fails the AR-1 guard with exit 3
     out = rig.tmp / "records.json"
     argv = [
-        "measure",
+        "plan",
         "--gated-sha",
         head,
         "--pr-head-sha",
@@ -3080,11 +3179,9 @@ def test_main_meta_writes_sidecar_and_measure_runs_end_to_end_on_a_noop_diff(
     ]
     ci = [*argv, "--meta", str(meta), "--out", str(out)]
     assert gate.main([*ci, "--tests-result", "success"]) == 3
-    assert (
-        json.loads(out.read_text())["internal_errors"][0]["message"]
-        == "merge commit does not contain the PR head"
-    )
-    assert json.loads(out.read_text())["run_id"] == "9"
+    plan = json.loads(out.read_text())
+    assert plan["internal_errors"][0]["message"] == "merge commit does not contain the PR head"
+    assert plan["binding"]["run_id"] == "9" and plan["N"] == 1
     assert gate.main([*ci, "--tests-result", "failure"]) == 3
     assert "upstream job not successful: failure" in out.read_text()
     capsys.readouterr()
@@ -3235,9 +3332,10 @@ def test_command_run_measures_head_prints_the_table_and_writes_artifacts(rig, mo
     monkeypatch.chdir(rig.root)
     monkeypatch.setenv("COVERAGE_CORE", "ctrace")
     meta = rig.root / "coverage-meta.json"
-    assert (
-        gate.main(["meta", "--coverage-file", str(rig.tmp / ".coverage"), "--out", str(meta)]) == 0
-    )
+    durations = rig.tmp / "durations.json"
+    durations.write_text("{}", encoding="utf-8")
+    meta_argv = ["meta", "--coverage-file", str(rig.tmp / ".coverage"), "--out", str(meta)]
+    assert gate.main([*meta_argv, "--durations", str(durations)]) == 0
     (rig.root / ".coverage").write_bytes((rig.tmp / ".coverage").read_bytes())
     monkeypatch.setattr(tempfile, "tempdir", str(rig.work))
     assert gate.main(["run", "--base", "main"]) == 0
@@ -3453,7 +3551,7 @@ def test_the_sigterm_handler_turns_the_signal_into_system_exit_143():
     assert raised.value.code == gate.EXIT_SIGTERM == 143
 
 
-def test_only_measure_and_run_install_the_sigterm_handler(std, monkeypatch, capsys):
+def test_only_plan_shard_and_run_install_the_sigterm_handler(std, monkeypatch, capsys):
     rig, runner = std
     calls = []
     monkeypatch.setattr(gate, "install_sigterm_handler", lambda: calls.append("installed"))
@@ -3463,14 +3561,18 @@ def test_only_measure_and_run_install_the_sigterm_handler(std, monkeypatch, caps
     assert gate.main(["run", "--base", "main"]) == 0
     assert calls == ["installed"]
     out = rig.tmp / "r.json"
-    argv = ["measure", "--gated-sha", "a", "--pr-head-sha", "b", "--pr", "1"]
+    argv = ["plan", "--gated-sha", "a", "--pr-head-sha", "b", "--pr", "1"]
     argv += ["--coverage-file", "c", "--meta", "m", "--out", str(out)]
     argv += ["--tests-result", "failure", "--run-id", "9", "--run-attempt", "1"]
     assert gate.main(argv) == 3
     assert calls == ["installed", "installed"]
+    argv = ["shard", "--index", "1", "--plan-dir", str(rig.tmp / "none"), "--gated-sha", "a"]
+    argv += ["--pr", "1", "--run-id", "9", "--run-attempt", "1", "--out", str(rig.tmp / "f.json")]
+    assert gate.main(argv) == 3
+    assert calls == ["installed"] * 3
     monkeypatch.setattr(gate, "collect_child", lambda rel, cwd: {})
     assert gate.main(["_collect", "--file", "a.py"]) == 0
-    assert calls == ["installed", "installed"]
+    assert calls == ["installed"] * 3
     capsys.readouterr()
 
 
@@ -3895,3 +3997,462 @@ def test_every_test_calling_a_child_phase_restores_the_host_mutmut_config():
         if calls & {"enumerate_child", "collect_child"} and not guarded:
             offenders.append(node.name)
     assert offenders == []
+
+
+# --------------------------------------------------------------------------
+# Sharding: plan, shard and the local run (TD 5.20, 9.4; AC-10, 15, 29, 30, 34, 35, 37, 40, 41, 45)
+# --------------------------------------------------------------------------
+
+MAX_TEST_MS = ncs.D_CLAMP_MS
+
+
+def sized_rig(rig, tests, mutants=4, ms=MAX_TEST_MS):
+    """A one-file PR whose `test_seconds_ms` puts the plan's work in a chosen shard-count band.
+
+    Every mutant of `calc.py` runs all `tests` selected tests (the fixture's span covers every
+    line), so W = mutants x (C_MUTANT_MS + tests x ms). The count is never forced, only earned.
+    """
+    if not getattr(rig, "standardized", False):
+        rig.standard()
+        rig.standardized = True
+    ids = [TEST_CALC_ID] + [f"tests/test_calc.py::test_extra{i}" for i in range(tests - 1)]
+    rig.coverage({CALC_PATH: {i + "|run": CALC_LINES for i in ids}})
+    rig.sidecar(test_seconds_ms={i: ms for i in ids})
+    runner = FakeRunner(rig)
+    runner.mutants(CALC_PATH, killed=mutants, survived=0)
+    return runner
+
+
+def plan_of(rig, runner, **override):
+    return gate.plan(rig.options(**override), runner, FakeClock())
+
+
+def test_plan_n_is_earned_from_the_work_never_forced(rig):
+    runner = sized_rig(rig, tests=1)
+    doc, code = plan_of(rig, runner)
+    assert code == 0 and doc["N"] == 1 and doc["capped"] is False
+    assert [len(a["members"]) for a in doc["assignment"]] == [1]
+    heavy = sized_rig(rig, tests=3)
+    doc, code = plan_of(rig, heavy)
+    assert code == 0 and doc["N"] == 3 and doc["W_ci_minutes"] >= 30
+    assert [bool(a["members"]) for a in doc["assignment"]] == [True] * 3
+
+
+@pytest.mark.parametrize("name", ["NCG_N", "N_MAX", "HOS_SHARDS", "GITHUB_SHARDS"])
+def test_plan_shard_count_ignores_env_label_config(rig, name):
+    """AC-35(c): nothing but the plan's own weights moves N or the plan hash."""
+    runner = sized_rig(rig, tests=1)
+    first, _ = plan_of(rig, runner)
+    (rig.root / "labels.txt").write_text("shards=8\n", encoding="utf-8")
+    environ = {"TMPDIR": str(rig.work), name: "8"}
+    again, _ = plan_of(rig, sized_rig(rig, tests=1), environ=environ)
+    assert (again["N"], again["plan_hash"]) == (first["N"], first["plan_hash"])
+
+
+def test_identical_plan_inputs_same_n_and_plan_hash(rig):
+    runner = sized_rig(rig, tests=3)
+    first, _ = gate.plan(rig.options(), runner, FakeClock())
+    slow = FakeClock()
+    runner2 = sized_rig(rig, tests=3)
+    runner2.hook = lambda phase, spec: setattr(slow, "t", slow.t + 4.0)
+    second, _ = gate.plan(rig.options(), runner2, slow)
+    assert first["seconds"] != second["seconds"]
+    assert (first["N"], first["plan_hash"]) == (second["N"], second["plan_hash"])
+
+
+def test_plan_writes_github_output_last_and_only_when_valid(rig, tmp_path):
+    runner = sized_rig(rig, tests=3)
+    doc, code = plan_of(rig, runner)
+    out = tmp_path / "gh-output"
+    gate.write_job_outputs(out, doc)
+    assert out.read_text() == "count=3\nshards=[1,2,3]\n"
+    for bad in (0, 9):
+        with pytest.raises(gate.GateError, match="outside 1..8"):
+            gate.write_job_outputs(out, dict(doc, N=bad))
+    assert out.read_text() == "count=3\nshards=[1,2,3]\n"
+    failing, code = plan_of(rig, runner, tests_result="failure")
+    assert code == 3 and failing["N"] == 1
+
+
+def test_plan_command_writes_outputs_only_on_exit_zero(rig, monkeypatch):
+    runner = sized_rig(rig, tests=1)
+    meta = rig.tmp / "coverage-meta.json"
+    out, gh = rig.tmp / "plan.json", rig.tmp / "gh-output"
+    argv = ["plan", "--gated-sha", rig.head(), "--pr-head-sha", rig.head(), "--pr", "5"]
+    argv += ["--coverage-file", str(rig.tmp / ".coverage"), "--meta", str(meta)]
+    argv += ["--out", str(out), "--run-id", "9", "--run-attempt", "1", "--github-output", str(gh)]
+    monkeypatch.chdir(rig.root)
+    monkeypatch.setattr(gate, "SubprocessRunner", lambda: runner)
+    monkeypatch.setattr(gate, "install_sigterm_handler", lambda: None)
+    assert gate.main([*argv, "--tests-result", "failure"]) == 3
+    assert not gh.exists() and json.loads(out.read_text())["internal_errors"]
+
+
+def test_plan_budget_timeout_files_not_sharded(rig):
+    """SH-PLANBUD: a file the plan's cheap phase never reached fails and is not assigned."""
+    runner = two_file_rig(rig)
+    clock = FakeClock()
+    runner.clock = clock
+    seen = []
+
+    def hook(phase, spec):
+        if phase == "enumerate":
+            seen.append(runner.rel(spec))
+            if len(seen) == 2:
+                clock.t += ncg.PLAN_BUDGET_SECONDS + 1
+                runner.timeout_on = {"enumerate"}
+
+    runner.hook = hook
+    runner.timeout_on = set()
+    doc, code = gate.plan(rig.options(), runner, clock)
+    by_path = {f["path"]: f for f in doc["files"]}
+    late = by_path[seen[1]]
+    assert code == 0 and late["to_shards"] is False and late["mutation_reason"] == "timeout"
+    assert [r["code"] for r in late["fail_reasons"]] == ["mutation_timeout"]
+    assert "plan budget exhausted; split the PR" in late["fail_reasons"][0]["message"]
+    assigned = {m["path"] for a in doc["assignment"] for m in a["members"]}
+    assert seen[1] not in assigned and seen[0] in assigned
+
+
+def test_plan_fails_when_the_sidecar_has_no_durations(rig):
+    runner = sized_rig(rig, tests=1)
+    rig.sidecar(test_seconds_ms=None, test_seconds_reason="durations file missing")
+    doc, code = plan_of(rig, runner)
+    assert code == 3 and doc["internal_errors"][0]["message"] == gate.MSG_NO_DURATIONS
+    assert runner.calls == []
+
+
+def test_a_mutant_function_without_a_span_is_a_plan_error(rig):
+    runner = sized_rig(rig, tests=1)
+    runner.no_span = {ncs.mutant_prefix(key(CALC_PATH, 0))}
+    doc, code = plan_of(rig, runner)
+    assert code == 3
+    assert doc["internal_errors"][0]["message"].startswith(
+        f"mutant function span missing: {CALC_PATH} "
+    )
+    assert doc["N"] == 1 and all(not f["to_shards"] for f in doc["files"])
+
+
+def test_cheap_phase_runs_once_not_per_shard(rig):
+    """AC-41: one repo-copy collect and one `_enumerate` per file, all in the plan."""
+    runner = sized_rig(rig, tests=3)
+    result = rig.run(runner)
+    assert result.shard_run.plan["N"] == 3 and result.code == 0
+    assert len(runner.calls_for("repo_copy_collect")) == 1
+    assert len(runner.calls_for("enumerate")) == 1
+    assert len(runner.calls_for("mutmut_run")) == 3 and len(runner.calls_for("collect")) == 3
+    plan_rec = result.shard_run.plan["files"][0]
+    rec = file_rec(result.records)
+    for field in ("selected_tests", "path_load_findings", "decision_logic_findings"):
+        assert rec[field] == plan_rec[field]
+    assert "--coverage-file" not in gate.build_parser().format_help().split("shard")[-1]
+
+
+def test_run_executes_every_shard_and_merges(rig):
+    runner = sized_rig(rig, tests=3)
+    result = rig.run(runner)
+    assert result.code == 0 and result.verdict["overall"] == "pass"
+    assert [f["binding"]["index"] for f in result.shard_run.fragments] == [1, 2, 3]
+    assert [s["status"] for s in result.records["shards"]["per_shard"]] == ["complete"] * 3
+    rec = file_rec(result.records)
+    assert (rec["mutants_total"], rec["mutants_killed"], rec["mutation_ran"]) == (4, 4, True)
+    assert result.records["shards"]["N"] == 3
+    assert result.records["phase"] == "merge"
+
+
+def test_outcome_identical_for_n1_and_n3(rig):
+    """AC-40(b): the same fake mutmut table under two plans differs only in sharding and timing."""
+    small = rig.run(sized_rig(rig, tests=1, mutants=4), clock=FakeClock())
+    large = rig.run(sized_rig(rig, tests=3, mutants=4), clock=FakeClock())
+    assert (small.shard_run.plan["N"], large.shard_run.plan["N"]) == (1, 3)
+    a, b = file_rec(small.records), file_rec(large.records)
+    keep = ("mutants_killed", "mutants_total", "mutant_score_pct", "fail_reasons", "kind")
+    assert {k: a[k] for k in keep} == {k: b[k] for k in keep}
+    assert small.verdict["overall"] == large.verdict["overall"] == "pass"
+    assert small.records["plan_hash"] != large.records["plan_hash"]
+
+
+def test_split_file_each_shard_runs_plan_selection(rig):
+    """AC-15: every shard's generated config carries the plan's full selection."""
+    runner = sized_rig(rig, tests=3)
+    configs = []
+
+    def hook(phase, spec):
+        if phase == "mutmut_run":
+            table = tomllib.loads((Path(spec.cwd) / "pyproject.toml").read_text())["tool"]["mutmut"]
+            configs.append((table["pytest_add_cli_args_test_selection"], spec.argv[4:]))
+
+    runner.hook = hook
+    result = rig.run(runner)
+    selection = result.shard_run.plan["files"][0]["selection_full"]
+    assert len(configs) == 3 and all(c[0] == selection for c in configs)
+    names = [n for _, ran in configs for n in ran]
+    assert sorted(names) == sorted(set(names)) and len(names) == 4
+
+
+def mutate_calls_hook(runner, clock, overrun_call):
+    """Make the `overrun_call`-th `mutmut run` (one per shard here) overrun its shard's budget."""
+    state = {"n": 0}
+
+    def hook(phase, spec):
+        if phase != "mutmut_run":
+            return
+        state["n"] += 1
+        runner.timeout_on = set()
+        if state["n"] == overrun_call:
+            clock.t += ncg.BUDGET_SECONDS + 1
+            runner.timeout_on = {"mutmut_run"}
+
+    runner.hook = hook
+
+
+def test_shard_two_of_three_overrun_marks_its_files(rig):
+    runner = sized_rig(rig, tests=3)
+    clock = FakeClock()
+    mutate_calls_hook(runner, clock, 2)
+    result = rig.run(runner, clock)
+    rec = file_rec(result.records)
+    assert [r["code"] for r in rec["fail_reasons"]] == ["mutation_timeout"]
+    assert rec["mutation_ran"] is False and rec["mutation_reason"] == "timeout"
+    message = rec["fail_reasons"][0]["message"]
+    assert "shard 2 of 3" in message and CALC_PATH in message and "split the PR" in message
+    assert result.code == 1 and result.verdict["overall"] == "fail"
+    states = [s["status"] for s in result.records["shards"]["per_shard"]]
+    assert states == ["complete", "timeout", "complete"]
+
+
+def test_capped_plan_runs_n_max_and_fails_only_overrunning_shard(rig):
+    """AC-45(a, b, d, e): W above 8 x T gives eight shards, and only shard 5's files fail."""
+    runner = sized_rig(rig, tests=13, mutants=8)
+    clock = FakeClock()
+    mutate_calls_hook(runner, clock, 5)
+    result = rig.run(runner, clock)
+    plan = result.shard_run.plan
+    assert (plan["N"], plan["capped"]) == (8, True) and result.shard_run.plan_code == 0
+    assert all(a["members"] for a in plan["assignment"])
+    ran = [set(spec.argv[4:]) for spec in runner.calls_for("mutmut_run")]
+    assert [len(r) for r in ran] == [1] * 8
+    assert result.shard_run.fragments[4]["status"] == "timeout"
+    assert [f["status"] for i, f in enumerate(result.shard_run.fragments) if i != 4] == [
+        "complete"
+    ] * 7
+    rec = file_rec(result.records)
+    assert rec["mutation_ran"] is False and "shard 5 of 8" in rec["fail_reasons"][0]["message"]
+    assert result.code == 1 and result.verdict["overall"] == "fail"
+    assert "capped true" in result.summary and "est_mutation_ms" in result.summary
+
+
+def test_shard_fails_when_workspace_mutants_differ_from_plan(rig):
+    """AC-37: a drifted key set is exit 3, naming the shard and the file, and the fragment says so."""
+    drift = f"shard 1 of 1: mutant enumeration drift: {CALC_PATH}"
+    names = sized_rig(rig, tests=1).enum[CALC_PATH][1]
+    variants = {
+        "missing": {n: 1 for n in names[:-1]},
+        "extra": {**{n: 1 for n in names}, key(CALC_PATH, 99): 1},
+        "renamed": {**{n: 1 for n in names[:-1]}, key(CALC_PATH, 77): 1},
+    }
+    for label, codes in variants.items():
+        runner = sized_rig(rig, tests=1)
+        doc = {
+            "schema": ncg.SCHEMA_COLLECT,
+            "file": CALC_PATH,
+            "gate_file": runner.gate_file,
+            "exit_code_by_key": codes,
+            "status_by_key": {k: "killed" for k in codes},
+        }
+        runner.collect_result[CALC_PATH] = gate.ProcResult(0, json.dumps(doc), "", False)
+        result = rig.run(runner)
+        (fragment,) = result.shard_run.fragments
+        assert result.shard_run.shards_ok is False, label
+        assert fragment["status"] == "internal_error", label
+        assert fragment["internal_errors"][0]["message"] == drift, label
+        assert result.code == 3, label
+
+
+def test_a_foreign_mutant_that_ran_is_refused(rig):
+    runner = sized_rig(rig, tests=3)
+    runner.last_ran_override = None
+    real = runner.on_mutmut_run
+
+    def everything_ran(spec):
+        result = real(spec)
+        runner.last_ran[spec.env["NCG_GATED_FILE"]] = set(runner.enum[CALC_PATH][1])
+        return result
+
+    runner.on_mutmut_run = everything_ran
+    result = rig.run(runner)
+    messages = [e["message"] for f in result.shard_run.fragments for e in f["internal_errors"]]
+    assert any("mutant of another shard ran" in m for m in messages) and result.code == 3
+
+
+def test_only_shard_never_passes(rig, monkeypatch, capsys):
+    runner = sized_rig(rig, tests=3)
+    monkeypatch.setattr(gate, "SubprocessRunner", lambda: runner)
+    code = gate.command_run_partial(rig.options(), 2, rig.tmp / "partial")
+    captured = capsys.readouterr()
+    assert code == 3 and "partial run: shard 2 of 3 is not a gate result" in captured.err
+    assert len(runner.calls_for("mutmut_run")) == 1
+    with pytest.raises(gate.GateError, match="--only-shard 9 is outside 1..3"):
+        gate.run_shards(
+            rig.options(), sized_rig(rig, tests=3), FakeClock(), rig.tmp / "partial2", only=9
+        )
+
+
+def test_noop_diff_plan_is_one_empty_shard_that_completes(rig):
+    rig.base()
+    rig.write("docs/note.md", "text\n")
+    rig.commit("docs only")
+    rig.coverage({"x.py": {"tests/t.py::t|run": [1]}})
+    rig.sidecar()
+    result = rig.run(FakeRunner(rig))
+    plan = result.shard_run.plan
+    assert plan["N"] == 1 and plan["assignment"][0]["members"] == []
+    (fragment,) = result.shard_run.fragments
+    assert fragment["status"] == "complete" and fragment["files"] == []
+    assert result.code == 0 and result.records["files"] == []
+
+
+def shard_in(rig, runner, plan_dir, **override):
+    opts = gate.shard_options(rig.options(), 1, plan_dir)._replace(**override)
+    return gate.run_shard(opts, runner, FakeClock())
+
+
+def staged_plan(rig, tests=1):
+    runner = sized_rig(rig, tests=tests)
+    plan, code = gate.plan(rig.options(), runner, FakeClock())
+    plan_dir = rig.tmp / "plan"
+    gate.write_json(plan_dir / gate.PLAN_FILENAME, plan)
+    return runner, plan, plan_dir
+
+
+def test_shard_runs_from_a_valid_plan_without_coverage_input(rig):
+    runner, plan, plan_dir = staged_plan(rig)
+    fragment, code = shard_in(rig, runner, plan_dir)
+    assert code == 0 and fragment["status"] == "complete"
+    assert fragment["binding"]["plan_hash"] == plan["plan_hash"]
+    assert fragment["fragment_sha256"] == ncs.fragment_hash(fragment)
+    assert "coverage_file" not in gate.ShardOptions._fields
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "gated_sha",
+        "pr",
+        "run_id",
+        "attempt",
+        "index-low",
+        "index-high",
+        "hash",
+        "internal-errors",
+        "symlink",
+        "tools",
+        "python",
+        "head",
+    ],
+)
+def test_shard_refuses_unbound_or_tampered_plan(rig, case):
+    runner, plan, plan_dir = staged_plan(rig)
+    path = plan_dir / gate.PLAN_FILENAME
+    override = {}
+    if case == "gated_sha":
+        override["gated_sha"] = "d" * 40
+    elif case == "pr":
+        override["pr"] = 99
+    elif case == "run_id":
+        override["run_id"] = "other"
+    elif case == "attempt":
+        rewrite_json(path, lambda d: d["binding"].update(run_attempt=5))
+        override.update(mode="local", run_attempt=1)
+    elif case == "index-low":
+        override["index"] = 0
+    elif case == "index-high":
+        override["index"] = plan["N"] + 1
+    elif case == "hash":
+        rewrite_json(path, lambda d: d.update(W_ms=d["W_ms"] + 1))
+    elif case == "internal-errors":
+        rewrite_json(path, lambda d: d.update(internal_errors=[{"code": "x", "message": "y"}]))
+    elif case == "symlink":
+        real = rig.tmp / "real-plan.json"
+        path.rename(real)
+        path.symlink_to(real)
+    elif case == "tools":
+        override["installed"] = {"mutmut": "0"}
+    elif case == "python":
+        override["python"] = "2.7"
+    else:
+        rig.write("scripts/extra.py", "x = 1\n")
+        rig.commit("moves HEAD")
+    fragment, code = shard_in(rig, runner, plan_dir, **override)
+    assert code == 3 and fragment["status"] == "internal_error"
+    assert "shard " in fragment["internal_errors"][0]["message"]
+    assert runner.calls_for("mutmut_run") == []
+
+
+def test_job_seconds_null_on_missing_or_garbage_start_file(rig, tmp_path):
+    """SH-JOBTIME: a bad start file changes nothing but `job_seconds`."""
+    runner, plan, plan_dir = staged_plan(rig)
+    start = tmp_path / "job-start"
+    start.write_text("4990\n", encoding="utf-8")
+    good_plan, code = gate.plan(
+        rig.options(job_start_file=start), sized_rig(rig, tests=1), FakeClock()
+    )
+    assert code == 0 and good_plan["job_seconds"] == 10
+    good_fragment, _ = shard_in(rig, runner, plan_dir, job_start_file=start)
+    assert good_fragment["job_seconds"] == 10
+    for content in (None, "", "abc", "12.5", "-3"):
+        if content is None:
+            bad = tmp_path / "absent"
+        else:
+            bad = tmp_path / "bad"
+            bad.write_text(content, encoding="utf-8")
+        again, again_code = gate.plan(
+            rig.options(job_start_file=bad), sized_rig(rig, tests=1), FakeClock()
+        )
+        assert again["job_seconds"] is None and again_code == code
+        assert again["plan_hash"] == good_plan["plan_hash"]
+        frag, frag_code = shard_in(rig, runner, plan_dir, job_start_file=bad)
+        assert frag["job_seconds"] is None and frag_code == 0
+        assert frag["fragment_sha256"] == good_fragment["fragment_sha256"]
+
+
+def test_enumerate_reports_function_spans(tmp_path, monkeypatch, restore_mutmut_config):
+    """SH-FAN: every mutant's function has exactly one span; a method and a function after a
+    leading comment block start on the line libcst's `code_for_node` starts, and end on the
+    function's last line."""
+    source = (
+        "def add(a, b):\n    return a + b\n\n\n"
+        "class K:\n    def m(self, x):\n        return x - 1\n\n\n"
+        "# a comment block\n# before other\ndef other(a):\n    return a * 2\n"
+    )
+    tree = child_workspace(tmp_path, monkeypatch, source)
+    doc = gate.enumerate_child("pkg/mod.py", [2, 7, 13], tree)
+    spans = {f["prefix"]: (f["start_line"], f["end_line"]) for f in doc["functions"]}
+    assert len(spans) == len(doc["functions"])
+    assert {ncs.mutant_prefix(n) for n in doc["mutant_names"]} == set(spans)
+    by_name = {prefix.rpartition(".")[2]: span for prefix, span in spans.items()}
+    assert by_name["x_add"] == (1, 2)
+    assert by_name["xǁKǁm"] == (6, 7)
+    assert by_name["x_other"] == (8, 13)
+
+
+def test_meta_records_null_when_durations_missing_then_plan_fails(rig, monkeypatch):
+    """SH-DUR: a deleted durations file leaves `meta` green; `plan` is what fails, with the reason."""
+    runner = sized_rig(rig, tests=1)
+    monkeypatch.chdir(rig.root)
+    monkeypatch.setenv("COVERAGE_CORE", "ctrace")
+    meta = rig.root / "coverage-meta.json"
+    base = ["meta", "--coverage-file", str(rig.tmp / ".coverage"), "--out", str(meta)]
+    rig.tmp.joinpath("garbage.json").write_text("[", encoding="utf-8")
+    for extra in (
+        ["--durations", str(rig.tmp / "absent.json")],
+        ["--durations", str(rig.tmp / "garbage.json")],
+        [],
+    ):
+        assert gate.main([*base, *extra]) == 0
+        sidecar = json.loads(meta.read_text(encoding="utf-8"))
+        assert sidecar["test_seconds_ms"] is None and sidecar["test_seconds_reason"]
+        plan_doc, code = gate.plan(
+            rig.options(meta_path=meta, coverage_file=rig.tmp / ".coverage"), runner, FakeClock()
+        )
+        assert code == 3 and plan_doc["internal_errors"][0]["message"] == gate.MSG_NO_DURATIONS

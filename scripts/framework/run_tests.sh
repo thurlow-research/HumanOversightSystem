@@ -81,7 +81,9 @@ if ! $MUTATION_ONLY; then
     echo "=== Unit tests + coverage ==="
     echo ""
 
-    "$VENV_PYTHON" -m pytest tests/ \
+    # #2304 (AD-14): tests/conftest.py writes each test's wall time here, in milliseconds,
+    # for the shard planner. A plain assignment on this one command, nothing conditional.
+    HOS_TEST_DURATIONS_OUT=test-durations.json "$VENV_PYTHON" -m pytest tests/ \
         --reruns 1 \
         --cov=scripts/oversight \
         --cov=scripts/automation/lib \
@@ -107,7 +109,7 @@ if ! $MUTATION_ONLY; then
     # ENTRY_SNIPPET in new_code_gate_logic.py, asserted by WF-ENTRY) so no repo-root
     # file can shadow an import in the gate process.
     "$VENV_PYTHON" -I -c "import os, sys, types; r = os.path.realpath(sys.argv[1]); p = types.ModuleType('scripts'); p.__path__ = [os.path.join(r, 'scripts')]; sys.modules['scripts'] = p; from scripts.framework.new_code_gate import main; sys.exit(main(sys.argv[2:]))" \
-        "$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json
+        "$REPO_ROOT" meta --coverage-file .coverage --out coverage-meta.json --durations test-durations.json
 
     if [[ $PYTEST_EXIT -ne 0 ]]; then
         echo ""

@@ -18,6 +18,7 @@ ROOT = Path(__file__).parent.parent
 
 # #2054 in-run temp hygiene. Importing the hooks and fixture here registers them
 # for every run of this suite; all logic lives in tests/tmp_hygiene.py.
+from tests.durations_writer import register_if_requested  # noqa: E402
 from tests.registry_guard import (  # noqa: E402
     REGISTRY_ENV,
     _RegistryIsolation,
@@ -82,6 +83,7 @@ def pytest_configure(config):
     config.pluginmanager.register(
         _RegistryIsolation(real, registry_fingerprint(real), saved), "hos-registry-isolation"
     )
+    register_if_requested(config)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

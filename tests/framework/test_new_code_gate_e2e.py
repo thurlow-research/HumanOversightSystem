@@ -37,6 +37,7 @@ GATE_FILES = (
     "scripts/__init__.py",
     "scripts/framework/new_code_gate.py",
     "scripts/framework/new_code_gate_logic.py",
+    "scripts/framework/new_code_gate_shard.py",
     "scripts/framework/new_code_gate_pytest_plugin.py",
 )
 GIT_ENV = {
@@ -153,8 +154,10 @@ def measure_coverage(repo, tmp_path, **extra_env):
     proc = subprocess.run(argv, cwd=repo, env=env, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = [sys.executable, "-m", "scripts.framework.new_code_gate", "meta"]
+    (repo / "test-durations.json").write_text("{}", encoding="utf-8")
     proc = subprocess.run(
-        [*meta, "--coverage-file", ".coverage", "--out", "coverage-meta.json"],
+        [*meta, "--coverage-file", ".coverage", "--out", "coverage-meta.json"]
+        + ["--durations", "test-durations.json"],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -380,8 +383,8 @@ def wait_for(condition, seconds):
     return condition()
 
 
-def test_int2_sigterm_to_measure_removes_its_workspace_and_leaves_no_live_child_group(tmp_path):
-    """RV-4: SIGTERM mid-mutation exits 143, writes no records, and kills the mutmut group."""
+def test_int2_sigterm_to_a_shard_removes_its_workspace_and_leaves_no_live_child_group(tmp_path):
+    """RV-4: SIGTERM mid-mutation exits 143, writes no fragment, and kills the mutmut group."""
     held = "import os\nimport time\n\n" + STRONG_TESTS + HOLD_TEST
     repo = build_fixture(tmp_path, {"tests/test_calc.py": held})
     git(repo, "checkout", "-q", "main")
@@ -390,11 +393,20 @@ def test_int2_sigterm_to_measure_removes_its_workspace_and_leaves_no_live_child_
     gated = git(repo, "rev-parse", "HEAD")
     measure_coverage(repo, tmp_path, GITHUB_RUN_ID="5")
     pidfile = tmp_path / "hold.pid"
-    out = tmp_path / "records.json"
-    argv = [sys.executable, "-m", "scripts.framework.new_code_gate", "measure"]
-    argv += ["--gated-sha", gated, "--pr-head-sha", pr_head, "--pr", "1"]
-    argv += ["--coverage-file", ".coverage", "--meta", "coverage-meta.json", "--out", str(out)]
-    argv += ["--tests-result", "success", "--run-id", "5", "--run-attempt", "1"]
+    plan_out = tmp_path / "plan" / "new-code-plan.json"
+    gate = [sys.executable, "-m", "scripts.framework.new_code_gate"]
+    plan = [*gate, "plan", "--gated-sha", gated, "--pr-head-sha", pr_head, "--pr", "1"]
+    plan += ["--coverage-file", ".coverage", "--meta", "coverage-meta.json"]
+    plan += ["--out", str(plan_out), "--tests-result", "success", "--run-id", "5"]
+    plan += ["--run-attempt", "1"]
+    planned = subprocess.run(
+        plan, cwd=repo, env=clean_env(tmp_path), capture_output=True, text=True, check=False
+    )
+    assert planned.returncode == 0, planned.stdout + planned.stderr
+    out = tmp_path / "fragment.json"
+    argv = [*gate, "shard", "--index", "1", "--plan-dir", str(plan_out.parent)]
+    argv += ["--gated-sha", gated, "--pr", "1", "--run-id", "5", "--run-attempt", "1"]
+    argv += ["--out", str(out)]
     proc = subprocess.Popen(
         argv,
         cwd=repo,
@@ -407,8 +419,8 @@ def test_int2_sigterm_to_measure_removes_its_workspace_and_leaves_no_live_child_
         assert wait_for(lambda: pidfile.exists() or proc.poll() is not None, 300)
         if proc.poll() is not None:
             stdout, stderr = proc.communicate()
-            recorded = out.read_text(encoding="utf-8") if out.exists() else "no records"
-            pytest.fail(f"measure ended early: {proc.returncode}\n{stdout}{stderr}\n{recorded}")
+            recorded = out.read_text(encoding="utf-8") if out.exists() else "no fragment"
+            pytest.fail(f"shard ended early: {proc.returncode}\n{stdout}{stderr}\n{recorded}")
         assert wait_for(lambda: pidfile.read_text(encoding="utf-8") != "", 10)
         held_pid = int(pidfile.read_text(encoding="utf-8"))
         assert not process_is_gone(held_pid)

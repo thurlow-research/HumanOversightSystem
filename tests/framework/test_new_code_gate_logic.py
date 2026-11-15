@@ -1381,24 +1381,38 @@ def test_symlink_not_gateable_is_the_first_fail_code_and_never_ruling_eligible()
     assert decision["files"][0]["outcome"] == "fail" and decision["exit_code"] == 1
 
 
-UNHASHED = {
+FILE_UNHASHED = {
     "seconds",
     "enumerate_seconds",
     "workspace_seconds",
     "mutmut_seconds",
     "collect_seconds",
     "isolation_failure",
+    "shards",
+    "plan_hash",
+    "N",
+}
+UNHASHED = FILE_UNHASHED | {
+    "job_seconds",
+    "plan_seconds",
+    "plan_job_seconds",
+    "merge_verdict_seconds",
+    "runner_minutes_total",
 }
 
 
 def test_timings_and_isolation_evidence_are_outside_the_record_hash():
     record = ncg.blank_file_record("scripts/x.py", "new")
-    for name in UNHASHED - {"isolation_failure"}:
+    timings = FILE_UNHASHED - {"isolation_failure", "shards", "plan_hash", "N"}
+    for name in timings:
         assert record[name] == 0.0 and name in ncg.FILE_FIELDS
     assert record["isolation_failure"] is None
+    assert (record["shards"], record["plan_hash"], record["N"]) == ([], None, None)
     slower = dict(record, seconds=9.0, enumerate_seconds=4.5, workspace_seconds=1.0)
     slower.update(mutmut_seconds=3.0, collect_seconds=0.5)
     slower["isolation_failure"] = ncg.isolation_failure("stats", ["tests/t.py::a"], "x\n")
+    slower.update(shards=[{"index": 1, "killed": 3, "total": 4, "status": "complete"}])
+    slower.update(plan_hash="abc", N=3)
     assert ncg.records_sha256([record]) == ncg.records_sha256([slower])
     assert ncg.UNHASHED_FIELDS == UNHASHED
     assert not hasattr(ncg, "TIMING_FIELDS")
@@ -1812,6 +1826,9 @@ def test_record_has_every_req24_field():
         "removed_repo_copy",
         "path_load_findings",
         "exception_path",
+        "N",
+        "plan_hash",
+        "shards",
     ):
         assert name in rec
     assert rec["exception"] is None and rec["exception_path"] == ncg.EXCEPTION_PATH_TEXT
@@ -1912,12 +1929,12 @@ def test_summary_table_per_file_columns():
     text = ncg.render_summary(doc)
     header = text.splitlines()[0]
     assert header == (
-        "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) "
+        "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) | Shards "
         "| Selection | Outcome | Reasons |"
     )
     row = text.splitlines()[2]
     assert row == (
-        "| a\\|b.py | new | 80.0% (8/10) | 75.0% (3/4) | context | fail | no_test_exercises |"
+        "| a\\|b.py | new | 80.0% (8/10) | 75.0% (3/4) | - | context | fail | no_test_exercises |"
     )
     assert "line one line two \\| x" in text
     assert "1 gated file(s): 0 pass, overall fail." in text
@@ -1931,17 +1948,70 @@ def test_summary_with_no_files_and_internal_errors():
     assert text == "No gated files in this PR.\n\nInternal errors:\n- c: m\n"
 
 
-def test_verdict_artifact_matches_schema_v1_and_sha():
+def _sharded_verdict(capped=False, minutes=3.4):
+    rec = _record(
+        "a|b.py",
+        mutants_total=None,
+        mutants_killed=None,
+        mutation_ran=False,
+        shards=[
+            {"index": 1, "killed": 3, "total": 4, "status": "complete"},
+            {"index": 2, "killed": None, "total": None, "status": "missing"},
+        ],
+    )
+    records = _records(rec)
+    records["shards"] = {
+        "N": 2,
+        "capped": capped,
+        "W_ms": 5,
+        "W_ci_minutes": 12.5,
+        "T_minutes": 15,
+        "N_max": 8,
+        "plan_hash": "h",
+        "per_shard": [
+            {"index": 1, "status": "complete", "run_attempt": 1, "seconds": 2.0, "job_seconds": 7}
+            | {"files": ["a|b.py"], "est_mutation_ms": 11, "est_fixed_ms": 5},
+            {"index": 2, "status": "missing", "run_attempt": None, "seconds": None}
+            | {"job_seconds": None, "files": [], "est_mutation_ms": 12, "est_fixed_ms": 0},
+        ],
+    }
+    records.update(runner_minutes_total=minutes, plan_job_seconds=None)
+    return ncg.verdict_document(records, ncg.decide(records, [], ncg.THRESHOLDS))
+
+
+def test_summary_shows_the_shards_line_each_shard_row_and_partial_results():
+    text = ncg.render_summary(_sharded_verdict())
+    assert (
+        "Shards: 2, capped false, estimated work 12.5 CI-min against 15 CI-min per shard." in text
+    )
+    assert (
+        "| Shard | Status | Files | est_mutation_ms | est_fixed_ms | job_seconds | Attempt |"
+        in text
+    )
+    assert "| 1 | complete | a\\|b.py | 11 | 5 | 7 | 1 |" in text
+    assert "| 2 | missing | - | 12 | 0 | n/a | None |" in text
+    assert "| 1,2 |" in text
+    assert "- a\\|b.py: shard 1 (complete): 3/4 killed (not final)" in text
+    assert "- a\\|b.py: shard 2 (missing): n/a (not final)" in text
+    assert f"Runner minutes: 3.4 ({ncg.RUNNER_MINUTES_LABEL})" in text
+
+
+def test_summary_says_when_the_work_exceeds_the_cap_and_which_job_lacked_a_start_time():
+    text = ncg.render_summary(_sharded_verdict(capped=True, minutes=None))
+    assert "capped true, estimated work 12.5 CI-min exceeds 8 x 15; running 2 shards." in text
+    assert "Runner minutes: n/a (no job-start time for: plan, shard 2)" in text
+
+
+def test_verdict_artifact_matches_schema_v2_and_sha():
     a = _record("a.py", seconds=1.5, executed_gated=10, gated_statements=10)
     b = _record("b.py", seconds=9.0)
     records = _records(a, b)
     records["records_sha256"] = ncg.records_sha256(records["files"])
     slower = [dict(a, seconds=99.0), dict(b, seconds=0.1)]
     assert ncg.records_sha256(slower) == records["records_sha256"]
-    assert ncg.verify_measure_sha(records)
+    assert not hasattr(ncg, "verify_measure_sha")
     changed = _records(dict(a, executed_gated=9), b)
-    changed["records_sha256"] = records["records_sha256"]
-    assert not ncg.verify_measure_sha(changed)
+    assert ncg.records_sha256(changed["files"]) != records["records_sha256"]
     doc = ncg.verdict_document(records, ncg.decide(records, [], ncg.THRESHOLDS))
     assert doc["phase"] == "verdict" and doc["measure_records_sha256"] == records["records_sha256"]
     assert [f["outcome"] for f in doc["files"]] == ["pass", "pass"]
@@ -1974,6 +2044,7 @@ print(json.dumps(out))
 
 SELF_FILES = [
     "scripts/framework/new_code_gate_logic.py",
+    "scripts/framework/new_code_gate_shard.py",
     "scripts/oversight/validators/shell_logic_check.py",
 ]
 

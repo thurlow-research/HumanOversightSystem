@@ -30,14 +30,18 @@ from typing import Any, NamedTuple
 # lineno, body and similar fields guarded by isinstance checks.
 Node = Any
 
-GATE_VERSION = "1"
-SCHEMA_RECORDS = "new-code-gate/1"
+GATE_VERSION = "2"
+SCHEMA_RECORDS = "new-code-gate/2"
 SCHEMA_META = "new-code-gate-meta/1"
 SCHEMA_ENUM = "new-code-gate-enum/1"
 SCHEMA_COLLECT = "new-code-gate-collect/1"
+SCHEMA_PLAN = "new-code-gate-plan/1"
+SCHEMA_FRAGMENT = "new-code-gate-fragment/1"
 
 THRESHOLDS = {"coverage": 80, "mutant_score": 75}
+# Per shard (S-4), measured from the start of the `shard` process; the plan has a shorter one.
 BUDGET_SECONDS = 1500
+PLAN_BUDGET_SECONDS = 600
 
 PINNED = {
     "mutmut": "3.8.1",
@@ -143,6 +147,7 @@ MSG_NOT_MEASURED = (
     "run_tests.sh's --cov list"
 )
 MSG_TIMEOUT = "mutation budget exhausted; split the PR"
+MSG_PLAN_TIMEOUT = "plan budget exhausted; split the PR"
 MSG_SHELL = "move decision logic into tested Python (recommended home: scripts/automation/lib)"
 MSG_PATH_LOAD_FIX = "convert to a canonical scripts.... import in this PR"
 
@@ -159,6 +164,7 @@ NODE_ID_RE = re.compile(r"tests/[\w./\-]+\.py(::\S+)?")
 MODULE_ID_RE = re.compile(r"tests/[\w./\-]+\.py")
 TABLE_HEADER_RE = re.compile(r"^\[\[?[A-Za-z0-9_.\"' -]+\]\]?\s*(#.*)?$")
 MUTANT_KEY_RE = re.compile(r"^[\w.ǁ]+\.x[\wǁ]*__mutmut_\d+$")
+FUNCTION_PREFIX_RE = re.compile(r"^[\w.ǁ]+\.x[\wǁ]*$")
 MAX_KEY_CHARS = 512
 OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3}|.)")
 
@@ -220,6 +226,12 @@ TOP_LEVEL_FIELDS = (
     "started_at",
     "finished_at",
     "seconds",
+    "shards",
+    "plan_hash",
+    "plan_seconds",
+    "plan_job_seconds",
+    "merge_verdict_seconds",
+    "runner_minutes_total",
 )
 
 FILE_FIELDS = (
@@ -257,10 +269,14 @@ FILE_FIELDS = (
     "mutmut_seconds",
     "collect_seconds",
     "isolation_failure",
+    "shards",
+    "plan_hash",
+    "N",
 )
 
-# Durations and the isolation evidence (temp paths, test output): kept out of records_sha256 so
-# two runs of one PR hash alike (AC-29; ADR-2304 section 2g RV3-4).
+# Durations, the isolation evidence (temp paths, test output) and everything that describes the
+# partition rather than the result: kept out of records_sha256 so two runs of one PR, and one PR
+# at any shard count, hash alike (AC-29, AC-40; ADR-2304 sections 2g RV3-4 and 2h SH-10).
 UNHASHED_FIELDS = frozenset(
     {
         "seconds",
@@ -269,6 +285,14 @@ UNHASHED_FIELDS = frozenset(
         "mutmut_seconds",
         "collect_seconds",
         "isolation_failure",
+        "shards",
+        "plan_hash",
+        "N",
+        "job_seconds",
+        "plan_seconds",
+        "plan_job_seconds",
+        "merge_verdict_seconds",
+        "runner_minutes_total",
     }
 )
 MUTMUT_ROOT_OUTPUTS = frozenset({"mutmut-stats.json", "mutmut-cicd-stats.json", "mutmut-debug.log"})
@@ -277,6 +301,10 @@ MAX_SUMMARY_LINES = 20
 MAX_SUMMARY_LINE_CHARS = 2048
 ISOLATION_TAIL_LINES = 60
 ISOLATION_TAIL_CHARS = 8192
+RUNNER_MINUTES_LABEL = (
+    "job minutes from job start to fragment write; excludes queue time and the upload step; "
+    "new-code-gate counts gate-process time only"
+)
 
 _DECISION_STMTS = (
     ast.If,
@@ -1420,6 +1448,11 @@ def check_mutant_key(name: str) -> bool:
     return len(name) <= MAX_KEY_CHARS and MUTANT_KEY_RE.match(name) is not None
 
 
+def check_function_prefix(prefix: str) -> bool:
+    """Bounded, mutmut-shaped mangled function prefix: a mutant key without `__mutmut_<n>`."""
+    return len(prefix) <= MAX_KEY_CHARS and FUNCTION_PREFIX_RE.match(prefix) is not None
+
+
 def classify_statuses(
     status_by_key: Mapping[str, str], gated_keys: Iterable[str]
 ) -> dict[str, Any]:
@@ -1555,6 +1588,9 @@ def blank_file_record(path: str, kind: str) -> dict[str, Any]:
         "mutmut_seconds": 0.0,
         "collect_seconds": 0.0,
         "isolation_failure": None,
+        "shards": [],
+        "plan_hash": None,
+        "N": None,
     }
 
 
@@ -1572,20 +1608,26 @@ def findings_fields(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _drop_seconds(value: Any) -> Any:
+def without_unhashed(value: Any) -> Any:
+    """`value` with every UNHASHED_FIELDS key removed at any depth."""
     if isinstance(value, dict):
-        return {k: _drop_seconds(v) for k, v in value.items() if k not in UNHASHED_FIELDS}
+        return {k: without_unhashed(v) for k, v in value.items() if k not in UNHASHED_FIELDS}
     if isinstance(value, list):
-        return [_drop_seconds(v) for v in value]
+        return [without_unhashed(v) for v in value]
     return value
+
+
+def canonical_sha256(value: Any) -> str:
+    """sha256 of the canonical JSON (sorted, compact, ASCII) of `value` minus UNHASHED_FIELDS."""
+    canonical = json.dumps(
+        without_unhashed(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
 def records_sha256(files: Sequence[Mapping[str, Any]]) -> str:
     """sha256 of the canonical JSON of `files` with every timing field removed (AC-29)."""
-    canonical = json.dumps(
-        _drop_seconds(list(files)), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    )
-    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+    return canonical_sha256(list(files))
 
 
 def threshold_reasons(
@@ -1618,7 +1660,7 @@ def threshold_reasons(
     return reasons
 
 
-def _ordered_reasons(reasons: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+def ordered_reasons(reasons: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
     unique: dict[str, dict[str, str]] = {}
     for reason in reasons:
         unique.setdefault(reason["code"], dict(reason))
@@ -1646,7 +1688,7 @@ def decide(
     flagged = {e["file"] for e in internal if e.get("file")}
     files = []
     for record in sorted(records["files"], key=lambda r: r["path"]):
-        reasons = _ordered_reasons(
+        reasons = ordered_reasons(
             list(record["fail_reasons"]) + threshold_reasons(record, thresholds)
         )
         codes = {r["code"] for r in reasons}
@@ -1682,11 +1724,6 @@ def verdict_document(records: Mapping[str, Any], decision: Mapping[str, Any]) ->
         records_sha256=records_sha256(files),
     )
     return doc
-
-
-def verify_measure_sha(records: Mapping[str, Any]) -> bool:
-    """The measure records must hash to the value they carry."""
-    return records.get("records_sha256") == records_sha256(records["files"])
 
 
 def attempt_number(value: Any) -> int | None:
@@ -1738,15 +1775,16 @@ def timeout_message(
     phase_seconds: Mapping[str, float],
     file_seconds: Mapping[str, tuple[float, float]],
     where: str,
+    lead: str = MSG_TIMEOUT,
 ) -> str:
-    """MSG_TIMEOUT plus where the budget went: per phase, and per file (total, workspace)."""
+    """`lead` plus where the budget went: per phase, and per file (total, workspace)."""
     phases = ", ".join(f"{name} {secs:.1f}s" for name, secs in sorted(phase_seconds.items()))
     ranked = sorted(file_seconds.items(), key=lambda item: (-item[1][0], item[0]))
     files = ", ".join(
         f"{path} {total:.1f}s (workspace {setup:.1f}s)"
         for path, (total, setup) in ranked[:MAX_TIMEOUT_FILES]
     )
-    return f"{MSG_TIMEOUT} (ran out in {where}; phases: {phases}; slowest files: {files})"
+    return f"{lead} (ran out in {where}; phases: {phases}; slowest files: {files})"
 
 
 def _cell(value: Any) -> str:
@@ -1782,28 +1820,87 @@ def _isolation_lines(rec: Mapping[str, Any]) -> list[str]:
     return [f"- {_cell(lines[0])}"]
 
 
+def _shard_indices(rec: Mapping[str, Any]) -> str:
+    return ",".join(str(s["index"]) for s in rec.get("shards") or []) or "-"
+
+
+def _not_final_lines(rec: Mapping[str, Any]) -> list[str]:
+    """Partial per-shard results of a file whose score is not final (REQ-42)."""
+    rows = rec.get("shards") or []
+    if rec.get("mutants_total") is not None or not rows:
+        return []
+    lines = []
+    for row in rows:
+        counts = "n/a" if row["total"] is None else f"{row['killed']}/{row['total']} killed"
+        lines.append(
+            f"- {_cell(rec['path'])}: shard {row['index']} ({_cell(row['status'])}): "
+            f"{counts} (not final)"
+        )
+    return lines
+
+
+def _runner_minutes_line(shards: Mapping[str, Any], verdict: Mapping[str, Any]) -> str:
+    total = verdict.get("runner_minutes_total")
+    if total is not None:
+        return f"Runner minutes: {total} ({RUNNER_MINUTES_LABEL})"
+    lacking = []
+    if verdict.get("plan_job_seconds") is None:
+        lacking.append("plan")
+    lacking.extend(f"shard {s['index']}" for s in shards["per_shard"] if s["job_seconds"] is None)
+    return f"Runner minutes: n/a (no job-start time for: {', '.join(lacking) or 'unknown'})"
+
+
+def _shard_lines(verdict: Mapping[str, Any]) -> list[str]:
+    """The "Shards" line, one row per shard, and the runner-minutes line (REQ-42, REQ-44)."""
+    shards = verdict.get("shards")
+    if not isinstance(shards, dict):
+        return []
+    work = f"estimated work {shards['W_ci_minutes']} CI-min"
+    if shards["capped"]:
+        work += f" exceeds {shards['N_max']} x {shards['T_minutes']}; running {shards['N']} shards"
+    else:
+        work += f" against {shards['T_minutes']} CI-min per shard"
+    out = ["", f"Shards: {shards['N']}, capped {str(shards['capped']).lower()}, {work}.", ""]
+    out.append(
+        "| Shard | Status | Files | est_mutation_ms | est_fixed_ms | job_seconds | Attempt |"
+    )
+    out.append("|---|---|---|---|---|---|---|")
+    for row in shards["per_shard"]:
+        job = "n/a" if row["job_seconds"] is None else row["job_seconds"]
+        files = ", ".join(row["files"]) or "-"
+        cells = [row["index"], row["status"], files, row["est_mutation_ms"]]
+        cells += [row["est_fixed_ms"], job, row["run_attempt"]]
+        out.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+    out.extend(["", _runner_minutes_line(shards, verdict)])
+    return out
+
+
 def render_summary(verdict: Mapping[str, Any]) -> str:
-    """The Markdown check summary (TD 5.16)."""
+    """The Markdown check summary (TD 5.16, 5.20.9)."""
     files = verdict["files"]
     if not files:
-        return "\n".join(["No gated files in this PR.", *_error_lines(verdict)]) + "\n"
+        lines = ["No gated files in this PR.", *_shard_lines(verdict), *_error_lines(verdict)]
+        return "\n".join(lines) + "\n"
     out = [
-        "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) "
+        "| File | Kind | Coverage (covered/gated) | Mutant score (killed/total) | Shards "
         "| Selection | Outcome | Reasons |",
-        "|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|",
     ]
     details: list[str] = []
     for rec in files:
         cov = _fraction(rec["coverage_pct"], rec["executed_gated"], rec["gated_statements"])
         score = _fraction(rec["mutant_score_pct"], rec["mutants_killed"], rec["mutants_total"])
         codes = ", ".join(r["code"] for r in rec["fail_reasons"])
-        row = [rec["path"], rec["kind"], cov, score, rec["selection_method"], rec["outcome"], codes]
+        row = [rec["path"], rec["kind"], cov, score, _shard_indices(rec), rec["selection_method"]]
+        row += [rec["outcome"], codes]
         out.append("| " + " | ".join(_cell(c) for c in row) + " |")
         details.extend(f"- {_cell(r['message'])}" for r in rec["fail_reasons"])
         details.extend(_isolation_lines(rec))
+        details.extend(_not_final_lines(rec))
     passed = sum(1 for r in files if r["outcome"] == "pass")
     out.append("")
     out.append(f"{len(files)} gated file(s): {passed} pass, overall {verdict['overall']}.")
+    out.extend(_shard_lines(verdict))
     if details:
         out.append("")
         out.extend(details)
