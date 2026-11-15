@@ -1,9 +1,9 @@
 # TECHNICAL-DESIGN-2304: `new-code-gate` — 80% line coverage and 75% mutant score on new and changed Python (#2304, slices S1 + S2 + S4)
 
-**Status:** **Review-3 rulings applied 2026-11-11 [architect review-3 ruling]** (ADR-2304 §2g RV3-0 to RV3-7, after the failed §2b condition 6 self-budget run). Changed sections: §5.9 steps 2, 5 and 6, §5.13, §5.15.2, §5.18, §5.19, §8.5 P-E, §9.3, §12 and §13. The coder's list is §13 "Review-3". RV3-H1 is routed to the human and is not ruled. It arises because the architect's measurement puts `new_code_gate.py`'s mutation alone at about 40 CI-minutes, over the 25-minute budget. **Review-2 rulings applied 2026-11-11 [architect review-2 ruling]** (ADR-2304 §2f RV2-1 to RV2-4, after the round-2 security re-review at `75dd05620`). Changed sections: §5.1, §5.3, §5.8, §5.9 steps 1 and 7, §5.14, §5.16, §5.17, §12 and §13. The coder's list is §13 "Review-2". RV2-2(b) (protecting the `shell_logic_check` closure) is routed to the human and is not built until cleared. **Review-1 rulings applied 2026-11-11 [architect review-1 ruling]** (ADR-2304 §2e RV-1 to RV-7). These follow the CONDITIONAL security and reliability reviews of the built gate at `7ba465997`. Changed sections are §5.1, §5.2, §5.3, §5.8, §5.13, §5.15.3, §5.17, §5.18, §8.5, §12 and §13. The coder's follow-up list is in §13 "Review-1". Every approval below stands for every section these rulings do not change. **Q8 delta APPROVED by the architect 2026-11-11, with in-place fixes marked "architect Q8-review fix" (see "Architect review requested: the Q8 delta"). The coder makes the §13 follow-up commit to `b1a26e887` / `b14e062db`, then builds §11 commit 4.** **REVISED AGAIN 2026-11-11, for the human ruling on §14 Q8 [ruled 2026-11-11: Q8].** Q8 applies the three Q5 carve-outs to NQ-1 and NQ-2 as well, through one shared predicate (§5.5.4). It also adds `raise SystemExit(<call>)` as an accepted main-guard body, exactly equivalent to `sys.exit(<call>)` (§5.5.3). Every passage this revision changes carries `[ruled 2026-11-11: Q8]`. **The architect must review this Q8 delta (§5.5.1, §5.5.3, §5.5.4, §5.10, §5.19, §7.1a, §7.2, §9.3, §12, §13, §14) before the coder changes the already-committed §5.5 / §5.10 code to match it (§13 lists the affected functions and tests in commit `b1a26e887`).** **REVISED 2026-11-11 after approval, for the human rulings on §14 Q4 to Q7 [ruled 2026-11-11: Q5].** The Q5 ruling changes the design: module-level and class-level decision logic on gated lines now fails, with three narrow carve-outs (§5.5, §5.10). Q4 confirms `Match`. Q6 is out of scope here (#2305). Q7 is resolved: the top-level session authors the CLAUDE.md row. Every passage this revision changes carries `[ruled 2026-11-11: Q5]` (or `Q4` / `Q6` / `Q7`). **The architect must review this delta (§5.5, §5.10, §5.14, §5.15.2, §5.18, §5.19, §9.3, §12) before the coder implements §5.5 and §5.10.** Commits that do not touch those sections (§11 commits 2 to 7, other than the decision-logic functions in `new_code_gate_logic.py`) may go ahead. The earlier approval follows. **APPROVED by the architect, round 5 (2026-11-10).** U1 to U7 and R3-A to R3-H were verified against the installed mutmut 3.8.1 and pytest 9.2.0. The architect applied four round-5 fixes in place, each marked "architect round-5 fix": qualified mutant keys (§5.9 step 1); the recorder's two copy paths (§5.7.2); the tripwire's protected roots (§5.18, ADR §2d R5-A); and host-mutmut state isolation plus module-level imports for in-process tests (§5.19, NOGLOBAL, TRIP-MUT). The coder may start at §11 commit 2. Round history: Round 1 verdict: **APPROVED WITH CHANGES** (ADR-2304 §2b). Round 3 verdict: **CHANGES REQUIRED** (T1 to T10 confirmed; ADR-2304 §2c R3-A to R3-H). Round 2 applied T1 to T10 (`[round 2: Tn]`). This revision applies the architect's round-3 edits U1 to U7, and each passage it changes carries `[round 4: Un]`. It also carries the architect's own round-3 consistency fixes (AC-10, §5.8 `also_copy`, A2a), which are marked "architect round-3 consistency fix". It is waiting for the architect's round-5 confirmation, which is the **last** round allowed before escalation to the human. The coder must not start until the architect confirms.
+**Status:** **Sharding 2026-11-15: APPROVED WITH CHANGES (architect round 1, ADR §2h AD-14, SH-1 to SH-13); C1 to C14 applied; coder GO for §11 commits 11 to 14, in order.** New §5.20 and §9.4, plus new rows in §10, §11, §12 and §13, and the §14 review request with the architect's ruling. They implement SPEC-2304 §2b and §2c and REQ-36 to REQ-44 (AC-35 to AC-45), using the human's rulings of 2026-11-15: OQ-H6 (cost-weighted W, T = 15, N_max = 8), OQ-H7 (a), confirmed per shard, and OQ-H8. Changed lines carry `[architect sharding ruling]` or a `Cn` tag. Every earlier approval stands for the sections §5.20 does not supersede (the list is at the top of §5.20). **Review-3 rulings applied 2026-11-11 [architect review-3 ruling]** (ADR-2304 §2g RV3-0 to RV3-7, after the failed §2b condition 6 self-budget run). Changed sections: §5.9 steps 2, 5 and 6, §5.13, §5.15.2, §5.18, §5.19, §8.5 P-E, §9.3, §12 and §13. The coder's list is §13 "Review-3". RV3-H1 is routed to the human and is not ruled. It arises because the architect's measurement puts `new_code_gate.py`'s mutation alone at about 40 CI-minutes, over the 25-minute budget. **Review-2 rulings applied 2026-11-11 [architect review-2 ruling]** (ADR-2304 §2f RV2-1 to RV2-4, after the round-2 security re-review at `75dd05620`). Changed sections: §5.1, §5.3, §5.8, §5.9 steps 1 and 7, §5.14, §5.16, §5.17, §12 and §13. The coder's list is §13 "Review-2". RV2-2(b) (protecting the `shell_logic_check` closure) is routed to the human and is not built until cleared. **Review-1 rulings applied 2026-11-11 [architect review-1 ruling]** (ADR-2304 §2e RV-1 to RV-7). These follow the CONDITIONAL security and reliability reviews of the built gate at `7ba465997`. Changed sections are §5.1, §5.2, §5.3, §5.8, §5.13, §5.15.3, §5.17, §5.18, §8.5, §12 and §13. The coder's follow-up list is in §13 "Review-1". Every approval below stands for every section these rulings do not change. **Q8 delta APPROVED by the architect 2026-11-11, with in-place fixes marked "architect Q8-review fix" (see "Architect review requested: the Q8 delta"). The coder makes the §13 follow-up commit to `b1a26e887` / `b14e062db`, then builds §11 commit 4.** **REVISED AGAIN 2026-11-11, for the human ruling on §14 Q8 [ruled 2026-11-11: Q8].** Q8 applies the three Q5 carve-outs to NQ-1 and NQ-2 as well, through one shared predicate (§5.5.4). It also adds `raise SystemExit(<call>)` as an accepted main-guard body, exactly equivalent to `sys.exit(<call>)` (§5.5.3). Every passage this revision changes carries `[ruled 2026-11-11: Q8]`. **The architect must review this Q8 delta (§5.5.1, §5.5.3, §5.5.4, §5.10, §5.19, §7.1a, §7.2, §9.3, §12, §13, §14) before the coder changes the already-committed §5.5 / §5.10 code to match it (§13 lists the affected functions and tests in commit `b1a26e887`).** **REVISED 2026-11-11 after approval, for the human rulings on §14 Q4 to Q7 [ruled 2026-11-11: Q5].** The Q5 ruling changes the design: module-level and class-level decision logic on gated lines now fails, with three narrow carve-outs (§5.5, §5.10). Q4 confirms `Match`. Q6 is out of scope here (#2305). Q7 is resolved: the top-level session authors the CLAUDE.md row. Every passage this revision changes carries `[ruled 2026-11-11: Q5]` (or `Q4` / `Q6` / `Q7`). **The architect must review this delta (§5.5, §5.10, §5.14, §5.15.2, §5.18, §5.19, §9.3, §12) before the coder implements §5.5 and §5.10.** Commits that do not touch those sections (§11 commits 2 to 7, other than the decision-logic functions in `new_code_gate_logic.py`) may go ahead. The earlier approval follows. **APPROVED by the architect, round 5 (2026-11-10).** U1 to U7 and R3-A to R3-H were verified against the installed mutmut 3.8.1 and pytest 9.2.0. The architect applied four round-5 fixes in place, each marked "architect round-5 fix": qualified mutant keys (§5.9 step 1); the recorder's two copy paths (§5.7.2); the tripwire's protected roots (§5.18, ADR §2d R5-A); and host-mutmut state isolation plus module-level imports for in-process tests (§5.19, NOGLOBAL, TRIP-MUT). The coder may start at §11 commit 2. Round history: Round 1 verdict: **APPROVED WITH CHANGES** (ADR-2304 §2b). Round 3 verdict: **CHANGES REQUIRED** (T1 to T10 confirmed; ADR-2304 §2c R3-A to R3-H). Round 2 applied T1 to T10 (`[round 2: Tn]`). This revision applies the architect's round-3 edits U1 to U7, and each passage it changes carries `[round 4: Un]`. It also carries the architect's own round-3 consistency fixes (AC-10, §5.8 `also_copy`, A2a), which are marked "architect round-3 consistency fix". It is waiting for the architect's round-5 confirmation, which is the **last** round allowed before escalation to the human. The coder must not start until the architect confirms.
 **Issue:** #2304 (milestone v0.7.0). **Branch:** `human-2304-mutation-gate`. The first commit, `8113f8ba0` (the committed `[tool.mutmut]` fix), is **already done** and stands (§13).
 **Binding inputs:**
-- `docs/specs/SPEC-2304-new-code-coverage-mutation-gate.md` (REQ-1 to REQ-35, AC-1 to AC-34).
+- `docs/specs/SPEC-2304-new-code-coverage-mutation-gate.md` (REQ-1 to REQ-35, AC-1 to AC-34; and, for §5.20, REQ-36 to REQ-44, AC-35 to AC-45 and the §2b and §2c rulings. There is no REQ-45).
 - `docs/v0.7.0/ADR-2304-new-code-coverage-mutation-gate.md` (AD-1 to AD-12 binding, as amended by **§2b** and **§2c** on 2026-11-10; AD-13 superseded by AD-13a and the rulings below).
 - The human rulings of 2026-11-10 (H1 to H5, NQ-1, NQ-2, test selection, path-load, workspace, scope, cost). They reached this agent through the human-proxy session, which relayed them as ScottThurlow's final rulings. They override the ADR's AD-13 defaults and the spec's open questions. §2 lists every ADR and spec line they change. Under CORE, an agent message is not human approval, so the PR's CODEOWNER human review is where the human confirms them on record (see Human Review Required).
 
@@ -35,6 +35,17 @@ BLAST RADIUS: every PR to main and release/v*. The new required context starts
 - **Q8 ruled [ruled 2026-11-11: Q8].** The three carve-outs now also apply to NQ-1 and NQ-2, and `raise SystemExit(<call>)` is an accepted main-guard body (§14 Q8). Nothing is still open for you in §14. One reading of the ruling is flagged for your confirmation in §14 Q8: this TD keeps the bare-call main-guard body (`main()`, 19 production guards) accepted, as it was before Q8.
 - **Protected surfaces.** `.github/workflows/tests.yml`, `scripts/framework/**`, `contract/OVERSIGHT-CONTRACT.md`, `.claude/agents/{unit-test,oversight-evaluator}.md` and `CLAUDE.md` all need CODEOWNER human review. The two agent files and the `CLAUDE.md` row (§6.7) are **authored by the top-level session**, using the exact wording in §6, and never by `coder` [ruled 2026-11-11: Q7].
 - **Review-1 residuals [architect review-1 ruling].** These are two technical residuals for your awareness, not human rulings (ADR §2e). The first is TD R-17 = ADR R-7: a mutant can read as killed because of a test that is flaky on both attempts. This is the same class as H3, and `--reruns 1` shrinks it. The second is TD R-18 = ADR R-8: required checks are matched by name. The follow-up pins every required context to the GitHub Actions App, and you apply it.
+- **Sharding (§5.20) [sharding draft 2026-11-15; architect sharding ruling, ADR §2h].** It implements your 2026-11-15 rulings OQ-H6, OQ-H7 (per shard, as you confirmed) and OQ-H8. The architect approved it with changes C1 to C14 (round 1), which are applied. What you are accepting:
+  - Under OQ-H8, the plan and up to 8 shard jobs per PR run PR code and can forge the plan, the fragments and the job outputs (R-24). The control is your CODEOWNER review. The trusted verifier is v0.7.2.
+  - The cost weight (per-function fan-in, ADR §2h SH-2) reads per-test durations from the PR's own `tests` run (R-25). A wrong estimate can only cause a false fail ("split the PR"), never a pass. A missing durations file fails `new-code-gate`, not `tests`.
+  - For CODEOWNER confirmation, not a blocker (ADR §2h): the separate plan job adds its own checkout and venv build, about 2 to 3 minutes, to the PR's critical path.
+  - Re-check after merge: run the §5.20.12 first-run re-run verifications. No new human gate is added, and no protected-surface list changes.
+
+  ```
+  RISK: HIGH — changes the measure stage of a required merge gate into a plan job, an N-leg matrix and a merge; new fail-closed paths; a second forgeable artifact (accepted, OQ-H8).
+  CONFIDENCE: MEDIUM — the rulings are explicit and the architect has ruled OQ-A9 (a) to (e) and the new module (ADR §2h); the cost model's accuracy is unmeasured until the condition-6 run and the first sharded CI run.
+  Change classification: structural (new jobs, a new artifact class, a removed CLI phase, a records schema bump). The human has already decided the structure (SPEC §2b, §2c); this TD adds no new human question.
+  ```
 - **Human actions after merge** (agents cannot do these): re-run `setup_branch_protection.sh` to make `new-code-gate` required, and confirm that the repo's artifact-retention setting is 90 days (§5.15.3).
 
 ---
@@ -486,12 +497,13 @@ Steps 1 and 2 run in the `_enumerate` subprocess, step 4 in the `mutmut run` sub
 1. **Enumerate, in a per-file subprocess (ADR A9) [round 2: T2].** mutmut's `config()` is a process-global cache (F-19), so enumeration **never** runs in the `measure` process. For each file to be mutated, `measure` starts one subprocess: `<venv python> -P -m scripts.framework.new_code_gate _enumerate --file <rel path> --gated-lines-json <path>` (**superseded [architect review-2 ruling, ADR §2f RV2-1]:** the argv is now `[<venv python>, "-I", "-c", ENTRY_SNIPPET, <resolved checkout root>, "_enumerate", "--file", <rel path>, "--gated-lines-json", <path>]` and the env sets **no** `PYTHONPATH`. No checkout path is on the child's `sys.path`, so a root `libcst.py` / `mutmut.py` cannot shadow site-packages. The `gate_file` check below is unchanged; read "`-P` and `PYTHONPATH=<checkout>`" in this step and in step 7 as "the `-I -c ENTRY_SNIPPET` form"), as an argv list, with **cwd = that file's workspace** (`run_tmp/workspace/`) and `PYTHONPATH=<checkout root>`. `-P` stops Python from putting cwd on `sys.path`, so the gate code is imported from the checkout and never from the workspace copy (which, when the gate's own file is gated, is the pragma-stripped copy under test). mutmut reads its config from cwd, which is what A9 needs. The subprocess also gets `start_new_session=True`, the remaining budget as its timeout (§5.13), and the same scrubbed env as the mutmut run (without the `NCG_*` variables and without the plugin path). The child process:
    - calls `mutmut.configuration.reset_config()` first (defence in depth, so that an in-process test of the same function also reads a fresh config), then `mutmut.mutation.file_mutation.mutate_file_contents(rel_path, stripped_source, covered_lines=None, coverage_excluded_lines=None)` on the workspace copy, which is already pragma-stripped (§5.8). Its `mutant_names` is the file's full mutant set (F-3). **Those names are unqualified mangled names** (`x_<func>__mutmut_<n>`, or `xǁ<Class>ǁ<method>__mutmut_<n>`), so the child qualifies each one with `mutmut.utils.format_utils.get_mutant_name(Path(rel_path), name)` before emitting it. That is the key form that `.meta` (`__main__.py:206-207`), the `mutmut run <names…>` filter (`__main__.py:813`) and `_collect` all use, and the drift check compares like with like only in that form. `get_mutant_name` also strips `.__init__.`, so `__init__.py` keys are consistent (architect round-5 fix);
    - performs step 2 (mapping) in the same process;
-   - writes one JSON object to stdout: `{schema: "new-code-gate-enum/1", file, gate_file, mutant_names[], gated_mutant_names[], line_map{name: [first lines]}, unmappable[]}`, and exits 0. Any exception → exit 3 with the error on stderr.
+   - writes one JSON object to stdout: `{schema: "new-code-gate-enum/1", file, gate_file, mutant_names[], gated_mutant_names[], line_map{name: [first lines]}, unmappable[]}` (plus `functions[]`, step 2 [architect sharding ruling, C4]), and exits 0. Any exception → exit 3 with the error on stderr.
    - **`gate_file` (ADR §2c R3-A) [round 4].** The child's own `str(Path(__file__).resolve())` for the `scripts.framework.new_code_gate` module it is running as. `measure` requires `gate_file` to be inside the resolved checkout root (`Path.is_relative_to` true) **and** not inside the resolved workspace (`is_relative_to` false). Otherwise → exit 3 `gate subprocess imported from the workspace: <file>`. This is the runtime proof that `-P` and `PYTHONPATH=<checkout>` did what they are for, so a pragma-stripped or mutated workspace copy of the gate's own code can never run the gate.
 
    `_enumerate` is an internal phase. It is not part of the CLI contract in §5.1, the workflow never calls it (AC-30's test still asserts the workflow invokes only `measure` and `verdict`), and its argument parser refuses to run unless cwd contains a `pyproject.toml` whose `[tool.mutmut] only_mutate` equals `[--file]` (exit 3 otherwise). `measure` treats a non-zero exit, a timeout, unparseable stdout, a schema mismatch or a `file` that differs from the requested one as exit 3 `mutant enumeration failed: <file>` (and a bad `gate_file` as the R3-A exit 3 above). The JSON is parsed as untrusted data: names are matched against mutmut's key pattern `<module>.x_<func>__mutmut_<n>` (or the method form) and bounded in length. The design requires the enumerated set to equal what `mutmut run` generates. Step 7's drift check is the guard.
 2. **Map to lines (inside the step-1 subprocess):** parse `MutatedFile.code` with libcst. For each name, get the mutant function with `mutmut.mutation.diff_apply.read_mutant_function(module, name)`, rename it to the original, `deep_replace` the original function in the original module (in memory, exactly as `apply_mutant` does), `difflib`-diff the two module texts, collect the changed original-side lines, and normalise each to its statement first line (§5.3). A mutant is **gated** iff that set intersects the gated statements. For a new file, every mutant is gated. A mutant whose diff is empty or unmappable → exit 3 `mutant could not be mapped: <name>`.
    **Superseded for cost, same result [architect review-3 ruling, ADR §2g RV3-1].** The whole-module render and diff per mutant is replaced by a **function-scoped** one. Once per file, resolve `WhitespaceInclusivePositionProvider` over the original module through `MetadataWrapper(orig_module, unsafe_skip_copy=True)`. Per mutant, `find_original` finds `target` as before. `orig_text = orig_module.code_for_node(target)` is cached per target. `start = position[target].start.line`. `mut_text = orig_module.code_for_node(read_mutant_function(mutated_module, name))`. The changed lines are `start - 1 + n` for each `n` in `changed_original_lines(orig_text, mut_text)`. Normalisation and the gated test are unchanged. If the scoped result is empty, the whole-module mapping above is computed for that mutant as a fallback, and if that is empty too the result is exit 3 as before. Do not use `PositionProvider`: it starts after the node's leading lines, while `code_for_node` renders them. Equivalence to the whole-module mapping is pinned by EQ-MAP (§9.3). Measured on the installed mutmut 3.8.1: 0.0012 s per mutant instead of 0.11 s.
+   **Function spans for the cost model [architect sharding ruling, ADR §2h SH-2; C4].** `_enumerate` also returns `functions: [{prefix, start_line, end_line}]`, one entry for each function that has at least one mutant. `prefix` is `mangled_name_from_mutant_name` of that function's qualified mutant keys. `start_line` and `end_line` are the function's original 1-based line span, taken from the same `WhitespaceInclusivePositionProvider` resolution as RV3-1 (so a method of a class and a function after a leading comment block start where `code_for_node` starts). The enum JSON object gains the `functions` key; the schema stays `new-code-gate-enum/1` (the branch has no consumer of the old shape). `functions` is parsed as untrusted data: prefixes must match the key pattern and be bounded, and lines must be positive integers with `start_line ≤ end_line`. A gated mutant whose prefix has no entry in `functions` is plan exit 3 `mutant function span missing: <path> <name>`.
 3. **Pragmas (H2):** handled by §5.8's strip. Equivalence claims are not an input anywhere.
 4. **Run:** if there are zero gated mutants, there is no run (§5.10). Otherwise run `<venv python> -m mutmut run <gated names…>` as an argv list, cwd = workspace, `start_new_session=True`, with the remaining budget as the timeout (§5.13). mutmut's own `--max-children` is left at its default (`os.cpu_count()`).
 5. **Integrity checks, before anything interprets the run [round 4: U7; ADR §2c R3-E].** After every mutmut run, whatever its exit code, `measure` reads `events.jsonl` and applies these checks in this order. Each failure is exit 3, and when one fails nothing else from the run is used as evidence (no attribution rule, no read-back, no score). A run killed by the gate budget is §5.13's `mutation_timeout` and does not reach steps 5 to 9:
@@ -721,6 +733,366 @@ The rule binds the gate's own PR. The PR is designed so that every gated file it
 - **Self-budget evidence before the PR opens (condition 6) [round 2: T9].** On the final branch head, before `submit_pr.sh` is run, the coder runs `python -m scripts.framework.new_code_gate run` locally (after `run_tests.sh` has written a clean-tree sidecar for that head) over every gated file the PR has. The PR body records, per gated file: gated mutants, the file's mutation seconds from the records, and the local core count (`os.cpu_count()`). The **projection** is `Σ local seconds × local cores ÷ 4`, in minutes, for 4-vCPU CI. If the projection exceeds **20 minutes**, the coder stops and the matter **returns to the architect** before the PR opens. The budget is not raised, and the gate's own files are not exempted. The local run must also pass (it is the same gate), so this step doubles as the first local proof of condition 7. If the session's sandbox stops `run_tests.sh` from completing (§8.2.1 saw sandbox-caused test failures), the coder says so plainly and asks the human to run the two commands in their own terminal; the evidence is not estimated and the step is not skipped.
 - **First-run proof (AC-34, condition 7):** the PR's own `new-code-gate` check must be green on its final head, with no exemption, and the PR body links the step summary.
 - **The workflow runs from the PR's commit** (a `pull_request` trigger), so the introducing PR runs the new jobs. There is no trusted base (decided, ADR §2b Q2; residual ADR R-6).
+
+### 5.20 Sharded measurement (REQ-36 to REQ-44) [sharding draft 2026-11-15; architect sharding ruling, ADR §2h]
+
+**Status of this section: APPROVED WITH CHANGES (architect round 1, ADR §2h).** It implements SPEC-2304 §2b (S-1 to S-5), §2c (SH6 to SH8), §4.12 and AC-35 to AC-45. The architect's decisions are ADR-2304 §2h, AD-14 and SH-1 to SH-13, and they are final. Changes C1 to C14 (§14 "Architect review requested: sharding") are applied in this text. Items marked **[A-Qn]** record which question each part answered; where the ruling changed technical-design's proposal, the ruled text replaces it.
+
+**What this section supersedes.** These earlier rules are replaced, not deleted, so the history stays readable:
+- §3: the `new-code-measure` job.
+- §5.1: the `measure` phase, and `verdict`'s `--records-dir` input.
+- §5.8: the bullet "One mutmut invocation per gated file". It becomes one invocation per (shard, file) pair (REQ-17 as amended).
+- §5.13: the single 25-minute budget for the whole of measure. It becomes per shard.
+- §5.15.1 / §5.15.3: the records schema `/1` and the `new-code-records` artifact from measure.
+- §5.17: the `new-code-measure` job contract, and `new-code-gate`'s needs, inputs and steps.
+- §5.19 condition 6: the projection formula.
+- §8.5 P4 ("never for cost"). Sharding is now required by S-3, for wall time and not for cost.
+
+Every other rule in §5.2 to §5.19 still applies. It applies either in the plan step or inside each shard, as stated below.
+
+#### 5.20.1 Job graph (`.github/workflows/tests.yml`) [A-Q1, A-Q5, A-Q6]
+
+```
+tests (required, unchanged name)      new-code-plan (not required)                 new-code-shard (matrix, not required)                  new-code-gate (REQUIRED)
+  run_tests.sh                          needs: tests, if: always()                   needs: new-code-plan                                    needs: [new-code-plan, new-code-shard]
+   + per-test durations (§5.20.4)       job-start file (SH-11)                       if: needs.new-code-plan.result == 'success'             if: always()
+  upload coverage-contexts              checkout github.sha (depth 0, no creds)      strategy: fail-fast false,                              checkout (depth 1); setup-python
+                                        venv; download coverage-contexts               matrix.shard = fromJSON(needs.new-code-plan          download new-code-plan
+                                        gate `plan` → new-code-plan.json                .outputs.shards)                                    download pattern new-code-fragment-*-of-<count>
+                                          + job outputs count, shards                job-start file (SH-11)                                  gate `verdict` = merge + decide
+                                        upload new-code-plan (90 d, always)          checkout github.sha (depth 1, no creds); venv         publish summary
+                                                                                     download new-code-plan                                  upload new-code-verdict (records, verdict, summary)
+                                                                                     gate `shard --index "$HOS_SHARD_INDEX"` → fragment
+                                                                                     upload new-code-fragment-<i>-of-<N> (90 d, always)
+```
+
+**Expression rule for all four jobs [architect sharding ruling, ADR §2h SH-5, SH-6(b); C7].** No `${{ needs.*.outputs.* }}` or `${{ matrix.* }}` expression appears inside any `run:` script of `tests`, `new-code-plan`, `new-code-shard` or `new-code-gate`. Such expressions may appear in `with:`, `name:`, `env:` and `strategy:` (and in a job-level `if:`, which is not shell). Plan outputs come from a job that runs PR code, and an expression in `run:` is shell source; in `new-code-gate` it would break INV-G, so the rule is uniform and statically tested (SH-EXPR, §9.4). A value a `run:` needs reaches it through a step `env:` entry and is referenced as a quoted shell variable. Env names avoid the `NCG_` prefix the plugin consumes (R3-H). SH-EXPR checks for the literal substrings `${{ needs.` and `${{ matrix.`, so it also covers `needs.<job>.result`; the verdict step's two result inputs therefore go through `env:` too (below).
+
+**`new-code-plan`.**
+- `name: new-code-plan`, `needs: tests`, `if: always()`, `runs-on: ubuntu-latest`, `timeout-minutes: 15`, `permissions: contents: read`.
+- Steps, in this order: **first**, `run: date -u +%s > "$RUNNER_TEMP/ncg-job-start"` (no decision construct, no expression; SH-11, C8); checkout as `new-code-measure` has today (`ref: ${{ github.sha }}`, `fetch-depth: 0`, `persist-credentials: false`); setup-python 3.12; `ensure_venv.sh` with `HOS_SKIP_PROJECT_REQUIREMENTS: "1"`; download `coverage-contexts` into `${{ runner.temp }}/ncg-in/coverage` (`continue-on-error: true`); the gate's `plan` phase in the `-I -c ENTRY_SNIPPET` form (§5.1); upload `new-code-plan` (§5.20.12).
+- `plan` gets the arguments `measure` gets today, minus `--out`, plus `--out ${{ runner.temp }}/ncg-out/new-code-plan.json`, `--github-output "$GITHUB_OUTPUT"` and `--job-start-file "$RUNNER_TEMP/ncg-job-start"` (C8). The inherited `--tests-result ${{ needs.tests.result }}` becomes step `env: HOS_TESTS_RESULT: ${{ needs.tests.result }}` and `--tests-result "$HOS_TESTS_RESULT"` (C7 expression rule, SH-EXPR).
+- **Job outputs:** `count: ${{ steps.plan.outputs.count }}` and `shards: ${{ steps.plan.outputs.shards }}`. The gate process itself appends both lines to the `--github-output` file. The YAML has no shell logic (H1).
+  - The gate writes them last, after the plan document, and only when the plan's own validation passed.
+  - `count` is the decimal N. `shards` is the compact JSON list `[1,…,N]`.
+  - The gate refuses (exit 3) to write any N outside `1..N_MAX`.
+- **[A-Q6]** These are job outputs from a job that runs PR code, so they are forgeable. Under OQ-H8 that is accepted residual. A forged smaller list leaves fragments missing, so the merge exits 3. A forged plan is the accepted R-9 (§5.20.14).
+- **Rejected alternative:** a static 8-leg matrix whose legs above N exit early. It does not "run exactly one shard" (REQ-36, AC-35). Each idle leg would also spend a runner on checkout and venv.
+
+**`new-code-shard`.**
+- Settings:
+  - `name: new-code-shard ${{ matrix.shard }}`. It renders as `new-code-shard 3`, which can never equal `new-code-gate` (REQ-2, AC-31).
+  - `needs: new-code-plan` and `if: needs.new-code-plan.result == 'success'`. It does not use `always()`. When the plan did not succeed there is nothing to shard, and the gate fails closed on the plan result.
+  - `runs-on: ubuntu-latest`, `timeout-minutes: 30`, `permissions: contents: read`.
+  - `strategy: {fail-fast: false, matrix: {shard: ${{ fromJSON(needs.new-code-plan.outputs.shards) }}}}`. There is no `max-parallel` and no `continue-on-error` [A-Q5].
+  - `fail-fast: false` is what lets every leg finish, so that the merge can name every failed shard and still show the completed shards' results (REQ-42, OQ-A9(d)).
+- **Steps:**
+  0. **First:** `run: date -u +%s > "$RUNNER_TEMP/ncg-job-start"` (no decision construct, no expression; SH-11, C8).
+  1. Checkout with `ref: ${{ github.sha }}`, **`fetch-depth: 1`** and `persist-credentials: false`. A shard needs only the gated tree, for `git archive`. Parent checks happen in the plan.
+  2. setup-python 3.12.
+  3. `ensure_venv.sh`, with `HOS_SKIP_PROJECT_REQUIREMENTS: "1"`.
+  4. Download `new-code-plan` into `${{ runner.temp }}/ncg-in/plan` (`continue-on-error: true`). A missing plan surfaces as exit 3 from the gate.
+  5. `shard`, with step `env: HOS_SHARD_INDEX: ${{ matrix.shard }}` (C7), and `--index "$HOS_SHARD_INDEX" --job-start-file "$RUNNER_TEMP/ncg-job-start" --plan-dir ${{ runner.temp }}/ncg-in/plan --gated-sha ${{ github.sha }} --pr ${{ github.event.pull_request.number }} --run-id ${{ github.run_id }} --run-attempt ${{ github.run_attempt }} --out ${{ runner.temp }}/ncg-out/new-code-fragment.json`.
+  6. Upload `new-code-fragment-${{ matrix.shard }}-of-${{ needs.new-code-plan.outputs.count }}` (§5.20.12). The expressions are in `with: name:`, which C7 allows.
+
+**`new-code-gate`** (the required context; its name does not change).
+- `needs: [new-code-plan, new-code-shard]`, `if: always()`, `timeout-minutes: 5`, `permissions: contents: read`.
+- **Steps:**
+  1. Checkout (depth 1).
+  2. setup-python 3.12.
+  3. Download `new-code-plan` into `${{ runner.temp }}/ncg-in/plan` (`continue-on-error: true`).
+  4. Download with `pattern: new-code-fragment-*-of-${{ needs.new-code-plan.outputs.count }}` and `merge-multiple: false` into `${{ runner.temp }}/ncg-in/fragments` (`continue-on-error: true`). That creates one sub-directory per artifact, named after the artifact. **Why the `-of-<count>` filter [architect sharding ruling, SH-6(a); C6]:** "Re-run all jobs" re-runs `tests`, which measures new durations, so the new plan may choose a different N. The earlier attempt's fragments (`-of-<old N>`) are not overwritten, because their names differ, and an unfiltered pattern would download them: `fragment_extra` (exit 3) on **every** re-run-all after an N change, an availability defect. With the filter, a same-N stale fragment is either overwritten by its re-run leg or refused as `fragment_not_bound` (the plan hash differs), naming its shard, which is the correct fail-closed result. A forged `count` only makes fragments missing (exit 3).
+  5. `verdict`, with step `env: HOS_PLAN_RESULT: ${{ needs.new-code-plan.result }}` and `HOS_SHARD_RESULT: ${{ needs.new-code-shard.result }}` (C7), and `--plan-dir`, `--fragments-dir`, `--plan-result "$HOS_PLAN_RESULT"` and `--shard-result "$HOS_SHARD_RESULT"`, the four binding values (§5.1), `--records-out ${{ runner.temp }}/ncg-out/new-code-records.json`, and `--out` and `--summary` as today.
+  6. Publish the summary (unchanged).
+  7. Upload `new-code-verdict`. It now holds all three of `new-code-records.json`, `new-code-verdict.json` and `new-code-summary.md`.
+- `--measure-result` and `--records-dir` are removed.
+- **INV-G still holds.** The job runs the four pinned actions, the system `python`, `cat`, the stdlib and `scripts/framework/**`, and nothing else. A second `download-artifact` step is still one of the four pinned actions. WF-ENTRY's INV-G step whitelist gains that second download step. `new-code-gate` gains **no** job-start step (SH-11, C8): it reports gate-process seconds only.
+
+**Header comment** of `tests.yml`: replace the two-job paragraph with the four-job graph. State that only `new-code-gate` is required. State that the shard matrix is computed by the plan, and that a shard that fails, is missing, is duplicated or is not bound to this run fails the gate closed.
+
+#### 5.20.2 CLI phases (replaces the §5.1 `measure` row and amends `verdict` and `run`)
+
+| Phase | Arguments | Behaviour |
+|---|---|---|
+| `meta` | adds `--durations P` | as today, plus `test_seconds_ms` from the durations file (§5.20.4). A missing or unparseable durations file writes `test_seconds_ms: null` and `test_seconds_reason`, and **exits 0 for that cause only** (SH-2; C3). Every other `meta` failure is unchanged |
+| `plan` | `measure`'s arguments today, plus `--github-output P` (CI only) and `--job-start-file P` (SH-11; C8). `--job-start-file` is optional; a missing or unparseable file gives `job_seconds: null` and is never an error. `test_seconds_ms: null` in the sidecar is exit 3 `test durations missing from sidecar` (C3) | §5.2 to §5.7, §5.10 and §5.11, and `_enumerate` per file (§5.9 steps 1 and 2): the existing cheap phase, unchanged. Then the cost model (§5.20.4), the partition (§5.20.5) and the plan document (§5.20.6). Exit 0 when the plan is complete. A plan whose files were cut short by the plan budget is complete (§5.20.10). Exit 3 on any internal error, in which case the plan document is still written, with `internal_errors` and an empty assignment, and no job outputs are written |
+| `shard` | `--index I --plan-dir D --gated-sha S --pr N --run-id ID --run-attempt N --out P [--job-start-file P]` | §5.20.7. `--job-start-file` as for `plan` (SH-11; C8). Exit 0 when the fragment is complete, a timeout included. Exit 3 on an internal error, in which case the fragment is still written with `status: internal_error` |
+| `verdict` | `--plan-dir D --fragments-dir D --plan-result R --shard-result R --gated-sha S --pr N --run-id ID --run-attempt N --records-out P --out P --summary P` | merge (§5.20.9), then `decide` and rendering as in §5.14 and §5.16. Exit 0 / 1 / 3 |
+| `run` | `[--base REF] [--keep-workspace] [--only-shard I]` | Local (REQ-3): `plan`, then `shard` for each I in `1..N` in order, in-process, through the same functions, writing fragments into a temp directory laid out exactly as the CI download is. Then `verdict`'s merge and `decide`. With `--only-shard I` it plans, runs shard I only, prints that fragment's summary, and **always exits 3**: "partial run: shard I of N is not a gate result" (REQ-3: never a gate pass on its own) |
+
+- **One entry point (REQ-3, AC-30).** CI calls exactly `plan`, `shard` and `verdict`, each in the `-I -c ENTRY_SNIPPET` form. `measure` no longer exists, and the parser refuses it (exit 2).
+- **Binding flags are required** on `shard` and `verdict`. A missing one is exit 2. `run` passes its own values in-process: `mode: local`, no run ID.
+- **The sharding functions live in `scripts/framework/new_code_gate_shard.py` [A-Q9; ruled ADR §2h SH-9; C11].** That covers the constants, the cost model, `shard_count`, `partition`, `plan_hash`, fragment validation and merge. It is stdlib-only at module level (S-STDLIB), does no I/O and reads no clock or environment; a thin I/O layer in `new_code_gate.py` reads the directories. It is imported canonically and joins VER-IMPORTS's allowed set and INV-G's code set. It is permitted by ADR §2b condition 1 as amended by SH-9: the introducing PR's production `.py` set is the **four** gate modules (`new_code_gate.py`, `new_code_gate_logic.py`, `new_code_gate_pytest_plugin.py`, `new_code_gate_shard.py`) plus `shell_logic_check.py`.
+
+#### 5.20.3 What runs once and what runs per shard (REQ-36, REQ-37, AC-41)
+
+| Once, in `plan` | Per shard, in `shard` |
+|---|---|
+| version guard and sidecar checks (§5.2), the AR-1 parent guard, diff, gated statements, modes, coverage, decision logic, Q5, NQ-1, NQ-2, shell, selection, repo-copy collect, static path-load, `_enumerate` and mapping (including the function spans, §5.9 step 2, C4), the zero-mutant settlement, the per-function fan-in from the contexts (§5.20.4), cost, partition | version guard against the **plan's** `tool_versions` and `python` (the shard's venv is built separately); a fresh workspace per (shard, file) (§5.8, with REQ-19 and REQ-20 per shard); `mutmut run <assigned names>`; the §5.9 step 5 integrity checks; the step 6 attribution rules; `_collect` and its drift and completeness checks (§5.20.7) |
+
+A shard has **no** coverage-data input. Its CLI takes no `--coverage-file` or `--meta`, so it cannot recompute coverage or selection (AC-41). Selection, the repo-copy removals and the gated mutant names reach the shard only from the plan.
+
+#### 5.20.4 Cost model and shard count (REQ-38, OQ-H6, OQ-A9(b)) [A-Q2; ruled ADR §2h SH-2]
+
+**Constants**, all in code and none read from env, label or config (REQ-38, AC-35):
+- `T_MS = 900_000`: T, 15 CI-minutes.
+- `N_MAX = 8`.
+- `CI_CORES = 4`: the vCPUs of `ubuntu-latest` for a public repository, and mutmut's default `--max-children`.
+- `C_MUTANT_MS = 50` (renamed from `C_FORK_MS`) [architect sharding ruling, ADR §2h SH-2; C2].
+- `D_DEFAULT_MS = 1_000`.
+- `D_CLAMP_MS = 600_000`.
+- `STATS_PASSES = 2`: the stats run and the clean run, which are single-process and repeat per (shard, file) (SH-3) [C2].
+- `COST_MODEL = "per-function-fan-in/1"` [C2].
+
+All arithmetic is in integers, so boundary cases are exact and AC-29 holds.
+
+**Calibration (one time, reviewed) [architect sharding ruling, SH-2; C2].** The condition-6 run (§5.20.15) reports, per file, the estimate `W_F_ms / CI_CORES` against the measured `mutmut_seconds`, scaled to CI by the condition-6 formula. The coder may change `C_MUTANT_MS` **once**, from that evidence, as a reviewed constant in the PR. There is no runtime calibration and no other knob.
+
+**Per-test duration (the bound input).** The cost is read from what the `tests` job measured in this run:
+- In `run_tests.sh`, the pytest step gets `HOS_TEST_DURATIONS_OUT=test-durations.json` in its environment. This is a plain assignment with no conditional (§4.1 rule).
+- `tests/conftest.py` gains two hooks:
+  - `pytest_runtest_logreport` adds `report.duration` for the setup, call and teardown phases of each `report.nodeid`. Rerun attempts add to the same key, which over-estimates; that is the safe direction.
+  - `pytest_sessionfinish` writes `{nodeid: integer ms}` to the named path, only when the variable is set, and atomically: a temp file in the same directory, then `os.replace` (SH-2) [C3].
+- These hooks are in `tests/**`, which is not gated, so they cannot pull any test into a gated file's selection. The node IDs are pytest's own `report.nodeid`, the same IDs the coverage contexts carry (F-10), so no mangling is involved.
+- `meta --durations test-durations.json` copies the map into the sidecar as `test_seconds_ms`, each value clamped to `[0, D_CLAMP_MS]`. The sidecar is already bound to `run_id` and `head_sha` (§5.2 step 3). The `coverage-contexts` artifact is unchanged, because the sidecar rides in it.
+- **A missing or unparseable durations file does not fail `tests`** [architect sharding ruling, SH-2; C3]. `meta` writes `test_seconds_ms: null` plus `test_seconds_reason` (a bounded string naming the cause: file missing, or not a JSON object of node ID to non-negative integer) into the sidecar, and exits 0 for that cause only. Every other `meta` failure is unchanged. `plan` then exits 3 `test durations missing from sidecar`, so the new gate fails closed and the `tests` context keeps its meaning (AD-2).
+- The variable is set only on `run_tests.sh`'s pytest command, so it is absent from every mutation run. `HOS_TEST_DURATIONS_OUT` also joins `STRIPPED_ENV_NAMES`, as defence in depth.
+
+**Weight: per-function fan-in [architect sharding ruling, ADR §2h SH-2; C1].** For each file F that goes to the mutation phase:
+- `sel(F)` is its final selection, after §5.6 step 3.
+- `n_F` is its gated mutant count.
+- `d(t)` is `test_seconds_ms[t]`. A selected ID with no entry gets `D_DEFAULT_MS`. A name-fallback container ID (§5.6) gets the sum over every entry under it, or `D_DEFAULT_MS` if there is none.
+- For each gated mutant m of F, `f = mangled_name_from_mutant_name(m)` (mutmut's `name.partition("__mutmut_")[0]`, `utils/format_utils.py:71-73`, applied to the qualified key) is its mangled function prefix.
+- `fan(f)` = the tests in `sel(F)` whose coverage context executed at least one measured statement line inside f's original line span (the span `_enumerate` reports, §5.9 step 2). If F's `selection_method` is `name_fallback` (no context evidence), `fan(f) = sel(F)`.
+- `w_m = C_MUTANT_MS + Σ_{t ∈ fan(f)} d(t)`. Every mutant of one function has the same weight, so the plan stores it once per prefix as `function_cost_ms[f]` (§5.20.6).
+- `W_F_ms = Σ_{m ∈ gated(F)} w_m`, and `W_ms = Σ_F W_F_ms`, which is CPU-milliseconds of mutation work.
+- The per-file per-mutant cost that REQ-38 names is `c_F = W_F_ms / n_F`, the file's mean. So `W = Σ_F n_F × c_F` holds **exactly**, and REQ-38's wording is met. The display value is `cost_ms = W_F_ms // n_F` (integer, display only; nothing is computed from it).
+- `N = min(N_MAX, max(1, ceil_div(W_ms, CI_CORES × T_MS)))`. This is exactly `min(N_max, max(1, ceil(W / T)))` with `W = W_ms / (CI_CORES × 60_000)` CI-minutes.
+- `capped = W_ms > N_MAX × CI_CORES × T_MS`.
+- A gated mutant whose prefix has no span from `_enumerate` is plan exit 3 `mutant function span missing: <path> <name>` (C4).
+
+**Why this weight.**
+- mutmut runs, per mutant, only the tests that hit that mutant's function: `_run` looks up `tests_by_mangled_function_name.get(mangled_name_from_mutant_name(mutant_name))` (`__main__.py:1023`). The fan-in weight models exactly that set, from context evidence.
+- A surviving mutant runs every test in its fan-in, and a killed one stops at its first failing test (mutmut runs `-x`, fastest first). So `w_m` over-estimates. An over-estimate can only raise N, and REQ-41 makes N neutral to the outcome.
+- **Rejected:** selected-test count alone. On this PR it is inversely related to cost. `new_code_gate_logic.py` has 346 tests that each take milliseconds, while `new_code_gate.py` has 208 tests that spawn `git`, at about 2.3 CPU-s per mutant (ADR §2g RV3-2).
+- **Rejected:** a hard-coded per-file table. It would be an exemption-shaped special case (S-5).
+- **Rejected: the whole-selection sum per file** (`c_F = C + Σ_{t ∈ sel(F)} d(t)`, this TD's draft). It charges every mutant of F for every selected test of F, so it over-estimates by `|sel(F)| / |fan(f)|`, a ratio that differs between files and between functions. Over-estimation is safe for correctness but not for balance: in the capped regime (W > 8 × T, expected for this PR) the balance decides which shards overrun, and a weight that is wrong *relative to other files* puts the real cost in the wrong shards. It also inflates N on ordinary PRs (runner capacity, SPEC §7a) (ADR §2h SH-2).
+
+**Determinism (AC-29).** The plan inputs are the commit, the sidecar (contexts plus durations) and the code. Identical plan inputs give the same N and the same plan hash. A fresh `tests` run measures new durations, so it can produce a different N. The outcome does not change (REQ-41). A verdict-only re-run reuses the same plan artifact.
+
+**Per-shard fixed cost** is not in W. That is checkout, venv, plan download, the workspace, and each (shard, file)'s stats, clean and forced-fail runs. T's 5-minute margin under the 20-minute target is there to cover it (REQ-38). The plan estimates the stats and clean runs per file as `fixed_est_ms = STATS_PASSES × Σ_{t ∈ sel(F)} d(t)` and reports it per shard as `est_fixed_ms` (§5.20.5); neither feeds N or the cut (SH-3). The records report the measured `job_seconds` per shard (§5.20.11), so the margin can be checked against real runs.
+
+#### 5.20.5 Partition (REQ-39, AC-36) [A-Q3]
+
+- **Sequence.** Take every gated mutant of every file whose cheap phase left it for mutation, meaning `done` is false after `settle_selection`. Sort them lexicographically by `(path, qualified key)`. Each mutant m weighs `function_cost_ms[prefix(m)]` of its file, which is `w_m` (§5.20.4) [architect sharding ruling, SH-3; C5].
+- **Greedy contiguous cut.** Start at k = 1 and walk the sequence. Assign each mutant to shard k. After assigning it, if `k < N` and `cumulative_ms × N ≥ k × W_ms`, advance to k + 1.
+- Contiguous chunks keep each file in as few shards as possible. Each extra shard per file repeats that file's stats, clean and forced-fail runs.
+- A file may span shards (REQ-39). Trailing shards may be empty: when `W_ms` comes mostly from a few very expensive mutants, or when there are no mutants at all (a no-op diff gives N = 1 with an empty assignment, AC-34). An empty shard still runs, and writes an empty fragment with `status: complete`.
+- **No adjustment of N.** N is never min'd with the mutant count, and a single mutant is never split. A single mutant whose cost exceeds T sits alone in its shard and may overrun. That fails closed with "split the PR".
+- **Output.** For each `k` in `1..N`: `{index: k, members: [{path, names[]}] (sorted), est_mutation_ms, est_fixed_ms}` [C5].
+  - `est_mutation_ms` = Σ `w_m` over the shard's mutants: the cut's quantity (÷ `CI_CORES` for wall).
+  - `est_fixed_ms` = Σ `fixed_est_ms` over the files with at least one mutant in the shard (§5.20.6), the stats and clean runs that repeat per (shard, file).
+  - **Neither changes N, and `est_fixed_ms` does not affect the cut.** N is fixed by SH6, and folding a per-(shard, file) term into the greedy walk would make the cut depend on its own output (SH-3). Both are report-only, shown in the summary so that a shard whose fixed cost eats T's 5-minute margin is visible before it overruns (R-26).
+- **The function is pure.** `partition(weights, names_by_file, N)` takes no clock, environment or file input. `weights` is the per-mutant `w_m` (from `function_cost_ms`). `partition` returns `members` and `est_mutation_ms`; the plan adds `est_fixed_ms` to each shard entry afterwards, from the files' `fixed_est_ms`, so the cut cannot see it.
+
+#### 5.20.6 Plan document (`schema: "new-code-gate-plan/1"`)
+
+- **`binding`:** `{mode, gated_sha, pr_head_sha, base_sha, gated_tree, pr, run_id, run_attempt}`. `run_attempt` is the plan's own attempt.
+- **Run metadata:** `tool_versions`, `python`, `coverage_core` and `gate_version` (bumped to `"2"`).
+- **`constants`:** `{T_MS, N_MAX, CI_CORES, C_MUTANT_MS, D_DEFAULT_MS, D_CLAMP_MS, STATS_PASSES, COST_MODEL, BUDGET_SECONDS, PLAN_BUDGET_SECONDS}` [C2].
+- **`files`:** the per-file records exactly as the cheap phase leaves them (§5.15.2 fields up to mutation). Files decided in the cheap phase are final here. That covers cheap-phase fails, zero-mutant settlements, blocked files and plan-budget timeouts. Each file record also carries:
+  - `mutant_names[]`, the full enumerated set. It is used for the drift check.
+  - `gated_mutant_names[]`.
+  - `selection_full[]`, the untruncated selection.
+  - `function_cost_ms {prefix: ms}`: `w_m` per mangled function prefix (§5.20.4) [C4].
+  - `W_F_ms`: Σ `w_m` over the file's gated mutants [C4].
+  - `fixed_est_ms`: `STATS_PASSES × Σ_{t ∈ sel(F)} d(t)` [C4].
+  - `cost_ms`: `W_F_ms // n_F`, display only (§5.20.4) [C1].
+  - `to_shards`, a boolean.
+  - All of these are inside `plan_hash` (C4).
+- **Cost and partition results:** `W_ms`, `W_ci_minutes` (a 1-dp display value only), `N`, `capped`, `assignment` (§5.20.5; each shard entry carries `est_mutation_ms` and `est_fixed_ms`, C5).
+- **`internal_errors`.**
+- **`plan_hash`:** sha256 of the canonical JSON (the `records_sha256` canonicalisation) of the whole document, minus `plan_hash`, `started_at`, `finished_at`, `seconds` and every `UNHASHED_FIELDS` key. So it covers N, the assignment, the binding (REQ-39) and also the selection every shard runs.
+- **Timings:** `started_at`, `finished_at`, `seconds`, and `job_seconds` (SH-11; C8, C10): this process's finish time minus the integer epoch in `--job-start-file`, or `null` when the file is missing or unparseable. Unhashed.
+
+#### 5.20.7 Shard execution (REQ-17 amended, REQ-36, REQ-37, AC-15, AC-37)
+
+**Checks first.** Each one is exit 3 and names `shard I of N`:
+- The plan directory holds exactly `new-code-plan.json`, as a regular file (`lstat`).
+- The schema matches, and the recomputed `plan_hash` equals the stored one.
+- The plan has no `internal_errors`.
+- The plan's binding has `mode: ci`, and its `gated_sha`, `pr` and `run_id` equal the CLI values. The plan's `run_attempt` is ≤ the current attempt.
+- `1 ≤ I ≤ N`.
+- `git rev-parse HEAD` equals `gated_sha`.
+- The installed versions of all six pinned tools, and `python`, equal the plan's.
+
+**Per file**, for each file that has at least one mutant in `assignment[I]`, in path order:
+- The workspace is built as in §5.8, with the generated config's selection taken from `selection_full`.
+- Run `mutmut run <the assigned names, sorted>`.
+- Apply §5.9 step 5 (all four integrity checks) and step 6 (rules 1 to 8) unchanged.
+- Run `_collect`. Its checks become:
+  - **drift:** the `.meta` key set equals the plan's `mutant_names` for that file (AC-37). A mismatch is exit 3 `shard I of N: mutant enumeration drift: <path>`.
+  - **completeness:** every assigned key has a non-`null` exit code.
+  - **no foreign mutants:** every gated key of the file that is not assigned to shard I is `null`. That proves the shard ran no other shard's mutants.
+  - Under step 6 rule 4 (the no-test-case stop), every assigned key is `null`, and each one is recorded as `no tests`.
+- Step 8's classification is unchanged. Step 9's score is **not** computed in the shard. The shard reports `killed` and `total` for its subset, and the merge scores the file (REQ-41).
+
+**Budget.** `BUDGET_SECONDS = 1500` (unchanged), measured from the start of the `shard` process. It applies per shard (S-4). The subprocess deadline handling of §5.13 is unchanged.
+
+**Overrun.** The fragment gets `status: timeout` and `timeout: {phase, file, message}`. The files the shard finished before the deadline stay in the fragment, as completed results. The merge decides what they mean (§5.20.10).
+
+**Exit codes.** Exit 0 when the fragment is complete: `status` is `complete` or `timeout`, with per-file decided fails included. Exit 3, with `status: internal_error`, on any internal error. The fragment is always written, atomically (§5.17 review-2), unless the job itself is killed. A job kill leaves no fragment, which the merge reports as missing.
+
+#### 5.20.8 Fragment (`schema: "new-code-gate-fragment/1"`)
+
+- **`binding`:** `{gated_sha, pr, run_id, run_attempt, index, N, plan_hash}`. `run_attempt` is the shard's own attempt.
+- **`status`:** `complete`, `timeout` or `internal_error`. Also `timeout` (`null` or the object in §5.20.7) and `internal_errors[]`.
+- **`files[]`**, one entry per file with assigned mutants:
+  - `path` and `assigned` (the count);
+  - `status_by_key`, for assigned keys only;
+  - `killed`, `total` and `mutant_status_counts`;
+  - `fail_reasons[]`, limited to the shard-time codes `unmarked_repo_copy`, `path_loaded_module`, `selected_test_fails_in_isolation` and `mutation_timeout`;
+  - `mutation_reason`, `path_load_findings[]` and `isolation_failure`;
+  - `workspace_seconds`, `mutmut_seconds`, `collect_seconds` and `seconds`;
+  - `finished`, true when the file's run completed before any deadline.
+- **Timings:** `started_at`, `finished_at` and `seconds` (the wall time of the shard process), and `job_seconds` (SH-11; C8, C10), as in §5.20.6. `null` when the start file is missing or unparseable.
+- **`fragment_sha256`:** over the canonical fragment minus timings and `fragment_sha256`.
+- Bounded strings as in §5.15.2.
+
+#### 5.20.9 Merge, inside `verdict` (REQ-40, REQ-41, REQ-42, AC-38 to AC-40, AC-42) [A-Q4]
+
+The merge is stdlib-only and pure over parsed documents: `merge(plan, fragments_by_dir, plan_result, shard_result, binding) -> (records, problems)`. A thin I/O layer reads the directories. **The merge collects every problem. It does not stop at the first one** (REQ-42).
+
+**Inputs (lstat, regular files only):**
+- `--plan-dir` holds exactly `new-code-plan.json`.
+- Each entry of `--fragments-dir` must be a directory named `new-code-fragment-<i>-of-<n>`, with decimal `i` and `n`. Each holds exactly `new-code-fragment.json`.
+- Anything else is a problem.
+
+**Problems.** Any problem makes the result exit 3. Each is an `internal_errors` entry `{code, message, shard?, file?}`.
+
+| Code | Condition | Names |
+|---|---|---|
+| `plan_not_successful` | `--plan-result` ≠ `success` | the plan |
+| `plan_unreadable` / `plan_hash_mismatch` / `plan_inconsistent` | The plan is unreadable, has the wrong schema, or its recomputed hash differs. Or the plan fails internal consistency [architect sharding ruling, SH-7(b); C9]: the merge recomputes **N** (the §5.20.4 formula over the plan's stored `function_cost_ms` and `gated_mutant_names`, giving `W_F_ms` and `W_ms`) **and the whole partition** (`partition(...)`, §5.20.5, from the same stored weights and the `to_shards` files' `gated_mutant_names`), and requires the plan's `N` to equal the recomputed N and its `assignment` to equal the recomputed partition **exactly** (every shard's `index`, `members` and `est_mutation_ms`, plus `est_fixed_ms` recomputed from the stored `fixed_est_ms`). This replaces the draft's weaker "the assignment is a disjoint partition" check. A plan whose assignment is some valid disjoint cover but not the partition this code produces is `plan_inconsistent`. A stored `W_F_ms` or `W_ms` that differs from the recomputed sum is also `plan_inconsistent` | the plan |
+| `plan_not_bound` | the plan's binding fails `check_records_binding` (§5.1) | the plan |
+| `fragment_missing` | no fragment for an index in `1..N` | shard i |
+| `fragment_duplicate` / `fragment_out_of_range` / `fragment_extra` / `fragment_name_mismatch` | two entries for one index; `i ∉ 1..N`; `n ≠ N`; a directory name that disagrees with the fragment's own `index` or `N`; any other entry | shard i, or the entry name |
+| `fragment_not_bound` | `gated_sha`, `pr`, `run_id`, `N` or `plan_hash` differs from the plan | shard i |
+| `fragment_attempt` | `run_attempt` is not an integer, is > the current attempt, or is < the plan's `run_attempt` | shard i |
+| `fragment_unreadable` / `fragment_hash_mismatch` | unreadable, wrong schema, or its `fragment_sha256` differs | shard i |
+| `mutant_in_two_fragments` / `mutant_in_wrong_fragment` / `planned_mutant_without_result` | as SPEC REQ-40 says | shard i and file |
+| `shard_internal_error` | the fragment's `status` is `internal_error`. The fragment's own `internal_errors` are copied in | shard i and file |
+| `shard_job_not_successful` | `--shard-result` ≠ `success`. **[A-Q4]** The aggregate result cannot say which leg failed (OQ-A9(c)), so this problem is reported together with the per-shard problems above. If none of them identifies a shard, the message is "shard job result `<r>`; no fragment identifies the failing shard". `skipped` and `cancelled` are never a pass (AC-39) | each shard the fragments implicate |
+
+**Per-file merge (no problems, or per-file display when there are problems).** Start from the plan's file record. For a `to_shards` file F, H(F) is the set of shards holding its mutants:
+- `shards = [{index, killed, total, status}]`, one entry per shard in H(F), sorted.
+- **Final** iff every shard in H(F) has `status: complete`, and F's entry in each has no shard-time fail reason. In that case:
+  - `mutants_killed = Σ killed` and `mutants_total = Σ total`. The total must equal `len(gated_mutant_names)`, or the problem is `planned_mutant_without_result`.
+  - `mutant_status_counts` is the per-status sum, and `mutation_ran: true`.
+  - `mutant_score_pct = floor(Σkilled × 1000 / Σtotal) / 10`, and the threshold test is `Σkilled × 100 ≥ 75 × Σtotal` (§5.9 step 9). **Never an average** (REQ-41).
+- **Not final:**
+  - `mutation_ran: false`. `mutants_killed`, `mutants_total` and `mutant_score_pct` are `null`. The partial results stay visible only in `shards[]`, marked with their status, and the summary labels them "not final" (REQ-42).
+  - The fail reasons are the union, by code, of the shards' shard-time reasons, in `FAIL_ORDER`. Each message comes from the lowest shard index.
+  - `mutation_reason` is `timeout` if any shard in H(F) timed out (§5.20.10). Otherwise it is the first blocking reason's reason (`path_load` or `blocked_by:<code>`).
+  - **[A-Q8]** This union rule makes REQ-41's identity claim hold for files whose shards all complete. A shard-time fail (a path load, a repo copy or an isolation failure) comes from the stats run or from collection, which every shard of F repeats with the same selection. So the same reason appears whichever partition the plan chose.
+- After the merge, `decide()` and `render_summary` run unchanged (§5.14, §5.16). The summary also gets:
+  - a "Shards" line with N, `capped`, W and T;
+  - one row per shard: index, status, files, `est_mutation_ms`, `est_fixed_ms`, `job_seconds` (or "n/a" when `null`) and run attempt (C5, C10);
+  - a per-file "shards" column listing the indices (REQ-42).
+
+#### 5.20.10 Timeouts, fail-closed handling and the `N_MAX` cap (REQ-29, OQ-H7, AC-10, AC-45) [A-Q8]
+
+- **Plan budget:** `PLAN_BUDGET_SECONDS = 600` (a code constant, accepted, ADR §2h SH-1), inside a 15-minute job. The deadline rules are those of §5.13. Files whose cheap phase or `_enumerate` did not finish get `mutation_ran: false, mutation_reason: timeout` and fail `mutation_timeout` ("plan budget exhausted; split the PR"). They are not sent to shards. The plan is still complete (exit 0), so the shards of the other files run and the result is a decided fail (exit 1). Plan job timeout → the plan result is not `success` → exit 3.
+- **Shard budget overrun:**
+  - The fragment gets `status: timeout`, and the shard exits 0.
+  - The merge marks **every file with a mutant in that shard** `mutation_ran: false, mutation_reason: timeout`, fail `mutation_timeout`. That includes files the shard finished before the deadline (SPEC REQ-29 text, "every file with a mutant in that shard"), and files whose other shards completed.
+  - The message is "shard I of N overran its 25-minute budget (ran out in <phase> of <file>); files with mutants in shard I: <paths>; split the PR". The verdict exits 1.
+  - Several overrunning shards each give their own message. A file gets a single `mutation_timeout` reason, whose message names every overrunning shard that holds it.
+- **Shard job timeout** (30 minutes) or cancellation: no fragment and a non-`success` aggregate, so the problems are `fragment_missing` plus `shard_job_not_successful`, and the result is exit 3. That is never a pass.
+- **The `N_MAX` cap (OQ-H7, confirmed per shard).**
+  - When `capped` is true, the plan records it and still writes `N = N_MAX`, with a normal assignment. The plan never refuses or fails because of the cap, and the cap adds no fail reason.
+  - All `N_MAX` shards run and mutate their assignments.
+  - Only a shard that actually overruns gets the timeout treatment above. A shard that fits is merged exactly as in an uncapped plan. Its files' killed, total and score are the sums.
+  - The summary's "Shards" line says "estimated work W CI-min exceeds 8 × 15; running 8 shards", so a reader can see why a later timeout is likely. Any timeout makes the overall result a fail (AC-45).
+- **Merge-and-verdict bound:** the `new-code-gate` job's `timeout-minutes: 5`. A job timeout is a non-success context. The merge is stdlib-only over at most nine small files, which takes seconds.
+- **No other response to a large PR.** Raising `BUDGET_SECONDS`, `N_MAX` or T is not an allowed response (S-1, REQ-29). The shard count is the only lever.
+
+#### 5.20.11 Records `new-code-gate/2` and cost reporting (REQ-24, REQ-44, AC-22, AC-44) [A-Q10, A-Q11; ruled ADR §2h SH-10, SH-11]
+
+The records schema becomes `new-code-gate/2`. S3 is not built, so no ingest contract breaks. §5.20.13 has the S3 note.
+
+- **New top-level fields:**
+  - `shards: {N, capped, W_ms, W_ci_minutes, T_minutes, N_max, plan_hash, per_shard: [{index, status, run_attempt, seconds, job_seconds, files[], est_mutation_ms, est_fixed_ms, fragment_sha256}]}` (C5, C10). `per_shard[].fragment_sha256` is each fragment's own `fragment_sha256` (SH-7(c)), so the merged records trace to the 90-day artifacts (REQ-43);
+  - `plan_hash` at top level (SH-7(c); C10);
+  - `plan_seconds` (gate-process) and `plan_job_seconds` (the plan's `job_seconds`, SH-11; `null` when its start file was missing or unparseable);
+  - `merge_verdict_seconds` (gate-process; `new-code-gate` has no job-start step);
+  - `runner_minutes_total` [architect sharding ruling, SH-11; C10]: (plan `job_seconds` + Σ shard `job_seconds` + gate-process seconds of `new-code-gate`) ÷ 60, to 1 dp. Labelled "job minutes from job start to fragment write; excludes queue time and the upload step; new-code-gate counts gate-process time only". When any `job_seconds` term is `null`, the total is `null` and the summary names the job that lacked its start file (technical-design's clarifying reading of SH-11's "null when the start file is missing"; display only, never read by `decide()`).
+- **New per-file fields:** `shards[]` (§5.20.9), `plan_hash` and `N`, as REQ-24 asks.
+- **Hashing.** `shards`, `plan_hash`, `N`, `job_seconds`, `plan_job_seconds`, `runner_minutes_total` and every timing field join `UNHASHED_FIELDS`. All of the C10 fields are unhashed, and none of them reaches `decide()`. `records_sha256` therefore covers only partition-independent content, and AC-40 can assert it equal for N = 1 and N = 3 (REQ-41). The values come from PR-code jobs and are display data only (R-9).
+
+#### 5.20.12 Artifacts and re-runs (REQ-43, AC-43)
+
+| Artifact | Job | Content | `retention-days` | `if` |
+|---|---|---|---|---|
+| `coverage-contexts` | tests | `.coverage`, `coverage-meta.json` (now with `test_seconds_ms`) | 7 | success |
+| `new-code-plan` | new-code-plan | `new-code-plan.json` | **90** | `always()` |
+| `new-code-fragment-<i>-of-<N>` | new-code-shard | `new-code-fragment.json` | **90** | `always()` |
+| `new-code-verdict` | new-code-gate | `new-code-records.json` (merged), `new-code-verdict.json`, `new-code-summary.md` | **90** | `always()` |
+
+- Every upload sets `overwrite: true` and `if-no-files-found: warn`, except `coverage-contexts`, which keeps `error`.
+- The `new-code-records` artifact is retired, because the merged records ride in `new-code-verdict`.
+- The plan and fragments are kept 90 days, so the merged records can be re-derived (REQ-43).
+- **Re-runs.**
+  - "Re-run failed jobs" re-runs the failed shard legs and the dependent `new-code-gate`, under a new `run_attempt`. A re-run leg downloads the attempt-1 plan and uploads a fragment with its own attempt, which replaces the earlier one by name.
+  - The merge accepts mixed attempts when every binding rule holds: each fragment's attempt must be ≥ the plan's and ≤ the current.
+  - A verdict-only re-run re-merges from the same artifacts and reaches the same `records_sha256`.
+  - **"Re-run all jobs" [architect sharding ruling, SH-6(a); C6].** This re-runs `tests`, which measures new durations, so the new plan may choose a different N. The earlier attempt's fragments named `-of-<old N>` stay in the run (`overwrite: true` replaces only a same-name artifact), but the gate's download pattern `new-code-fragment-*-of-${{ needs.new-code-plan.outputs.count }}` never fetches them, so they cannot cause `fragment_extra`. When N is unchanged, each re-run leg overwrites its same-name fragment; a same-N fragment left from the earlier plan (its leg did not re-upload) carries the old `plan_hash` and is refused as `fragment_not_bound`, naming its shard. That is fail-closed, never a pass.
+- **First-CI-run verification** extends §5.15.3. The PR author records it in the PR body. Steps 1 to 3 are new:
+  1. Re-run one shard leg only, and confirm its fragment is replaced and the gate re-merges.
+  2. Re-run `new-code-gate` only, and confirm the same `records_sha256`.
+  3. Confirm `expires_at` for the plan and fragment artifacts.
+  4. If any of these fails, escalate to the architect before the context is made required.
+
+#### 5.20.13 Required contexts, protected surfaces and CODEOWNERS (REQ-2, REQ-34, AC-31)
+
+- **`scripts/framework/hos_required_contexts.txt`.** The context list is unchanged: `new-code-gate` stays the only #2304 context. Only its provenance comment changes. It says the gate's upstream jobs are now `new-code-plan` and the matrix `new-code-shard`, that neither is required, and that the gate fails closed on any non-`success` result of either.
+- **`setup_branch_protection.sh`** needs no change. A human re-run is still required to make the context live (REQ-2).
+- **`tests/framework/test_branch_protection_contexts.py`** (AC-31). The test `test_new_code_gate_context_registered_and_job_named` changes as follows:
+  - It asserts that `new-code-plan` and the shard job are produced by `tests.yml` and are not in the contexts.
+  - It asserts that exactly one job has `name: new-code-gate`.
+  - It asserts that the shard job's `name:` template, rendered for every index in `1..N_MAX`, never equals `new-code-gate`, and never equals any required context.
+  - `_workflow_job_names()` must keep a templated `name:` as its literal template text. The coder checks that it does not crash on `${{ … }}`.
+- **Protected paths touched.** None of these needs a new protected-surface entry. CODEOWNERS and `protected_surfaces.txt` are unchanged.
+  - `.github/workflows/tests.yml` (`.github/workflows/**`);
+  - `scripts/framework/new_code_gate.py`, `new_code_gate_logic.py`, `new_code_gate_pytest_plugin.py` and the new `new_code_gate_shard.py` (`scripts/framework/**`). These four gate modules plus `shell_logic_check.py` are the production `.py` set ADR §2b condition 1 allows, as amended by ADR §2h SH-9 (C11);
+  - `scripts/framework/run_tests.sh` (`scripts/framework/**`);
+  - `scripts/framework/hos_required_contexts.txt` (`scripts/framework/**`).
+  - `tests/conftest.py` is **not** protected. It is PR code that already runs in `tests` (AF-8).
+- **S3 note.** S3 reads the merged records from `new-code-verdict` and never reads fragments. The S3 design must use schema `/2`.
+
+#### 5.20.14 Trust: R-9 widened (SH8 / OQ-H8, accepted) [A-Q7]
+
+- `new-code-plan` and every `new-code-shard` leg run PR code: `ensure_venv.sh`, PR tests in the collect-only step and in mutmut, and `tests/conftest.py`. PR code in any of them can forge that job's artifact. With the runtime token, it may also be able to upload under another shard's or the plan's name. It can forge the plan job's outputs, and it can forge the durations that set N.
+- The merge's checks (§5.20.9) catch accidental corruption and stale or cross-run artifacts. They are **not** a defence against deliberate in-run forgery. The human accepted this on 2026-11-15 (SH8). The control is CODEOWNER review.
+- Child envs keep stripping the five file-command names (RV2-3). The plan's own top-level process writes `GITHUB_OUTPUT` only after every child has exited.
+- **INV-G holds for `new-code-gate`.** The merge and the verdict run only protected code on artifact bytes, which they parse as untrusted data. Every string is bounded and escaped on render.
+- **Follow-up (not in this PR):** a trusted verifier for shard and plan results, for v0.7.2 (SH8). The top-level session files it.
+
+#### 5.20.15 REQ-35 / condition 6 under sharding (REQ-35, AC-34)
+
+- **Projection.** The self-budget run is `run` on the final head over the full-suite sidecar (§5.19). It now reports, per shard, `seconds` and the files it holds. The projection is computed per shard: `local shard seconds × local cores ÷ 4`. The condition 6 number is **the slowest shard's projection plus the merge-and-verdict seconds**, against 20 minutes. The PR body also gives the total runner-minutes across all shards (REQ-35).
+- **SH-10a reporting [architect sharding ruling, ADR §2h SH-10a; C12].** The PR body also gives:
+  - per shard: `est_mutation_ms`, `est_fixed_ms` and the measured seconds;
+  - per file: the SH-2 calibration line, the estimate `W_F_ms / CI_CORES` against the measured `mutmut_seconds`, scaled to CI by the condition-6 formula (the evidence for the one-time `C_MUTANT_MS` change allowed in §5.20.4);
+  - the plan's seconds, **reported but not summed into condition 6** (SH-1: condition 6 is slowest shard plus merge-and-verdict, per SPEC REQ-35 / AC-34).
+- **RV3-2(a) and RV3-2(a2) stay binding** (ADR §2g): the short-grace `SubprocessRunner` timing tests and the build-once, copy-per-test fixture rigs. Sharding does not replace them.
+- If any shard's projection exceeds 20, the matter returns to the architect. No budget, T, `N_MAX` or threshold change and no exemption is an allowed response.
+- **Shard count for this PR.** The gate's own PR is sharded under the same rule, with no exemption (S-5). Its N comes from the formula. The relayed ≈ 97 CI-minutes suggests 7; the fan-in weight (SH-2) over-estimates less than the draft's whole-selection weight, but may still give the cap, 8. Either is acceptable.
+- **Local cost.** A local `run` executes the shards sequentially, so its total wall time is about the sum of the shards' times.
+
+#### 5.20.16 Test plan for sharding
+
+See §9.4.
 
 ## 6. S4 — agent and contract wording (exact text)
 
@@ -1009,6 +1381,61 @@ Fixture repos are built by the tests themselves and never copied from the real r
 | **SLC-1** [architect review-3 ruling, ADR §2g RV3-5] | `tests/oversight/test_shell_logic_check.py` : `test_scan_file_replaces_invalid_utf8` | `_scan_file` on a file holding invalid UTF-8 bytes (for example `b"\xff\xfe\n"`) before a counted construct returns exactly the counted `(count, first line)`. This kills the `errors=None`, `errors`-removed, `"XXreplaceXX"` and `"REPLACE"` mutants. The three `encoding` mutants are equivalent on a UTF-8 locale and stay (H2) |
 | **WS-INTEG-1 to 3** [architect review-3 ruling, ADR §2g RV3-7] | measure + workflow | (1) a fake run that alters, adds or removes a file under `mutants/` (other than the gated copy and mutmut's outputs) gives exit 3 and names the path; (2) a clean fake run passes the check, with mutmut's outputs present; (3) static: each gate test module has the autouse `monkeypatch.chdir(tmp_path)` fixture |
 
+### 9.4 Sharding tests (§5.20) [sharding draft 2026-11-15; architect sharding ruling, ADR §2h; C13 applied]
+
+**New test module.** `tests/framework/test_new_code_gate_shard.py` ("shard" below). It holds pure, in-process tests of `new_code_gate_shard.py` (§5.20.2, ADR §2h SH-9).
+- It joins the "gate test modules" set that these static tests enumerate: WS-INTEG-3 (the autouse `chdir`), G-SRCREAD, G-MUTSTATE, G-NOGIT and NOGLOBAL.
+- It imports the gate modules at test-module level (§5.19).
+
+**Fixture rule for N (consequence of C9 / SH-7(b)).** The merge recomputes N and the whole partition from the plan's stored weights, so no test may force N through a seam that the plan's own weights do not produce: that plan would be `plan_inconsistent`. Every test that needs a given N (AC-36, AC-40(b), AC-41, AC-42, AC-45, AC-10, AC-15) gets it from the fixture's `test_seconds_ms` (and, for fan-in, its contexts), scaled so that `W_ms` lands in N's band. Pure `partition(weights, names_by_file, N)` tests may still pass N directly, because they do not go through the merge.
+
+**Orchestration tests** go in `test_new_code_gate_measure.py` ("measure", renamed in place, not moved). They drive `plan`, `shard` and `verdict` in-process with the fake `Runner` and `Clock`. **Workflow tests** go in "workflow", and the AC-31 test goes in `test_branch_protection_contexts.py` ("branch_protection").
+
+**New ACs (AC-35 to AC-45)**
+
+| AC | Test (file : name) | Asserts |
+|---|---|---|
+| AC-35 | shard : `test_shard_count_boundaries` (parametrized) + measure : `test_plan_shard_count_ignores_env_label_config` | **(a)** Integer `W_ms` exactly at `k × 4 × T_MS` gives N = k. One ms above it gives N = k + 1, for k = 0 to 8. Zero work gives N = 1. Any `W_ms` above `8 × 4 × T_MS` gives N = 8 and `capped: true`. **(b)** A fixture plan with a small W gives N = 1 and `shards = [1]` in the `--github-output` file. **(c)** None of these changes N or the plan hash: env vars such as `NCG_N`, `N_MAX`, `HOS_SHARDS` and `GITHUB_*`; a `labels.txt`; a `[tool.new-code-gate]` table in `pyproject.toml`; unknown CLI flags (exit 2) |
+| AC-36 | shard : `test_partition_complete_disjoint_and_spans` + `test_plan_hash_changes_with_any_assignment_change` | Three files with differing per-function weights `w_m` (§5.20.4), and N = 3. The union of the members equals the gated set, and the shards are pairwise disjoint. At least one file appears in two shards. Moving any single mutant between shards, swapping two, or changing N changes `plan_hash`. Reordering the members inside a shard does not, because members are sorted. Also: an empty assignment for a no-op diff gives N = 1 with one empty shard |
+| AC-37 | measure : `test_shard_fails_when_workspace_mutants_differ_from_plan` | The fake `_collect` returns a key set (a) with one planned key missing, (b) with one extra key, or (c) with a renamed key. Each gives exit 3 `shard I of N: mutant enumeration drift: <path>`, and the fragment has `status: internal_error`, naming the shard and the file. A fourth case: an unassigned gated key with a non-`null` code is refused as a foreign mutant |
+| AC-38 | shard : `test_merge_refuses_each_injected_case` (parametrized, one case per row of the §5.20.9 table) | For each case the merge returns the named problem code, exit 3, and the shard index in the message: missing fragment; duplicate; index 0 and index N + 1; extra entry; directory name `-of-<n>` with n ≠ N; wrong `gated_sha`, `pr`, `run_id`, `N` or `plan_hash`; `run_attempt` of `"x"`, current + 1, and plan attempt − 1; a mutant in two fragments; a mutant in the wrong fragment; a planned mutant with no result; a fragment hash mismatch; a plan hash mismatch; a plan whose N disagrees with its own `function_cost_ms`; a plan whose assignment is a valid disjoint cover but not the recomputed partition (SH-PART-EQ). In no case is `overall` `pass` |
+| AC-39 | shard : `test_merge_non_success_shard_result_fails` (parametrized `failure`, `cancelled`, `skipped`, `timed_out`) + workflow : `test_shard_job_condition_and_fail_fast` | **(a)** Every fragment is valid, but `--shard-result` is not `success`. That gives exit 3 `shard_job_not_successful`. With one fragment missing as well, the message names that shard. **(b)** Static: the shard job has `fail-fast: false`, no `continue-on-error` and no `max-parallel`, and its `if:` is exactly `needs.new-code-plan.result == 'success'`. The gate's `if:` is `always()`, and it passes both `--plan-result "$HOS_PLAN_RESULT"` and `--shard-result "$HOS_SHARD_RESULT"`, with the step `env:` mapping them from `needs.new-code-plan.result` and `needs.new-code-shard.result` (C7) |
+| AC-40 | shard : `test_merge_sums_never_averages` + measure : `test_outcome_identical_for_n1_and_n3` | **(a)** One file, split 30/40 + 50/60. The result is `mutants_killed` 80, `mutants_total` 100 and `mutant_score_pct` 80.0, not 79.2. The pass boundary: a split that sums to 75/100 passes, and one that sums to 74/100 fails `mutant_score_below_threshold`. **(b)** One fixture, one fake mutmut result table, run end to end with N = 1 and N = 3. N is chosen by two `test_seconds_ms` fixtures scaled into each band (fixture rule above), never through a CLI or env input, so both plans pass the merge's recompute. Per-file killed, total, score, outcome, `fail_reasons` and `records_sha256` are identical. Only `shards`, `N`, `plan_hash` and timings differ |
+| AC-41 | measure : `test_cheap_phase_runs_once_not_per_shard` | With N = 3, the fake runner records exactly one repo-copy collect and one `_enumerate` per file, all of them in `plan`. The shards make no such calls and open no coverage data, and the `shard` CLI takes no coverage argument. The merged records carry coverage, selection, `path_load_findings` and `decision_logic_findings` once per file, equal to the plan's |
+| AC-42 | shard : `test_merge_names_every_failed_shard_and_keeps_completed` | N = 4. Shard 2 timed out, shard 3 had an internal error, and shards 1 and 4 completed. The problems name shards 2 and 3 with their causes and files. The summary shows shards 1 and 4's results with their status, and shows the partial per-shard results of the affected files marked "not final". Exit 3 |
+| AC-43 | workflow : `test_fragment_artifact_names_unique_with_index_and_n` + shard : `test_merge_accepts_mixed_attempts_when_bound` + `test_verdict_only_rerun_same_records_sha` | **(a)** Static: the fragment upload's `name:` is `new-code-fragment-${{ matrix.shard }}-of-${{ needs.new-code-plan.outputs.count }}`. Every upload has `overwrite: true`. The plan upload is named `new-code-plan`. All three have `retention-days: 90`. **(b)** A plan from attempt 1, fragments 1 and 3 from attempt 1, fragment 2 from attempt 2, and current attempt 2: accepted. **(c)** Merging the same inputs twice gives the same `records_sha256` |
+| AC-44 | shard : `test_records_carry_shard_and_cost_timings` | The merged records have `per_shard[].seconds`, `per_shard[].job_seconds`, `per_shard[].est_mutation_ms`, `per_shard[].est_fixed_ms`, `per_shard[].fragment_sha256` (equal to each fragment's own), top-level `plan_hash`, `plan_seconds`, `plan_job_seconds` and `merge_verdict_seconds`. `runner_minutes_total` equals (plan `job_seconds` + Σ shard `job_seconds` + gate-process seconds) ÷ 60, to 1 dp, and is `null` when any `job_seconds` is `null`. The summary carries SH-11's label. All of them are excluded from `records_sha256` (C10) |
+| AC-45 | measure : `test_capped_plan_runs_n_max_and_fails_only_overrunning_shard` + shard : `test_capped_merge_matches_uncapped_for_fitting_shards` | **(a)** A fixture whose `test_seconds_ms`, summed over each function's fan-in (§5.20.4), puts W above `8 × T` gives `plan` exit 0, `capped: true`, N = 8, eight non-empty shards, no fail reason from the cap, and `shards = [1..8]`. Each of `shard 1..8` is run in-process. The fake runner records eight `mutmut run` calls, each with exactly its shard's assigned names, so no shard refused before mutating. The fake clock overruns only in shard 5. Shard 5's fragment has `status: timeout`, and the shard exits 0. **(b)** The merge marks every file with a mutant in shard 5 `mutation_ran: false, mutation_reason: timeout`, with a `mutation_timeout` message naming "shard 5 of 8", those files and "split the PR". That includes a file whose other shards completed. **(c)** A file held only by shards that fit gets its summed killed, total and score, equal to the result of merging the same per-mutant statuses under an uncapped N = 1 plan built from a small-duration fixture (fixture rule above). The capped plan passes the merge's N-and-partition recompute (C9), so the cap is never a `plan_inconsistent`. **(d)** The verdict is exit 1 and `overall: fail`. It is never a pass. **(e)** The summary's "Shards" line reports `capped`, and each shard row shows `est_mutation_ms` and `est_fixed_ms` (C5) |
+
+**Existing ACs whose test changes**
+
+| AC | Test (file : name) | Change |
+|---|---|---|
+| AC-10 | measure : `test_budget_exhausted_records_timeout_and_fails` + **new** `test_shard_two_of_three_overrun_marks_its_files` | The existing test now drives one shard. The new test uses N = 3 with an overrun in shard 2 alone. Every file with a mutant in shard 2 gets `reason: timeout`, including one whose shards 1 and 3 completed, and the message names shard 2 and those files. The verdict is exit 1 |
+| AC-15 | e2e : `test_mutation_run_executes_exactly_selected_tests` + **new** measure : `test_split_file_each_shard_runs_plan_selection` | A file spread over two shards. Each shard's generated config carries the plan's `selection_full` byte-for-byte, and each executed set is a subset of that selection |
+| AC-22 | logic : `test_record_has_every_req24_field` | adds `N`, `plan_hash` and `shards[]` with `{index, killed, total, status}` |
+| AC-29 | measure : `test_twice_identical_records_sha256` + **new** `test_identical_plan_inputs_same_n_and_plan_hash` | Two `plan` runs on the same sidecar and commit give the same N and the same `plan_hash` |
+| AC-30 | workflow : `test_ci_invokes_only_plan_shard_and_verdict_entry_points` (renamed) | Every gate invocation uses ENTRY_SNIPPET, the phases are exactly {`plan`, `shard`, `verdict`}, and the string `measure` never appears as a phase. A local `run` calls the same `plan`, `shard` and merge functions (measure : `test_run_executes_every_shard_and_merges`). `run --only-shard 2` exits 3 with "partial run" (measure : `test_only_shard_never_passes`) |
+| AC-31 | branch_protection : `test_new_code_gate_context_registered_and_job_named` | §5.20.13 |
+| AC-34 | measure : `test_noop_diff_zero_files_pass` | adds: the plan has N = 1, one empty shard, and its fragment has `status: complete`; the merge passes with zero gated files |
+
+**Supporting tests (beyond the ACs)**
+
+| ID | Test | Asserts |
+|---|---|---|
+| SH-COST | shard : `test_cost_per_function_fan_in` | (C13) `w_m = C_MUTANT_MS + Σ_{t ∈ fan(f)} d(t)` uses **only** the fan-in tests: a selected test whose context ran no measured line inside f's span adds nothing to f's mutants. Under `selection_method: name_fallback`, `fan(f) = sel(F)` (the whole selection). A missing ID gets `D_DEFAULT_MS`; values are clamped at `D_CLAMP_MS`; a name-fallback container sums its children. A gated mutant whose prefix has no `_enumerate` span is plan exit 3 `mutant function span missing: <path> <name>`. `W_ms = Σ_F n_F × c_F` holds exactly with `c_F = W_F_ms / n_F` (asserted in integers as `W_ms == Σ_F W_F_ms` and `W_F_ms == Σ_{m ∈ gated(F)} w_m`), and `cost_ms == W_F_ms // n_F`. `fixed_est_ms == STATS_PASSES × Σ_{t ∈ sel(F)} d(t)`, and changing it changes neither N nor the cut |
+| SH-DUR | measure : `test_meta_records_null_when_durations_missing_then_plan_fails` + `tests/` : `test_conftest_writes_durations_only_when_env_set` | (C13) `meta --durations` gives `test_seconds_ms`. A missing **or unparseable** durations file → `meta` exit 0, with `test_seconds_ms: null` and a non-empty `test_seconds_reason`; then `plan` on that sidecar → exit 3 `test durations missing from sidecar`. Every other `meta` failure still exits non-zero. The conftest hook writes `{nodeid: ms}` only when `HOS_TEST_DURATIONS_OUT` is set, writes atomically (temp file plus `os.replace`; no partial file is ever visible at the target path), and its node IDs equal the coverage context IDs on a pytester fixture. `HOS_TEST_DURATIONS_OUT` is in `STRIPPED_ENV_NAMES` |
+| SH-BIND | measure : `test_shard_refuses_unbound_or_tampered_plan` | `shard` gives exit 3, naming the shard, for each of: a wrong `gated_sha`, `pr` or `run_id`; a plan attempt above the current one; an index outside `1..N`; a plan hash mismatch; a plan with `internal_errors`; a symlinked plan file; tool versions differing from the plan's; `HEAD` ≠ `gated_sha` |
+| SH-OUT | measure : `test_plan_writes_github_output_last_and_only_when_valid` | A valid plan appends exactly `count=N` and `shards=[…]`. A plan with internal errors writes no output lines. N outside `1..8` is refused |
+| SH-PLANBUD | measure : `test_plan_budget_timeout_files_not_sharded` | A fake clock expires during `_enumerate` of file 2. File 2 gets `mutation_timeout` ("plan budget exhausted; split the PR") and is not in the assignment. The plan exits 0 |
+| SH-WF | workflow : `test_shard_matrix_and_job_contract` | The plan job has `timeout-minutes: 15`, its outputs come from `steps.plan.outputs`, and it passes `--github-output "$GITHUB_OUTPUT"`. The shard job has `fetch-depth: 1`, `timeout-minutes: 30`, its matrix is `fromJSON(needs.new-code-plan.outputs.shards)`, and its name is the template `new-code-shard ${{ matrix.shard }}`. The gate has `needs: [new-code-plan, new-code-shard]`, two download steps with `path:` under `runner.temp` (the fragments step uses `pattern: new-code-fragment-*-of-${{ needs.new-code-plan.outputs.count }}` and `merge-multiple: false`), and the INV-G whitelist extended by one download step. The first step of the plan job and of the shard job is exactly `run: date -u +%s > "$RUNNER_TEMP/ncg-job-start"`, and both gate calls pass `--job-start-file "$RUNNER_TEMP/ncg-job-start"`; `new-code-gate` has no such step. The shard step has `env: HOS_SHARD_INDEX: ${{ matrix.shard }}` and passes `--index "$HOS_SHARD_INDEX"`. There is no `new-code-measure` job |
+| SH-STDLIB | workflow : `test_shard_module_stdlib_only` | The sharding module imports only the stdlib at module level. VER-IMPORTS's allowed set includes it |
+| SH-PART-EQ | shard : `test_merge_refuses_valid_cover_that_is_not_the_partition` | (C13, SH-7(b)) A plan whose `assignment` is a valid disjoint cover of the gated mutants, with indices `1..N` and the right N, but differs from `partition(...)` recomputed from its stored weights (one mutant moved across a cut, with `plan_hash` recomputed so the hash check passes) → `plan_inconsistent`, exit 3. A plan whose stored N is not the recomputed N → `plan_inconsistent`. An unmodified plan passes the recompute |
+| SH-RERUN-N | workflow : `test_fragment_download_filtered_by_plan_count` + shard : `test_merge_refuses_same_n_fragment_from_earlier_plan` | (C13, SH-6(a)) **(a)** Static: the gate's fragment download has exactly `pattern: new-code-fragment-*-of-${{ needs.new-code-plan.outputs.count }}`. **(b)** A merge given a complete same-N fragment set in which one fragment comes from an earlier plan (same `gated_sha`, `pr`, `run_id` and N, different `plan_hash`) → `fragment_not_bound`, exit 3, naming that shard |
+| SH-EXPR | workflow : `test_no_needs_or_matrix_expressions_in_run_scripts` | (C13, SH-5, SH-6(b)) Static: no `run:` script of `tests`, `new-code-plan`, `new-code-shard` or `new-code-gate` contains the substring `${{ needs.` or `${{ matrix.` (whitespace inside `${{` normalised before matching). Such expressions are found only under `with:`, `name:`, `env:`, `if:` and `strategy:`. A seeded YAML with one inline `${{ matrix.shard }}` in a `run:` makes the check fail (the test bites) |
+| SH-JOBTIME | measure : `test_job_seconds_null_on_missing_or_garbage_start_file` | (C13, SH-11) For both `plan` and `shard`: a valid start file gives an integer `job_seconds` = finish − start (fake clock). A missing file, an empty file, or garbage content (`abc`, a non-integer) → `job_seconds: null`, exit code unchanged, and `records_sha256`, `plan_hash`, `fragment_sha256` and the verdict outcome are identical to the valid-file run |
+| SH-FAN | measure : `test_enumerate_reports_function_spans` | (C13, C4) On the EQ-MAP fixtures (§9.3), `_enumerate` returns `functions[]` such that every gated mutant's prefix has exactly one span; the span of a method of a class and the span of a function after a leading comment block start on the line `WhitespaceInclusivePositionProvider` gives (the line `code_for_node` starts), and end on the function's last line. A fixture `_enumerate` output with a gated mutant whose prefix is absent → plan exit 3 `mutant function span missing: <path> <name>` |
+
 ## 10. File list
 
 | # | File | Slice | Kind | Author |
@@ -1039,6 +1466,26 @@ Fixture repos are built by the tests themselves and never copied from the real r
 | 24 | this TD, ADR-2304 and SPEC-2304 (ruling edits) | docs | new/edit | technical-design |
 | 25 | `CLAUDE.md` (§6.7 row) [ruled 2026-11-11: Q7] | S4 | edit (one table row) | **top-level session** (protected) |
 
+**Sharding (§5.20) [architect sharding ruling, ADR §2h; C1 to C14 applied]: files changed. Protected paths are marked P (CODEOWNER human review).**
+
+| # | File | Change | Author | P |
+|---|---|---|---|---|
+| 26 | `.github/workflows/tests.yml` | replace `new-code-measure` with `new-code-plan` and the `new-code-shard` matrix; change `new-code-gate`'s needs, downloads (fragment pattern `-of-${{ needs.new-code-plan.outputs.count }}`, C6) and args; the job-start first step in plan and shard (C8); `HOS_SHARD_INDEX`, `HOS_TESTS_RESULT`, `HOS_PLAN_RESULT`, `HOS_SHARD_RESULT` through step `env:`, no `needs`/`matrix` expression in any `run:` (C7); header comment | top-level session (as in §5.17) | **P** |
+| 27 | `scripts/framework/new_code_gate.py` | `plan`, `shard`, the merged `verdict`, `run` (all shards plus `--only-shard`); `measure` removed; `meta --durations` (null plus reason, exit 0, on a missing or unparseable file, C3); `--job-start-file` on `plan` and `shard` (C8); `_enumerate` returns `functions[]` spans (C4); the fan-in computation from the contexts (C1); the directory I/O layer for the merge; `STRIPPED_ENV_NAMES` += `HOS_TEST_DURATIONS_OUT` | coder | **P** |
+| 28 | `scripts/framework/new_code_gate_logic.py` | `GATE_VERSION` "2", `SCHEMA_RECORDS` `/2`, `SCHEMA_PLAN`, `SCHEMA_FRAGMENT`, `UNHASHED_FIELDS` additions, summary rendering of shards | coder | **P** |
+| 29 | `scripts/framework/new_code_gate_shard.py` **(new; ADR §2h SH-9, permitted by ADR §2b condition 1 as amended: four gate modules plus `shell_logic_check.py`, C11)** | constants (§5.20.4, C2), the per-function fan-in cost model (C1), `shard_count`, `partition` (C5), `plan_hash`, fragment validation, `merge` with the N-and-partition recompute (C9); stdlib-only, no I/O, no clock or env | coder | **P** |
+| 30 | `scripts/framework/run_tests.sh` | `HOS_TEST_DURATIONS_OUT=test-durations.json` on the pytest command; `meta … --durations test-durations.json`; no counted shell construct (§4.1) | coder | **P** |
+| 31 | `tests/conftest.py` | durations hooks (§5.20.4), atomic write (C3). Mandatory reliability-reviewer scope (ADR §2h SH-2, Affected sign-offs) | coder / unit-test | — |
+| 32 | `scripts/framework/hos_required_contexts.txt` | provenance comment only; the context list is unchanged | coder | **P** |
+| 33 | `tests/framework/test_new_code_gate_shard.py` **(new)** | §9.4 | unit-test | — |
+| 34 | `tests/framework/test_new_code_gate_{measure,workflow,logic,e2e}.py` | §9.4 changes | unit-test | — |
+| 35 | `tests/framework/test_branch_protection_contexts.py` | AC-31 (§5.20.13) | unit-test | — |
+| 36 | `docs/CI-EXECUTION-INVENTORY.md` | the four-job graph | coder | — |
+| 37 | `SCRIPTS-INDEX.md` | regenerated (`regen_all.sh`) for row 29 | coder | — |
+| 38 | this TD (C1 to C14 applied); ADR-2304 §2h (AD-14, written by the architect) | docs | technical-design / architect | — |
+
+`.github/CODEOWNERS` and `scripts/framework/protected_surfaces.txt` are **not** changed. Every protected path above is already covered by `.github/workflows/**` or `scripts/framework/**`.
+
 About 25 entries and about 35 to 45 paths, with the repo-copy markers. That is over the ≤ 15-files-per-slice guideline, because three slices ship in one PR by the human's scope ruling. Commits stay per slice (§11). `diff_size` floors at HIGH, which the tier already is.
 
 ## 11. Build order (commits on `human-2304-mutation-gate`)
@@ -1056,6 +1503,16 @@ About 25 entries and about 35 to 45 paths, with the repo-copy markers. That is o
 | 8 | S4 (top-level part) | `unit-test.md` and `oversight-evaluator.md` per §6.1 and §6.2, and the `CLAUDE.md` row per §6.7 [ruled 2026-11-11: Q7] | wording tests green |
 | 9 | DECISIONS.md entry | | |
 | 10 | **Pre-PR evidence (no commit) [round 2: T9, T10]** | Before `submit_pr.sh`: (a) the self-budget run and projection (§5.19, ADR §2b condition 6); (b) the S1 equivalence repeat with **both total and file count** (§4.4, ADR-A3); (c) the `--unified=0` hunk list for `shell_logic_check.py` (§5.11, condition 2). All three go in the PR body | projection > 20 CI-minutes, or any equivalence difference → **stop and return to the architect**; the PR is not opened |
+
+**Sharding commits (§5.20) [architect sharding ruling, ADR §2h]. Coder GO for commits 11 to 14, in order (C1 to C14 applied).** They replace the measure stage built in commits 4 and 6:
+
+| # | Commit | Content | Gate |
+|---|---|---|---|
+| 11 | S2e: shard logic | rows 28 and 29 (§10): `new_code_gate_shard.py` (constants incl. `C_MUTANT_MS`, `STATS_PASSES`, `COST_MODEL = "per-function-fan-in/1"`; fan-in cost model; `shard_count`; `partition` with `est_mutation_ms`; `plan_hash`; fragment validation; `merge` with the N-and-partition recompute) and the logic-module schema, `UNHASHED_FIELDS` and summary changes; plus `test_new_code_gate_shard.py` (AC-35(a), AC-36, AC-38, AC-39(a), AC-40(a), AC-42, AC-43(b,c), AC-44, AC-45(c), SH-COST, SH-PART-EQ, SH-RERUN-N(b)) | pure tests green, in-process |
+| 12 | S2f: plan/shard/verdict CLI | row 27: `meta --durations` (null plus reason, exit 0, on a missing or unparseable file), `_enumerate` `functions[]` spans, the fan-in from contexts, `plan` (`--github-output`, `--job-start-file`, exit 3 on `test_seconds_ms: null`), `shard` (`--job-start-file`), the merged `verdict` with its I/O layer, `run` executing every shard; plus the measure-test changes (AC-35(b,c), AC-37, AC-40(b), AC-41, AC-45(a,b,d,e), AC-10, AC-15, AC-29, AC-30, AC-34, SH-BIND, SH-OUT, SH-PLANBUD, SH-FAN, SH-JOBTIME) | `run` locally on a small fixture PR; N = 1 and N = 3 chosen by `test_seconds_ms` fixtures (§9.4 fixture rule), never by a seam |
+| 13 | S1b: durations | rows 30 and 31 (`HOS_TEST_DURATIONS_OUT` on the pytest command, `meta … --durations`; the conftest hooks with the atomic write), plus SH-DUR (which also exercises commit 12's `meta` null rule end to end) | the suite still collects; `meta` writes `test_seconds_ms`; a deleted durations file leaves `tests` green and makes `plan` exit 3 |
+| 14 | S2g: workflow | rows 26 (top-level session edits the protected `tests.yml` to match the coder's flag names, as in §5.17), 32, 35 and 36, plus the workflow tests (AC-39(b), AC-43(a), SH-WF, SH-EXPR, SH-RERUN-N(a), SH-STDLIB, AC-31) | static tests green |
+| 15 | **Pre-PR evidence (no commit)** | §5.20.15 per-shard projection on the full-suite sidecar, with the SH-10a lines (per shard `est_mutation_ms`, `est_fixed_ms`, measured seconds; per file the calibration line; plan seconds reported, not summed). Gates opening the PR. Any one-time `C_MUTANT_MS` change (SH-2) is a reviewed constant commit made from this evidence | slowest shard plus merge over 20 CI-min → **stop and return to the architect** |
 
 S1 lands after S2c so that the `meta` subcommand that `run_tests.sh` calls already exists. Every commit leaves the suite green. The review chain (risk-assessor; code, security, reliability and ops reviewers; unit-test) runs on the whole branch. security-reviewer and reliability-reviewer are mandatory (ADR Consumers).
 
@@ -1087,6 +1544,11 @@ S1 lands after S2c so that the `meta` subcommand that `run_tests.sh` calls alrea
 | R-21 (= ADR R-10) [architect review-2 ruling; conditional] | Unprotected `shell_logic_check.py` / `validators/__init__.py` in the `measure` decision closure | exists only if the human declines ADR §2f RV2-2(b). The `sys.path` restore (RV2-2(a)) is built regardless |
 | R-22 (= ADR R-11) [architect review-2 ruling] | `run_git` has no timeout; thin 25/30-minute margin; second signal during `terminate()`; kill-grace vs runner cancel | accepted. The job timeout backstops it, and none can produce a pass |
 | R-23 [architect review-3 ruling, ADR §2g RV3-6] | A test that kills the pytest session's own process (a signal to its own group, or `os._exit` in-process) leaves a 0-byte `.coverage`, and every PR's gate then exits 3 | fails closed (`coverage data missing contexts`), so it is an availability risk, never a false pass. Seen in the session sandbox. If the human's out-of-sandbox full run reproduces it, bisect by test directory |
+
+| R-24 [sharding draft 2026-11-15] | **R-20 widened (SH8, accepted 2026-11-15).** Plan and shard jobs run PR code and can forge the plan, any fragment, the job outputs and the durations that set N. The plan is a second forgeable artifact | Accepted by the human. The control is CODEOWNER review. The merge's binding, consistency and N-and-partition recompute checks (SH-7), `fragment_sha256` and `plan_hash` in the records, catch corruption and stale or cross-run artifacts only. The trusted verifier is a v0.7.2 follow-up |
+| R-25 [sharding draft 2026-11-15; architect sharding ruling, C14] | Cost mis-estimate under the per-function fan-in weight (SH-2). The under-estimate cases are now: (a) fan-in taken from coverage contexts that differ from mutmut's trampoline hits (a test that reaches a function's trampoline without executing a measured line in its span, so mutmut runs it but the weight does not count it); and (b) fork-only slowness (tests slow only under mutmut's `fork`, not in the `tests` run). Both fail closed | An under-estimate gives too few shards, so a shard overruns and fails closed with "split the PR" (a false fail, never a false pass). An over-estimate only raises N. REQ-41 keeps the outcome partition-independent |
+| R-26 [sharding draft 2026-11-15; architect sharding ruling, C14] | Duplicated fixed cost: each (shard, file) repeats that file's stats, clean and forced-fail runs. On git-heavy files that can eat into the 5-minute margin | Contiguous partitioning minimises how many shards hold each file. `est_fixed_ms` per shard (SH-3, §5.20.5) makes it visible in the plan and summary before a shard overruns; the measured `job_seconds` per shard are recorded (§5.20.11), and condition 6 measures the slowest shard (SH-10a) |
+| R-27 [sharding draft 2026-11-15] | Concurrent-job capacity: up to 8 shard legs per PR queue against the account's job limit | Queue time does not count against a shard's budget. It is a latency cost only (SPEC §7a) |
 
 TD residual IDs are local to this TD, except R-10 (ADR R-6), R-17 (ADR R-7), R-18 (ADR R-8), R-20 (ADR R-9), R-21 (ADR R-10) and R-22 (ADR R-11).
 
@@ -1183,6 +1645,15 @@ TD residual IDs are local to this TD, except R-10 (ADR R-6), R-17 (ADR R-7), R-1
   - **Built tests that now assert the old contract (`tests/framework/test_new_code_gate_logic.py`, same commit):** the `raise SystemExit(main())` case in the main-guard near-miss parametrization (it must move to the pass cases, Q5-MAIN); `test_zero_mutant_reason_names_lines_and_ignores_carve_outs` (its expectation inverts, Q5-NQ1 and Q8-PRED: the carved `try` source now gives `None`; the test is renamed to say the carve-outs are applied, and gains a case where an uncarved `if` beside the carved `try` gives a message naming only the `if`'s line). `test_selection_reason_nq1_carve_out` stands unchanged (it takes `logic_free` as given). The `has_decision_logic` parametrizations (`test_has_decision_logic_each_node_type`, `test_no_decision_node_without_ifs_asserts_or_with`) hold no carved shape, so they stand. New tests: Q5-RAISE and Q8-PRED (logic), and the rewritten Q5-NQ1 (measure, built in §11 commit 4).
   - **Q5-SELF filters (both commits, test-only; architect Q8-review fix):** the `SELF_CHECK` programs in `tests/framework/test_new_code_gate_logic.py` (`b1a26e887`) and `tests/framework/test_new_code_gate_plugin.py` (`b14e062db`) each hand-copy the predicate as `(f["region"] in ("module", "class") and not f["carve_out"]) or (f["region"] == "function" and f["unmutatable_reason"])`. Each must call `ncg.is_decision_logic(f)` instead of reading `carve_out`, so that §9.3's claim that Q5-SELF "calls the same shared predicate" is true. Their expectations do not change.
   - **Otherwise not affected:** commit `b14e062db` (S2b: the plugin, the `repo_copy` marker and the guard test). The plugin has no main guard and no carved shape, and Q5-SELF's expectations for it are unchanged. `shell_logic_check.py`'s seam is unaffected (its guard stays uncarved and ungated, §5.19). The `decision_fail_reasons` Q5 / NQ-2 outputs already exclude carved findings, so they are unchanged; only its filters move onto `is_decision_logic` (above).
+- **Sharding (§5.20): startup-gap and affected sign-offs [sharding draft 2026-11-15; architect sharding ruling, ADR §2h SH-12; C14].**
+  - *Should this have been settled in the initial technical design?* **No, confirmed by the architect (ADR §2h).** The initial design (AD-11) set a single 25-minute budget and explicitly deferred the real cost to measurement; §5.19 condition 6 was the stop-trigger. The gate's own files did not exist, so their mutant counts and per-mutant cost (ADR §2g RV3-2) could not be known. The trigger fired as designed, the architect routed the result (RV3-H1), and the human changed the requirement through the spec (§2b, §2c, §4.12). That is a requirement change, not a contract gap. **No `startup-artifact-gap` issue is opened or annotated.** The re-run-all fragment filter (SH-6(a)) and the fan-in weight (SH-2) are build-time corrections to this TD's draft, caught at review before code.
+  - **The contract changes for behaviour that is already built and reviewed.** The built `measure` phase, the `new-code-measure` job, `verdict --records-dir` and records `/1` (on the branch head, last change in `161288975`) are orphaned against REQ-36 to REQ-44 until commits 11 to 14 land.
+  - **Affected sign-offs** (`.claudetmp/signoffs/step2304-register.md`), exactly as ADR §2h "Affected sign-offs":
+    - **reliability-reviewer (APPROVED at `75dd05620`).** **Invalidated** for `new_code_gate.py`, `.github/workflows/tests.yml` and `run_tests.sh`: it approved a job graph, a budget and a `measure` phase that no longer exist. It re-reviews the new code with §5.20.1, §5.20.4 (the SH-2 durations path, including the `meta` exit-0 change), §5.20.7, §5.20.9, §5.20.10, §5.20.12 and SH-6(a) in scope, and **adds `tests/conftest.py`** (a new hook in the required `tests` job). Its approval of `new_code_gate_pytest_plugin.py` **stands** (sharding does not change it). Its approval of `new_code_gate_logic.py` **stands except for** the changed constants, schemas, `UNHASHED_FIELDS` and summary rendering, which it re-reviews as a diff.
+    - **security-reviewer (both CONDITIONAL entries).** Still open. The re-review adds §5.20.1 (job outputs from a PR-code job, the SH-6(b) expression rule, SH-5 env passing), §5.20.9 (the fragment directory layout, parsing as untrusted data), §5.20.13, §5.20.14 (the widened R-9 wording), SH-7(b) and the `HOS_TEST_DURATIONS_OUT` stripping.
+    - **code-reviewer:** reviews `new_code_gate_shard.py` and the CLI changes (no prior entry exists).
+    - **The architect's earlier TD approvals** (round 5, Q5, Q8, review-1 to review-3) stand for every section §5.20 does not supersede. The superseded list is at the top of §5.20.
+    - **No condition-6 evidence exists** to invalidate: RV3-0 made the earlier run diagnostic, and the redone run happens under SH-10a (§11 commit 15).
 - **Affected sign-offs for the 2026-11-11 ruling changes (Q4 to Q7) [ruled 2026-11-11: Q5]:** none.
   - Should this have been settled in the initial technical design? It **was** raised there, as §14 Q5, and the human has now answered it. So it is the resolution of a recorded open question, not a startup-artifact gap.
   - No code has been written against the round-5 §5.5 / §5.10. On the branch, `8113f8ba0` and the docs commit are the only commits, and neither implements the gate.
@@ -1259,6 +1730,57 @@ Points to check:
 7. **Built code: confirmed, with two additions** (§13): `decision_fail_reasons` moves onto `is_decision_logic`, and the Q5-SELF filter in `test_new_code_gate_plugin.py`, which is in `b14e062db`, does too (test-only; S2b is otherwise unaffected). The commit-4 caller must compute `logic_free` from the same findings list and never as `not findings`.
 - **R-16: accepted as worded.** It is the honest residual. It names what is now never mutated and never selected, and it is bounded by exact shapes plus H2 coverage.
 - **Startup-gap:** this is the resolution of a recorded open question (§14 Q8), raised before code existed, and the code was built to the stated provisional reading. It is not a `startup-artifact-gap`. No sign-off exists against `b1a26e887` or `b14e062db`, so none is orphaned. The architect's earlier approvals stand for every section this delta does not change.
+
+### Architect review requested: sharding (§5.20) [sharding draft 2026-11-15]
+
+**Status: round 1 of 5 RULED, APPROVED WITH CHANGES (ADR §2h). C1 to C14 applied 2026-11-15, as written; coder GO per architect for §11 commits 11 to 14, in order. No round 2. Loop closed.** The history of the failed first dispatch follows. On 2026-11-15, technical-design tried to dispatch the architect through `bootstrap/invoke_agent.sh` (posture `review-read-only`). The invocation failed before the architect ran: `outcome: invocation_failed`, `outcome_detail: not_authenticated`. The nested `claude` CLI had no credentials in the session sandbox. So **no architect decision exists yet**, and nothing in §5.20 is ruled. The request, with the full proposal, is at `.claudetmp/design/technical-design-2304-sharding-20261115T230000Z.md`. Note one revision there: the proposal file names junit XML as the durations source (P-4). §5.20.4 replaces that with a `tests/conftest.py` hook, which gives exact node IDs without re-implementing pytest's junit mangling (`_pytest/junitxml.py:493`, which uses pytest 9's `NodeId.parse`). The architect rules on either.
+
+The architect's decision is final on each of these:
+
+| # | Question | Technical-design's proposal |
+|---|---|---|
+| A-Q1 | OQ-A9(a): where the plan runs, and its bound | its own job `new-code-plan`, 15-min job timeout, `PLAN_BUDGET_SECONDS = 600` (§5.20.1, §5.20.10) |
+| A-Q2 | OQ-A9(b): the cost weight and its bound inputs; is an S1 change acceptable? | per-file `c_F` = fork constant + Σ of the selected tests' durations from this run's `tests` job, carried in the run-bound sidecar (§5.20.4). The alternative is a per-function fan-in |
+| A-Q3 | the partition | contiguous greedy over sorted `(path, key)`; empty trailing shards allowed; N exactly per the formula (§5.20.5) |
+| A-Q4 | OQ-A9(c): identifying the failing shard | fragment presence and fragment `status`, with the aggregate `needs` result as a necessary condition (§5.20.9) |
+| A-Q5 | OQ-A9(d): the matrix strategy | `fail-fast: false`, no `max-parallel`, shard `if: needs.new-code-plan.result == 'success'` |
+| A-Q6 | a dynamic matrix from job outputs written by the gate process | yes, rather than a static 8-leg matrix |
+| A-Q7 | the trust boundary and any further binding | §5.20.14, plus the shard's `HEAD` = `gated_sha` check and the merge recomputing N |
+| A-Q8 | shard-timeout semantics | the shard exits 0 with `status: timeout` (a decided fail, verdict exit 1). "Every file with a mutant in that shard" includes files the shard finished. Shard-time fail reasons are unioned |
+| A-Q9 | a new production module `new_code_gate_shard.py` (ADR §2b condition 1) | yes, stdlib-only and pure |
+| A-Q10 | records `new-code-gate/2`, and partition-independent `records_sha256` | yes (§5.20.11) |
+| A-Q11 | REQ-44 timings | gate-process seconds, labelled as such; no `actions: read` |
+| A-Q12 | startup-gap reading and affected sign-offs | §13 "Sharding" |
+| A-Q13 | does the ADR need a new §2h (AD-14, sharded measurement)? | technical-design recommends yes: A-Q1, A-Q2, A-Q6, A-Q9 and A-Q10 are architecture decisions |
+
+Loop rules: the round cap is 5. On non-convergence, technical-design escalates to the human with the iteration count, what each revision changed, and the point not accepted. The coder does not start §5.20 until the architect approves.
+
+**Architect ruling on §5.20 (round 1 of 5, 2026-11-15): APPROVED WITH CHANGES.** The decisions are ADR-2304 §2h, AD-14, SH-1 to SH-13, and they are final. Accepted as proposed: A-Q1, A-Q4, A-Q5, A-Q8 (reading confirmed), A-Q9, A-Q10, A-Q12 (reading confirmed; affected sign-offs extended), A-Q13. Accepted with changes: A-Q3, A-Q6, A-Q7. Replaced: A-Q2 (per-function fan-in weight; `meta` no longer fails `tests` on missing durations), A-Q11 (job-level wall time from a job-start file). technical-design applies C1 to C14 below, exactly. If they are applied as written, no round 2 is needed and the coder may start §11 commit 11. Any deviation or disagreement is round 2.
+
+| # | TD section | Change |
+|---|---|---|
+| C1 | §5.20.4 Weight | Replace the `c_F` definition with ADR §2h SH-2: `w_m = C_MUTANT_MS + Σ_{t ∈ fan(f)} d(t)`, `f = mangled_name_from_mutant_name(m)`, `fan(f)` = tests in `sel(F)` whose context executed a measured statement line inside f's original span; `fan(f) = sel(F)` when `selection_method` is `name_fallback`. `W_F_ms = Σ w_m`, `W_ms = Σ W_F_ms`, display `cost_ms = W_F_ms // n_F`. State that `W = Σ n_F × c_F` holds exactly, so REQ-38's wording is met. Move the "Not chosen: per-function fan-in" bullet to "Rejected: whole-selection sum per file", with SH-2's reason |
+| C2 | §5.20.4 Constants | `C_FORK_MS` → `C_MUTANT_MS = 50`; add `STATS_PASSES = 2`; `COST_MODEL = "per-function-fan-in/1"`. Add the one-time calibration rule (SH-2): `C_MUTANT_MS` may change once, from the condition-6 evidence, as a reviewed constant |
+| C3 | §5.20.4 durations; §5.20.2 `meta` row | Missing or unparseable durations file: `meta` writes `test_seconds_ms: null` plus `test_seconds_reason` and exits 0 for that cause; `plan` exits 3 `test durations missing from sidecar`. The conftest hook writes atomically (temp file plus `os.replace`). Delete "A missing durations file is exit 3 from `meta`, which fails `tests`" |
+| C4 | §5.9 step 2; §5.20.3; §5.20.6 | `_enumerate` also returns `functions: [{prefix, start_line, end_line}]` for each function with a mutant. A gated mutant whose prefix has no entry is plan exit 3 `mutant function span missing: <path> <name>`. The plan's per-file record carries `function_cost_ms {prefix: ms}`, `W_F_ms` and `fixed_est_ms` (`STATS_PASSES × Σ_{t ∈ sel(F)} d(t)`), all inside `plan_hash` |
+| C5 | §5.20.5 | The weight per mutant is `function_cost_ms[prefix]`. Each shard entry carries `est_mutation_ms` (the cut's quantity) and `est_fixed_ms` (Σ `fixed_est_ms` of its files). Neither changes N, and `est_fixed_ms` does not affect the cut. Rename `est_ms` accordingly in §5.20.6, §5.20.11 and the summary |
+| C6 | §5.20.1 `new-code-gate` step 4 | `pattern: new-code-fragment-*-of-${{ needs.new-code-plan.outputs.count }}`, with SH-6(a)'s reason (re-run all jobs after an N change). §5.20.12 "Re-runs" gains the re-run-all case |
+| C7 | §5.20.1 all four jobs | No `${{ needs.*.outputs.* }}` or `${{ matrix.* }}` inside any `run:`. The shard step gets `env: HOS_SHARD_INDEX: ${{ matrix.shard }}` and passes `--index "$HOS_SHARD_INDEX"` |
+| C8 | §5.20.1 plan and shard jobs; §5.20.2 | The first step of each is `run: date -u +%s > "$RUNNER_TEMP/ncg-job-start"`. `plan` and `shard` gain `--job-start-file P`. `new-code-gate` gains no step |
+| C9 | §5.20.9 `plan_inconsistent` | The merge recomputes N **and** `partition(...)` from the plan's stored weights and requires `assignment` to equal the result exactly (SH-7(b)), replacing "is a disjoint partition" |
+| C10 | §5.20.11 | Add `job_seconds` (plan, per shard; null when the start file is missing or unparseable), `per_shard[].fragment_sha256`, top-level `plan_hash`. `runner_minutes_total` = plan `job_seconds` + Σ shard `job_seconds` + gate-process seconds, ÷ 60, with SH-11's label. All unhashed. Delete the "[A-Q11] The architect decides" sentence |
+| C11 | §5.20.2 module bullet; §5.20.13; §10 row 29 | Remove "if A-Q9 accepts it". Cite ADR §2b condition 1 as amended (four gate modules plus `shell_logic_check.py`) |
+| C12 | §5.20.15 | Add SH-10a: per shard, `est_mutation_ms`, `est_fixed_ms` and measured seconds; per file, the calibration line (estimate vs measured `mutmut_seconds`); plan seconds reported but not summed into condition 6. State that RV3-2(a) and (a2) stay binding |
+| C13 | §9.4 | **SH-COST** rewritten: `w_m` uses only fan-in tests; `name_fallback` uses the whole selection; a missing prefix is plan exit 3; `W = Σ n_F × c_F` exactly. **SH-DUR** amended: a missing durations file → `meta` exit 0 with `null`, then `plan` exit 3. New: **SH-PART-EQ** (a plan whose assignment is a valid disjoint cover but not the recomputed partition → `plan_inconsistent`, exit 3); **SH-RERUN-N** (static: the fragment pattern carries `-of-${{ needs.new-code-plan.outputs.count }}`; and a merge given a same-N fragment from an earlier plan → `fragment_not_bound` naming the shard); **SH-EXPR** (static: no `${{ needs.` or `${{ matrix.` inside any `run:` of the four jobs); **SH-JOBTIME** (missing or garbage job-start file → `job_seconds: null`, with `records_sha256` and outcome unchanged); **SH-FAN** (`_enumerate` spans: every gated mutant's prefix has a span, and the span of a method of a class and of a function after a leading comment block start on the right line, reusing the EQ-MAP fixtures) |
+| C14 | §5.20 status line; §12; §13 "Sharding" | Status → "APPROVED WITH CHANGES (architect round 1, ADR §2h)". R-25: the under-estimate cases are now fan-in from contexts differing from trampoline hits, and fork-only slowness, both fail-closed. R-26: `est_fixed_ms` makes it visible. §13: replace the sign-off list with ADR §2h "Affected sign-offs" (adds `tests/conftest.py` to the reliability scope; the plugin approval stands; the logic approval stands except for the changed constants, schemas and rendering); startup-gap: **no**, confirmed, so no issue is opened |
+
+**Application notes (technical-design, 2026-11-15; clarifying consequences of C1 to C14, not deviations; the architect is notified).**
+1. **C7 + C13 (SH-EXPR) together.** SH-EXPR matches the literal `${{ needs.`, which also covers `needs.<job>.result`. So the inherited `--tests-result` (plan) and the verdict's `--plan-result` / `--shard-result` move to step `env:` (`HOS_TESTS_RESULT`, `HOS_PLAN_RESULT`, `HOS_SHARD_RESULT`), like `HOS_SHARD_INDEX` (§5.20.1).
+2. **C9 consequence for tests.** Because the merge recomputes N and the partition, no orchestration test may force N through a seam; N comes from the fixture's `test_seconds_ms` (§9.4 fixture rule; AC-40(b), AC-45(c), §11 commit 12's gate).
+3. **C10 detail.** The plan's `job_seconds` is carried in the records as `plan_job_seconds`; `runner_minutes_total` is `null` when any `job_seconds` term is `null` (display only).
+4. **C4 detail.** `functions[]` is added to the `_enumerate` JSON without a schema bump (no consumer of the old shape exists), and is parsed as untrusted data.
+
+**Coder go/no-go: GO (C1 to C14 applied 2026-11-15; §5.20's status says APPROVED WITH CHANGES).** GO for §11 commits 11 to 14, in order. `tests.yml` (protected) is edited by the top-level session to match the coder's flag names, as in §5.17. Commit 15 (the per-shard condition-6 evidence) still gates opening the PR.
 
 ## Appendix A. First-touch module list (#2305 work list) [round 2: T5]
 
