@@ -606,13 +606,21 @@ def entry_snippet_from_source():
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
-NEW_JOBS = ("new-code-measure", "new-code-gate")
+PLAN, SHARD, GATE = "new-code-plan", "new-code-shard", "new-code-gate"
+NEW_JOBS = (PLAN, SHARD, GATE)
 SNIPPET = entry_snippet_from_source()
 # Marks a gate invocation in a folded `run:` line; the wrapper imports `main` from the gate module.
 ENTRY = "from scripts.framework.new_code_gate import main"
 WRAPPER_ARGS = "${{ github.workspace }}"
 ACTION_PIN = re.compile(r"^actions/[a-z-]+@v\d+$")
 OUT_ROOT = "${{ runner.temp }}/ncg-out"
+INPUT_ROOT = "${{ runner.temp }}/ncg-in"
+JOB_START = 'date -u +%s > "$RUNNER_TEMP/ncg-job-start"'
+JOB_START_FLAG = '--job-start-file "$RUNNER_TEMP/ncg-job-start"'
+COUNT = "${{ needs.new-code-plan.outputs.count }}"
+FRAGMENT_NAME = "new-code-fragment-${{ matrix.shard }}-of-" + COUNT
+FRAGMENT_PATTERN = "new-code-fragment-*-of-" + COUNT
+NEEDS_OR_MATRIX_IN_RUN = re.compile(r"\$\{\{\s*(needs|matrix)\.")
 
 
 def wrapper(python):
@@ -636,9 +644,18 @@ def step_using(job, action):
     return found
 
 
+def steps_using(job, action):
+    return [s for s in steps_of(job) if str(s.get("uses", "")).startswith(action)]
+
+
 def run_lines(job):
     """Each `run:` body of the job, folded onto one line with its whitespace collapsed."""
     return [" ".join(s["run"].split()) for s in steps_of(job) if "run" in s]
+
+
+def gate_command(job):
+    (command,) = [c for c in run_lines(job) if ENTRY in c]
+    return command
 
 
 def test_tests_job_keeps_its_shape_and_uploads_the_coverage_contexts():
@@ -668,33 +685,75 @@ def test_workflow_permissions_stay_read_only_everywhere():
         assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}, name
 
 
-def test_new_jobs_exist_with_the_designed_names_needs_and_timeouts():
+def test_shard_matrix_and_job_contract():
+    """SH-WF (TD 5.20.1): the job graph, its timeouts, matrix, outputs and job-start steps."""
     jobs = workflow_jobs()
-    measure, gate = jobs["new-code-measure"], jobs["new-code-gate"]
-    assert (measure["name"], measure["needs"], measure["timeout-minutes"]) == (
-        "new-code-measure",
-        "tests",
-        30,
-    )
+    assert list(jobs) == ["tests", PLAN, SHARD, GATE]
+    assert "new-code-measure" not in workflow_text()
+    plan, shard, gate = jobs[PLAN], jobs[SHARD], jobs[GATE]
+    assert (plan["name"], plan["needs"], plan["timeout-minutes"]) == (PLAN, "tests", 15)
+    assert plan["outputs"] == {
+        "count": "${{ steps.plan.outputs.count }}",
+        "shards": "${{ steps.plan.outputs.shards }}",
+    }
+    (plan_step,) = [s for s in plan["steps"] if s.get("id") == "plan"]
+    assert ENTRY in plan_step["run"]
+    assert '--github-output "$GITHUB_OUTPUT"' in gate_command(PLAN)
+    assert plan["steps"][0]["run"] == JOB_START
+    assert shard["steps"][0]["run"] == JOB_START
+    assert JOB_START_FLAG in gate_command(PLAN)
+    assert JOB_START_FLAG in gate_command(SHARD)
+    assert "job-start" not in workflow_text().split(f"\n  {GATE}:\n", 1)[1]
+    assert shard["name"] == "new-code-shard ${{ matrix.shard }}"
+    assert (shard["needs"], shard["timeout-minutes"]) == (PLAN, 30)
+    assert shard["strategy"]["matrix"] == {"shard": "${{ fromJSON(needs.new-code-plan.outputs.shards) }}"}
+    assert step_using(SHARD, "actions/checkout@")["with"]["fetch-depth"] == 1
+    (index_step,) = [s for s in shard["steps"] if ENTRY in s.get("run", "")]
+    assert index_step["env"] == {"HOS_SHARD_INDEX": "${{ matrix.shard }}"}
+    assert flag_values(gate_command(SHARD), "--index") == ['"$HOS_SHARD_INDEX"']
     assert (gate["name"], gate["needs"], gate["timeout-minutes"]) == (
-        "new-code-gate",
-        "new-code-measure",
+        GATE,
+        [PLAN, SHARD],
         5,
     )
+    downloads = steps_using(GATE, "actions/download-artifact@")
+    assert [d["with"]["path"] for d in downloads] == [
+        f"{INPUT_ROOT}/plan",
+        f"{INPUT_ROOT}/fragments",
+    ]
+    assert downloads[1]["with"]["merge-multiple"] is False
 
 
-@pytest.mark.parametrize("job", NEW_JOBS)
-def test_new_jobs_if_always(job):
-    """AC-30: a skipped required check counts as a pass, so neither job may be skipped."""
+def test_shard_job_condition_and_fail_fast():
+    """AC-39(b): every leg finishes, nothing masks a failed shard, and the gate judges both results."""
+    shard = workflow_jobs()[SHARD]
+    assert shard["strategy"]["fail-fast"] is False
+    assert "continue-on-error" not in shard
+    assert "max-parallel" not in shard["strategy"]
+    assert not any("continue-on-error" in s for s in shard["steps"] if "uses" not in s)
+    assert shard["if"] == "needs.new-code-plan.result == 'success'"
+    assert workflow_jobs()[GATE]["if"] == "always()"
+    (apply,) = [s for s in steps_of(GATE) if s["name"] == "Apply thresholds"]
+    assert apply["env"] == {
+        "HOS_PLAN_RESULT": "${{ needs.new-code-plan.result }}",
+        "HOS_SHARD_RESULT": "${{ needs.new-code-shard.result }}",
+    }
+    command = gate_command(GATE)
+    assert flag_values(command, "--plan-result") == ['"$HOS_PLAN_RESULT"']
+    assert flag_values(command, "--shard-result") == ['"$HOS_SHARD_RESULT"']
+
+
+@pytest.mark.parametrize("job", (PLAN, GATE))
+def test_plan_and_gate_if_always(job):
+    """AC-30: a skipped required check counts as a pass, so neither may be skipped."""
     assert workflow_jobs()[job]["if"] == "always()"
 
 
-def test_new_jobs_pass_the_upstream_result_to_the_gate_to_judge():
-    """The needs-result check lives in Python (H1), so a skipped upstream cannot pass."""
-    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
-    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
-    assert "--tests-result ${{ needs.tests.result }}" in measure_cmd
-    assert "--measure-result ${{ needs.new-code-measure.result }}" in gate_cmd
+def test_plan_passes_its_tests_result_through_env():
+    assert [s["env"] for s in steps_of(PLAN) if s.get("id") == "plan"] == [
+        {"HOS_TESTS_RESULT": "${{ needs.tests.result }}"}
+    ]
+    assert flag_values(gate_command(PLAN), "--tests-result") == ['"$HOS_TESTS_RESULT"']
 
 
 @pytest.mark.parametrize("job", NEW_JOBS)
@@ -703,58 +762,59 @@ def test_new_jobs_checkout_github_sha_without_credentials(job):
     checkout = step_using(job, "actions/checkout@")
     assert checkout["with"]["ref"] == "${{ github.sha }}"
     assert checkout["with"]["persist-credentials"] is False
-    assert checkout["with"]["fetch-depth"] == (0 if job == "new-code-measure" else 1)
+    assert checkout["with"]["fetch-depth"] == (0 if job == PLAN else 1)
 
 
-def test_new_jobs_pass_gated_sha_and_pr_head_and_no_base_sha():
-    (cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
+def test_plan_passes_gated_sha_and_pr_head_and_no_base_sha():
+    cmd = gate_command(PLAN)
     assert "--gated-sha ${{ github.sha }}" in cmd
     assert "--pr-head-sha ${{ github.event.pull_request.head.sha }}" in cmd
     assert "--base-sha" not in cmd
     assert "--base-sha" not in workflow_text()
 
 
-def test_ci_invokes_only_measure_and_verdict_entry_points():
-    """AC-30: no shell wrapper (it would itself be gated shell); only measure and verdict."""
-    phases = {"new-code-measure": "measure", "new-code-gate": "verdict"}
+def test_ci_invokes_only_plan_shard_and_verdict_entry_points():
+    """AC-30: no shell wrapper (it would itself be gated shell); only plan, shard and verdict."""
+    phases = {PLAN: "plan", SHARD: "shard", GATE: "verdict"}
     for job, phase in phases.items():
         gate_lines = [c for c in run_lines(job) if "new_code_gate" in c]
         assert len(gate_lines) == 1, job
         assert re.search(rf'" {re.escape(WRAPPER_ARGS)} {phase}( |$)', gate_lines[0]), gate_lines[0]
-        for other in {"measure", "verdict", "run", "meta", "_enumerate", "_collect"} - {phase}:
+        for other in {"plan", "shard", "verdict", "run", "meta", "_enumerate", "_collect"} - {phase}:
             assert f"{WRAPPER_ARGS} {other} " not in gate_lines[0]
     text = workflow_text()
     assert "new_code_gate.sh" not in text
-    assert len(re.findall(r"new_code_gate import", text.split("\njobs:\n", 1)[1])) == 2
+    assert "measure" not in " ".join(f"{WRAPPER_ARGS} {p}" for p in phases.values())
+    assert not re.search(rf"{re.escape(WRAPPER_ARGS)} measure\b", text)
+    assert len(re.findall(r"new_code_gate import", text.split("\njobs:\n", 1)[1])) == 3
 
 
 def test_new_jobs_shell_lines_are_only_the_designed_ones():
-    """Only the venv build, the gate call and the one-line summary append run as shell."""
+    """Only the job start, the venv build, the gate call and the one-line summary append run as shell."""
     allowed = {
-        "new-code-measure": [
-            "bash scripts/oversight/ensure_venv.sh",
-            "scripts/oversight/.venv/bin/python",
-        ],
-        "new-code-gate": [
-            wrapper("python") + " verdict",
-            "cat ",
-        ],
+        PLAN: [JOB_START, "bash scripts/oversight/ensure_venv.sh", "scripts/oversight/.venv/bin/python"],
+        SHARD: [JOB_START, "bash scripts/oversight/ensure_venv.sh", "scripts/oversight/.venv/bin/python"],
+        GATE: [wrapper("python") + " verdict", "cat "],
     }
     for job, prefixes in allowed.items():
         lines = run_lines(job)
         assert len(lines) == len(prefixes), lines
         assert all(line.startswith(p) for line, p in zip(lines, prefixes)), lines
-    (append,) = [c for c in run_lines("new-code-gate") if c.startswith("cat ")]
+    (append,) = [c for c in run_lines(GATE) if c.startswith("cat ")]
     assert append == f'cat "{OUT_ROOT}/new-code-summary.md" >> "$GITHUB_STEP_SUMMARY"'
     assert "&&" not in append and ";" not in append
+    for job in (PLAN, SHARD):
+        assert run_lines(job)[0] == JOB_START
+        assert "&&" not in JOB_START and ";" not in JOB_START
 
 
-def test_gate_job_uses_system_python_and_measure_uses_the_venv():
-    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
-    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
-    assert measure_cmd.startswith(wrapper("scripts/oversight/.venv/bin/python") + " measure ")
-    assert gate_cmd.startswith(wrapper("python") + " verdict ")
-    assert not any("ensure_venv" in c for c in run_lines("new-code-gate"))
+def test_gate_job_uses_system_python_and_plan_and_shard_use_the_venv():
+    for job, phase in ((PLAN, "plan"), (SHARD, "shard")):
+        assert gate_command(job).startswith(
+            wrapper("scripts/oversight/.venv/bin/python") + f" {phase} "
+        )
+    assert gate_command(GATE).startswith(wrapper("python") + " verdict ")
+    assert not any("ensure_venv" in c for c in run_lines(GATE))
 
 
 def test_wf_entry_no_step_runs_the_gate_with_dash_m_or_without_isolation():
@@ -771,140 +831,208 @@ def test_wf_entry_no_step_runs_the_gate_with_dash_m_or_without_isolation():
     invocations = [c for job in workflow_jobs() for c in run_lines(job) if "new_code_gate" in c] + [
         " ".join(line.split()) for line in run_tests.splitlines() if "new_code_gate import" in line
     ]
-    assert len(invocations) == 3
+    assert len(invocations) == 4
     for command in invocations:
         python, rest = command.split(" -I -c ", 1)
         assert python.endswith("python") or python.endswith('"$VENV_PYTHON"'), command
         assert rest.startswith(f'"{SNIPPET}" '), command
         assert command.count("new_code_gate import") == 1
-    assert folded.count(f'"{SNIPPET}"') == 2
+    assert folded.count(f'"{SNIPPET}"') == 3
     assert run_tests.count(f'-I -c "{SNIPPET}"') == 1
     assert SNIPPET.endswith("sys.exit(main(sys.argv[2:]))")
 
 
 def test_new_code_gate_job_steps_are_exactly_the_inv_g_whitelist():
     """INV-G: the job that decides runs no PR-controlled build step (no venv, pip, or repo script)."""
-    steps = steps_of("new-code-gate")
+    steps = steps_of(GATE)
     kinds = [str(s.get("uses", "")).split("@")[0] or s["name"] for s in steps]
     assert kinds == [
         "actions/checkout",
         "actions/setup-python",
         "actions/download-artifact",
+        "actions/download-artifact",
         "Apply thresholds",
         "Publish step summary",
         "actions/upload-artifact",
     ]
-    text = " ".join(run_lines("new-code-gate"))
+    text = " ".join(run_lines(GATE))
     assert "pip" not in text and "bash scripts/" not in text and "ensure_venv" not in text
 
 
 def test_summary_step_and_verdict_artifact_run_even_when_the_gate_fails():
-    steps = steps_of("new-code-gate")
+    steps = steps_of(GATE)
     summary = [s for s in steps if str(s.get("run", "")).startswith("cat ")]
-    upload = step_using("new-code-gate", "actions/upload-artifact@")
+    upload = step_using(GATE, "actions/upload-artifact@")
     assert [s["if"] for s in summary] == ["always()"]
     assert upload["if"] == "always()"
     assert upload["with"]["name"] == "new-code-verdict"
     assert upload["with"]["path"].splitlines() == [
+        f"{OUT_ROOT}/new-code-records.json",
         f"{OUT_ROOT}/new-code-verdict.json",
         f"{OUT_ROOT}/new-code-summary.md",
     ]
     assert upload["with"]["retention-days"] == 90
 
 
-def test_records_artifact_is_uploaded_always_and_kept_90_days():
-    upload = step_using("new-code-measure", "actions/upload-artifact@")
+@pytest.mark.parametrize(
+    ("job", "name", "path"),
+    [
+        (PLAN, "new-code-plan", f"{OUT_ROOT}/new-code-plan.json"),
+        (SHARD, FRAGMENT_NAME, f"{OUT_ROOT}/new-code-fragment.json"),
+    ],
+    ids=["plan", "fragment"],
+)
+def test_plan_and_fragment_are_uploaded_always_and_kept_90_days(job, name, path):
+    upload = step_using(job, "actions/upload-artifact@")
     assert upload["if"] == "always()"
-    assert upload["with"]["name"] == "new-code-records"
-    assert upload["with"]["path"] == f"{OUT_ROOT}/new-code-records.json"
+    assert upload["with"]["name"] == name
+    assert upload["with"]["path"] == path
     assert upload["with"]["retention-days"] == 90
+    assert upload["with"]["if-no-files-found"] == "warn"
 
 
 @pytest.mark.parametrize(
-    ("job", "name"),
-    [("new-code-measure", "coverage-contexts"), ("new-code-gate", "new-code-records")],
+    ("job", "names"),
+    [
+        (PLAN, ["coverage-contexts"]),
+        (SHARD, ["new-code-plan"]),
+        (GATE, ["new-code-plan", None]),
+    ],
+    ids=["plan-job", "shard-job", "gate-job"],
 )
-def test_downloads_tolerate_a_missing_artifact_so_the_gate_reports_it(job, name):
-    download = step_using(job, "actions/download-artifact@")
-    assert download["continue-on-error"] is True
-    assert download["with"]["name"] == name
-
-
-INPUT_ROOT = "${{ runner.temp }}/ncg-in"
+def test_downloads_tolerate_a_missing_artifact_so_the_gate_reports_it(job, names):
+    downloads = steps_using(job, "actions/download-artifact@")
+    assert [d["with"].get("name") for d in downloads] == names
+    assert all(d["continue-on-error"] is True for d in downloads)
 
 
 def flag_values(command, flag):
     """Every value that follows `flag` in a folded command line (an expression is one value)."""
-    value = r"(\$\{\{ [^}]+ \}\}\S*|\S+)"
+    value = r"(\$\{\{ [^}]+ \}\}\S*|\"[^\"]*\"|\S+)"
     return re.findall(rf"(?:^| ){re.escape(flag)} {value}", command)
 
 
 def test_downloads_land_in_fresh_directories_under_runner_temp():
     """RV-7: no artifact is downloaded into the checkout, where PR code can pre-place files."""
     paths = {
-        "new-code-measure": f"{INPUT_ROOT}/coverage",
-        "new-code-gate": f"{INPUT_ROOT}/records",
+        PLAN: [f"{INPUT_ROOT}/coverage"],
+        SHARD: [f"{INPUT_ROOT}/plan"],
+        GATE: [f"{INPUT_ROOT}/plan", f"{INPUT_ROOT}/fragments"],
     }
     for job, expected in paths.items():
-        download = step_using(job, "actions/download-artifact@")
-        assert download["with"]["path"] == expected, job
-        assert expected.startswith("${{ runner.temp }}/")
+        downloads = steps_using(job, "actions/download-artifact@")
+        assert [d["with"]["path"] for d in downloads] == expected, job
+        assert all(p.startswith("${{ runner.temp }}/") for p in expected)
+
+
+def test_fragment_download_filtered_by_plan_count():
+    """SH-RERUN-N(a): an earlier attempt's fragments, from a different N, are never fetched."""
+    fragments = steps_using(GATE, "actions/download-artifact@")[1]
+    assert fragments["with"]["pattern"] == FRAGMENT_PATTERN
+    assert fragments["with"]["merge-multiple"] is False
+    assert "name" not in fragments["with"]
 
 
 def test_no_gate_input_path_is_checkout_relative():
-    """RV-7: the coverage data, sidecar and records are read from the download directories only."""
-    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
-    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
-    assert flag_values(measure_cmd, "--coverage-file") == [f"{INPUT_ROOT}/coverage/.coverage"]
-    assert flag_values(measure_cmd, "--meta") == [f"{INPUT_ROOT}/coverage/coverage-meta.json"]
-    assert flag_values(gate_cmd, "--records-dir") == [f"{INPUT_ROOT}/records"]
-    assert "--records " not in gate_cmd
+    """RV-7: the coverage data, sidecar, plan and fragments are read from the download directories only."""
+    plan_cmd, shard_cmd, gate_cmd = (gate_command(j) for j in (PLAN, SHARD, GATE))
+    assert flag_values(plan_cmd, "--coverage-file") == [f"{INPUT_ROOT}/coverage/.coverage"]
+    assert flag_values(plan_cmd, "--meta") == [f"{INPUT_ROOT}/coverage/coverage-meta.json"]
+    assert flag_values(shard_cmd, "--plan-dir") == [f"{INPUT_ROOT}/plan"]
+    assert flag_values(gate_cmd, "--plan-dir") == [f"{INPUT_ROOT}/plan"]
+    assert flag_values(gate_cmd, "--fragments-dir") == [f"{INPUT_ROOT}/fragments"]
+    for command in (plan_cmd, shard_cmd, gate_cmd):
+        assert "--records-dir" not in command and "--measure-result" not in command
     inputs = [
-        *flag_values(measure_cmd, "--coverage-file"),
-        *flag_values(measure_cmd, "--meta"),
-        *flag_values(gate_cmd, "--records-dir"),
+        *flag_values(plan_cmd, "--coverage-file"),
+        *flag_values(plan_cmd, "--meta"),
+        *flag_values(shard_cmd, "--plan-dir"),
+        *flag_values(gate_cmd, "--plan-dir"),
+        *flag_values(gate_cmd, "--fragments-dir"),
     ]
     assert inputs and all(p.startswith("${{ runner.temp }}/") for p in inputs)
-    assert flag_values(measure_cmd, "--out") == [f"{OUT_ROOT}/new-code-records.json"]
+    assert flag_values(plan_cmd, "--out") == [f"{OUT_ROOT}/new-code-plan.json"]
+    assert flag_values(shard_cmd, "--out") == [f"{OUT_ROOT}/new-code-fragment.json"]
+    assert flag_values(gate_cmd, "--records-out") == [f"{OUT_ROOT}/new-code-records.json"]
     assert flag_values(gate_cmd, "--out") == [f"{OUT_ROOT}/new-code-verdict.json"]
     assert flag_values(gate_cmd, "--summary") == [f"{OUT_ROOT}/new-code-summary.md"]
 
 
-def test_verdict_is_passed_all_four_binding_values_and_each_measure_value():
-    """RV-7: gated SHA, PR number, run ID and run attempt, exactly as the platform states them."""
-    (gate_cmd,) = [c for c in run_lines("new-code-gate") if ENTRY in c]
-    assert flag_values(gate_cmd, "--gated-sha") == ["${{ github.sha }}"]
-    assert flag_values(gate_cmd, "--pr") == ["${{ github.event.pull_request.number }}"]
-    assert flag_values(gate_cmd, "--run-id") == ["${{ github.run_id }}"]
-    assert flag_values(gate_cmd, "--run-attempt") == ["${{ github.run_attempt }}"]
-    (measure_cmd,) = [c for c in run_lines("new-code-measure") if ENTRY in c]
-    assert flag_values(measure_cmd, "--run-id") == ["${{ github.run_id }}"]
-    assert flag_values(measure_cmd, "--run-attempt") == ["${{ github.run_attempt }}"]
-    assert flag_values(measure_cmd, "--pr") == ["${{ github.event.pull_request.number }}"]
+def test_every_phase_is_passed_the_binding_values_exactly_as_the_platform_states_them():
+    """RV-7: gated SHA, PR number, run ID and run attempt."""
+    for job in (SHARD, GATE):
+        command = gate_command(job)
+        assert flag_values(command, "--gated-sha") == ["${{ github.sha }}"]
+        assert flag_values(command, "--pr") == ["${{ github.event.pull_request.number }}"]
+        assert flag_values(command, "--run-id") == ["${{ github.run_id }}"]
+        assert flag_values(command, "--run-attempt") == ["${{ github.run_attempt }}"]
+    command = gate_command(PLAN)
+    assert flag_values(command, "--pr") == ["${{ github.event.pull_request.number }}"]
+    assert flag_values(command, "--run-id") == ["${{ github.run_id }}"]
+    assert flag_values(command, "--run-attempt") == ["${{ github.run_attempt }}"]
 
 
-def test_every_upload_replaces_an_earlier_attempts_artifact():
-    """RV-5: a re-run of one job must not fail on a same-name artifact from an earlier attempt."""
+def test_fragment_artifact_names_unique_with_index_and_n():
+    """AC-43(a): one name per (shard, N), every upload replaces an earlier attempt's, all kept 90 days."""
     uploads = [
         (job, step)
         for job, body in workflow_jobs().items()
         for step in body["steps"]
         if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
-    assert sorted(step["with"]["name"] for _job, step in uploads) == [
-        "coverage-contexts",
-        "new-code-records",
-        "new-code-verdict",
-    ]
+    assert sorted(step["with"]["name"] for _job, step in uploads) == sorted(
+        ["coverage-contexts", "new-code-plan", FRAGMENT_NAME, "new-code-verdict"]
+    )
     assert all(step["with"]["overwrite"] is True for _job, step in uploads)
+    assert [s["with"]["retention-days"] for _j, s in uploads if _j != "tests"] == [90, 90, 90]
+    assert "new-code-records" not in workflow_text().replace("new-code-records.json", "")
+
+
+def run_scripts(data):
+    return [
+        step["run"]
+        for job in data["jobs"].values()
+        for step in job["steps"]
+        if "run" in step
+    ]
+
+
+def offending_run_scripts(data):
+    return [r for r in run_scripts(data) if NEEDS_OR_MATRIX_IN_RUN.search(r)]
+
+
+def test_no_needs_or_matrix_expressions_in_run_scripts():
+    """SH-EXPR (SH-5, SH-6(b)): a `needs.*` or `matrix.*` value reaches a script through `env:` only."""
+    data = yaml.safe_load(workflow_text())
+    assert run_scripts(data)
+    assert offending_run_scripts(data) == []
+    seeded = yaml.safe_load(
+        "jobs:\n  j:\n    steps:\n      - run: echo ${{   matrix.shard }}\n"
+    )
+    assert offending_run_scripts(seeded) != []
+    seeded_needs = yaml.safe_load(
+        "jobs:\n  j:\n    steps:\n      - run: echo ${{needs.plan.result }}\n"
+    )
+    assert offending_run_scripts(seeded_needs) != []
+
+
+def test_shard_module_stdlib_only():
+    """SH-STDLIB: the sharding module imports the stdlib (and the pure-logic module) only."""
+    allowed = {f"{GATE_PREFIX}_logic", "scripts.framework"}
+    offenders = [
+        name
+        for name in module_level_imports(parse(FRAMEWORK / "new_code_gate_shard.py"))
+        if name.split(".")[0] not in STDLIB and name not in allowed
+    ]
+    assert offenders == []
+    assert "new_code_gate_shard.py" in GATE_FILES
 
 
 def test_the_new_jobs_stay_read_only_and_run_even_when_upstream_fails():
-    """RV-5/7 keep the TD 5.17 shape: contents: read, `if: always()`, explicit upstream results."""
+    """RV-5/7 keep the TD 5.17 shape: contents: read, explicit upstream results."""
     jobs = workflow_jobs()
     for job in NEW_JOBS:
         assert jobs[job].get("permissions") == {"contents": "read"}
-        assert jobs[job]["if"] == "always()"
     assert "secrets." not in workflow_text()
 
 
@@ -939,24 +1067,47 @@ GIT_IDENTITY = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
 }
-RECORDS_WRITER = """
-import sys
+PLAN_WRITER = """
+import json, os, sys
 sys.path.insert(0, sys.argv[1])
-import json
 from scripts.framework import new_code_gate_logic as ncg
-sha, out = sys.argv[2], sys.argv[3]
+from scripts.framework import new_code_gate_shard as ncs
+sha, plan_dir, fragments_dir = sys.argv[2], sys.argv[3], sys.argv[4]
 rec = ncg.blank_file_record("scripts/x.py", "new")
 rec["fail_reasons"] = [ncg.fail_reason("mode_not_gateable", ncg.mode_message("160000"))]
-doc = {
-    "schema": ncg.SCHEMA_RECORDS, "gate_version": ncg.GATE_VERSION, "phase": "measure",
-    "mode": "ci", "pr": 7, "gated_sha": sha, "pr_head_sha": sha, "base_sha": None,
-    "gated_tree": None, "run_id": "99", "run_attempt": 1, "tool_versions": {}, "python": "3.12",
-    "coverage_core": None, "budget_seconds": ncg.BUDGET_SECONDS,
-    "thresholds": dict(ncg.THRESHOLDS), "files": [rec], "internal_errors": [],
-    "records_sha256": ncg.records_sha256([rec]), "started_at": "s", "finished_at": "f",
-    "seconds": 0,
+rec.update(
+    mutant_names=[], gated_mutant_names=[], selection_full=[], function_cost_ms={},
+    W_F_ms=0, fixed_est_ms=0, cost_ms=0, to_shards=False,
+)
+files = [rec]
+lay = ncs.layout(files)
+plan = {
+    "schema": ncg.SCHEMA_PLAN, "gate_version": ncg.GATE_VERSION,
+    "binding": {
+        "mode": "ci", "gated_sha": sha, "pr_head_sha": sha, "base_sha": None,
+        "gated_tree": None, "pr": 7, "run_id": "99", "run_attempt": 1,
+    },
+    "tool_versions": {}, "python": "3.12", "coverage_core": None,
+    "constants": ncs.plan_constants(), "files": files, "W_ms": lay["W_ms"],
+    "W_ci_minutes": ncs.ci_minutes(lay["W_ms"]), "N": lay["N"], "capped": lay["capped"],
+    "assignment": lay["assignment"], "internal_errors": [],
+    "started_at": "s", "finished_at": "f", "seconds": 0, "job_seconds": None,
 }
-open(out, "w").write(json.dumps(doc))
+plan["plan_hash"] = ncs.plan_hash(plan)
+fragment = {
+    "schema": ncg.SCHEMA_FRAGMENT,
+    "binding": {
+        "gated_sha": sha, "pr": 7, "run_id": "99", "run_attempt": 1, "index": 1,
+        "N": plan["N"], "plan_hash": plan["plan_hash"],
+    },
+    "status": "complete", "timeout": None, "internal_errors": [], "files": [],
+    "started_at": "s", "finished_at": "f", "seconds": 0, "job_seconds": None,
+}
+fragment["fragment_sha256"] = ncs.fragment_hash(fragment)
+name = "new-code-fragment-1-of-%d" % plan["N"]
+os.makedirs(os.path.join(fragments_dir, name))
+open(os.path.join(plan_dir, "new-code-plan.json"), "w").write(json.dumps(plan))
+open(os.path.join(fragments_dir, name, "new-code-fragment.json"), "w").write(json.dumps(fragment))
 """
 
 
@@ -993,17 +1144,21 @@ def run(argv, cwd, env=None):
     )
 
 
-def bound_records(tmp_path):
-    records = tmp_path / "runner" / "ncg-in" / "records" / "new-code-records.json"
-    records.parent.mkdir(parents=True)
-    argv = [sys.executable, "-I", "-c", RECORDS_WRITER, str(ROOT), SHA, str(records)]
+def bound_plan(tmp_path):
+    """A plan and its one fragment, bound to SHA / PR 7 / run 99, whose one file fails the mode guard."""
+    plan_dir = tmp_path / "runner" / "ncg-in" / "plan"
+    fragments_dir = tmp_path / "runner" / "ncg-in" / "fragments"
+    plan_dir.mkdir(parents=True)
+    fragments_dir.mkdir(parents=True)
+    argv = [
+        sys.executable, "-I", "-c", PLAN_WRITER, str(ROOT), SHA, str(plan_dir), str(fragments_dir),
+    ]
     proc = run(argv, tmp_path)
     assert proc.returncode == 0, proc.stderr
-    return records
 
 
 def literal_verdict_argv(tmp_path, root):
-    """The 'Apply thresholds' command exactly as tests.yml spells it, with its expressions filled in."""
+    """The 'Apply thresholds' command exactly as tests.yml spells it, with its expressions and env filled in."""
     values = {
         "github.workspace": str(root),
         "runner.temp": str(tmp_path / "runner"),
@@ -1011,12 +1166,15 @@ def literal_verdict_argv(tmp_path, root):
         "github.event.pull_request.number": "7",
         "github.run_id": "99",
         "github.run_attempt": "1",
-        "needs.new-code-measure.result": "success",
+        "needs.new-code-plan.result": "success",
+        "needs.new-code-shard.result": "success",
     }
     (step,) = [s for s in steps_of("new-code-gate") if s["name"] == "Apply thresholds"]
+    env = {k: re.sub(r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], v) for k, v in step["env"].items()}
     text = re.sub(
         r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], " ".join(step["run"].split())
     )
+    text = re.sub(r"\$([A-Z_]+)", lambda m: env[m.group(1)], text)
     argv = shlex.split(text)
     assert argv[:3] == ["python", "-I", "-c"] and argv[3] == SNIPPET
     return [sys.executable, *argv[1:]]
@@ -1028,7 +1186,7 @@ def markers_written(markers):
 
 def test_shadow_1_planted_root_modules_are_not_imported_by_the_workflows_verdict_command(tmp_path):
     root, markers = fixture_checkout(tmp_path)
-    bound_records(tmp_path)
+    bound_plan(tmp_path)
     proc = run(literal_verdict_argv(tmp_path, root), root)
     assert (proc.returncode, markers_written(markers)) == (1, []), proc.stderr
     out = tmp_path / "runner" / "ncg-out"
@@ -1040,7 +1198,7 @@ def test_shadow_1_planted_root_modules_are_not_imported_by_the_workflows_verdict
 def test_shadow_ctrl_the_dash_m_form_does_trip_the_same_fixture(tmp_path):
     """SHADOW-CTRL: without this, SHADOW-1 could pass because the fixture plants nothing that bites."""
     root, markers = fixture_checkout(tmp_path)
-    bound_records(tmp_path)
+    bound_plan(tmp_path)
     argv = literal_verdict_argv(tmp_path, root)
     dash_m = [argv[0], "-m", "scripts.framework.new_code_gate", *argv[argv.index("verdict") :]]
     proc = run(dash_m, root)
@@ -1049,7 +1207,7 @@ def test_shadow_ctrl_the_dash_m_form_does_trip_the_same_fixture(tmp_path):
 
 def test_ver_imports_the_verdict_process_loads_only_stdlib_and_the_gate_modules(tmp_path):
     root, markers = fixture_checkout(tmp_path)
-    bound_records(tmp_path)
+    bound_plan(tmp_path)
     argv = literal_verdict_argv(tmp_path, root)
     dump = tmp_path / "modules.txt"
     tail = "sys.exit(main(sys.argv[2:]))"

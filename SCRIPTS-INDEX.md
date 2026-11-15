@@ -124,6 +124,7 @@ excluded.
 - `scripts/framework/new_code_gate.py` — The new-code gate CLI (#2304): 80% line coverage and 75% mutant score on new and changed code.
 - `scripts/framework/new_code_gate_logic.py` — Pure logic of the new-code gate (#2304): 80% line coverage and 75% mutant score.
 - `scripts/framework/new_code_gate_pytest_plugin.py` — Tripwire plugin for the new-code gate's mutation runs (#2304, TD 5.7 and 5.18).
+- `scripts/framework/new_code_gate_shard.py` — Pure sharding logic of the new-code gate (#2304, TD 5.20; ADR-2304 section 2h, AD-14).
 - `scripts/framework/next_actor.py` — Assign or unassign HUMAN_REVIEWER on an issue or PR as `needs-human` comes and goes (#2224).
 - `scripts/framework/provision_agent_account.sh` — Configure a checkout to operate as an HOS machine account.
 - `scripts/framework/regen_all.sh` — single canonical entry point for the self-heal-safe generated artifacts (SCRIPTS-INDEX.md, .github/CODEOWNERS). Both are pure functions of other committed input with no human judgment required to regenerate, unlike scripts/framework/validation-stamps/*.stamp (written only after real review — deliberately NOT wired in here; auto-regenerating it would defeat the gate).

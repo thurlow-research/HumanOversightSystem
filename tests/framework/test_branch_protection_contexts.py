@@ -39,6 +39,14 @@ _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _INVENTORY_DOC = _REPO_ROOT / "docs" / "CI-EXECUTION-INVENTORY.md"
 _INVENTORY_JOB_RE = re.compile(r"\(job: `([^`]+)`\)")
+# Read from source, not imported: this file must not load gate code in process (TD 5.19).
+_SHARD_N_MAX = int(
+    re.search(
+        r"^N_MAX = (\d+)$",
+        (_FRAMEWORK_DIR / "new_code_gate_shard.py").read_text(encoding="utf-8"),
+        re.M,
+    ).group(1)
+)
 
 
 def _core_contexts() -> list[str]:
@@ -190,16 +198,28 @@ def test_known_gate_contexts_present():
 
 
 def test_new_code_gate_context_registered_and_job_named():
-    """AC-31 (#2304): `new-code-gate` is a required context produced by a tests.yml
-    job of that exact name, and its upstream `new-code-measure` is not required
-    (the gate fails closed on a non-success upstream result instead)."""
+    """AC-31 (#2304): `new-code-gate` is a required context produced by exactly one
+    tests.yml job of that name. Its upstream `new-code-plan` and the `new-code-shard`
+    matrix are produced by tests.yml but are not required (the gate fails closed on a
+    non-success upstream result instead), and no rendered shard name can equal a context."""
     contexts = _required_contexts()
     produced = _workflow_job_names()
     assert contexts.count("new-code-gate") == 1
     assert "new-code-gate" in _hos_only_contexts()
     assert produced.get("new-code-gate") == "tests.yml"
-    assert produced.get("new-code-measure") == "tests.yml"
-    assert "new-code-measure" not in contexts
+    assert produced.get("new-code-plan") == "tests.yml"
+    assert "new-code-plan" not in contexts
+    data = yaml.safe_load((_WORKFLOWS_DIR / "tests.yml").read_text(encoding="utf-8"))
+    names = [(job or {}).get("name", job_id) for job_id, job in data["jobs"].items()]
+    assert names.count("new-code-gate") == 1
+    (template,) = [n for n in names if n.startswith("new-code-shard")]
+    assert template == "new-code-shard ${{ matrix.shard }}"
+    assert produced.get(template) == "tests.yml"
+    assert template not in contexts
+    for index in range(1, _SHARD_N_MAX + 1):
+        rendered = template.replace("${{ matrix.shard }}", str(index))
+        assert rendered != "new-code-gate"
+        assert rendered not in contexts
 
 
 def test_rerun_gate_checks_not_a_required_context():
