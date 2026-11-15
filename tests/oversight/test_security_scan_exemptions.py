@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import datetime
+import importlib.util
 import io
 import json
 import os
@@ -94,6 +95,7 @@ _BLACK_114134 = _vuln("CVE-2026-114134", ("26.10.1",), ("GHSA-cg8m-r9f2-5wm2",))
 _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 _OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
+_OTEL_126360 = _vuln("CVE-2026-126360", ("1.45.2",))
 _MCP_2194 = (
     _vuln("CVE-2026-116684", ("1.30.0", "2.2.0"), ("GHSA-w4fh-qvv9-3v23",)),
     _vuln("CVE-2026-116685", ("1.30.0", "2.2.0"), ("GHSA-5h93-6whr-6q8j",)),
@@ -115,7 +117,7 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_eight_authorized_records():
+def test_r1_roster_is_exactly_the_nine_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
@@ -128,6 +130,7 @@ def test_r1_roster_is_exactly_the_eight_authorized_records():
         ("mcp", "CVE-2026-116685", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("mcp", "CVE-2026-116686", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
+        ("opentelemetry-api", "CVE-2026-126360", "1.45.2", _EXPIRES, 2179),
     ]
 
 
@@ -214,6 +217,16 @@ def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
     assert "opentelemetry-api 1.37.0 [CVE-2026-114603]" in out
     assert "exempt until 2027-01-31 (#2179)" in out
     out, _, status = _run(_audit(_dep("opentelemetry-api", "1.45.1", _OTEL_114603)))
+    assert status == 1
+    assert "PREMISE BROKEN" in out
+
+
+def test_s2g_otel_126360_is_suppressed_at_1_37_0_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("opentelemetry-api", "1.37.0", _OTEL_126360)))
+    assert status == 0, out
+    assert "opentelemetry-api 1.37.0 [CVE-2026-126360]" in out
+    assert "exempt until 2027-01-31 (#2179)" in out
+    out, _, status = _run(_audit(_dep("opentelemetry-api", "1.45.2", _OTEL_126360)))
     assert status == 1
     assert "PREMISE BROKEN" in out
 
@@ -893,6 +906,37 @@ def test_pr7_no_tracked_file_parses_tracestate_or_sets_up_otel_server():
     assert (
         not bad
     ), f"{bad} use propagate.extract/TraceState/otel instrumentation: {_PREMISE_114603}"
+
+
+_PREMISE_126360 = (
+    "the CVE-2026-126360 exemption's premise no longer holds (no opentelemetry "
+    "propagator may extract from a network or JSON carrier) — remove the exemption "
+    "(upgrade opentelemetry-api once semgrep unpins it, #2179) rather than editing "
+    "this test"
+)
+
+
+def test_pr8_installed_semgrep_extracts_only_from_its_own_environment():
+    # Premise of #2352: the only propagate.extract call in the installed semgrep
+    # builds its traceparent from SEMGREP_TRACE_PARENT_* env vars, so no
+    # attacker-controlled carrier reaches TraceContextTextMapPropagator.extract().
+    spec = importlib.util.find_spec("semgrep")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("semgrep is not installed in this environment")
+    root = Path(next(iter(spec.submodule_search_locations)))
+    call = re.compile(r"propagate\s*\.\s*extract\s*\(|TraceContextTextMapPropagator")
+    hits = []
+    for path in sorted(root.rglob("*.py")):
+        text = path.read_text(errors="replace")
+        if call.search(text):
+            hits.append(path.relative_to(root).as_posix())
+    assert hits == ["telemetry.py"], f"{hits}: {_PREMISE_126360}"
+    body = (root / "telemetry.py").read_text(errors="replace")
+    assert len(re.findall(r"propagate\s*\.\s*extract\s*\(", body)) == 1, _PREMISE_126360
+    assert re.search(
+        r'carrier\s*=\s*\{\s*"traceparent"\s*:\s*f"00-\{trace_id\}-\{span_id\}-', body
+    ), _PREMISE_126360
+    assert "os.getenv(_SEMGREP_TRACE_PARENT_TRACE_ID)" in body, _PREMISE_126360
 
 
 # ── Gate (shell path, via the HOS_PIP_AUDIT_BIN stub seam) ──────────────────
