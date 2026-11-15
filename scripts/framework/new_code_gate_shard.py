@@ -13,6 +13,8 @@ decision logic, because the gate's own PR gates this file in full (TD 5.19).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -66,7 +68,21 @@ SHARD_REASONS = frozenset(
 )
 SHARD_STATUSES = frozenset({"complete", "timeout", "internal_error"})
 MUTANT_STATUSES = ncg.KILLED_STATUSES | ncg.NOT_KILLED_STATUSES
-OWN_HASH_DROPS = frozenset({"started_at", "finished_at", "seconds", "job_seconds"})
+# The timing keys dropped at any depth when hashing a plan or fragment (ADR-2304 2b condition 5).
+# Deliberately its own list, not derived from ncg.UNHASHED_FIELDS: N, plan_hash, shards and
+# isolation_failure are hashed here, and no non-timing schema field may reuse one of these names.
+DOCUMENT_HASH_DROPS = frozenset(
+    {
+        "started_at",
+        "finished_at",
+        "seconds",
+        "job_seconds",
+        "enumerate_seconds",
+        "workspace_seconds",
+        "mutmut_seconds",
+        "collect_seconds",
+    }
+)
 FRAGMENT_NAME_RE = re.compile(r"^new-code-fragment-([0-9]+)-of-([0-9]+)$")
 FINDING_KEYS = ("importer", "loaded_as", "canonical", "via", "phase")
 ISOLATION_KEYS = ("stage", "node_ids", "summary_lines", "output_tail")
@@ -261,9 +277,18 @@ def plan_constants() -> dict[str, Any]:
 
 
 def document_hash(doc: Mapping[str, Any], own_key: str) -> str:
-    """sha256 of a plan or fragment minus its own hash, timings and UNHASHED_FIELDS keys."""
-    body = {k: v for k, v in doc.items() if k != own_key and k not in OWN_HASH_DROPS}
-    return ncg.canonical_sha256(body)
+    """sha256 of a plan or fragment minus its own hash field (top level only) and timing keys."""
+
+    def strip(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k not in DOCUMENT_HASH_DROPS}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    body = strip({k: v for k, v in doc.items() if k != own_key})
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
 def plan_hash(plan: Mapping[str, Any]) -> str:
@@ -682,6 +707,23 @@ def _missing_results(
             continue
         have = set(entry["status_by_key"]) if entry is not None and entry["finished"] else set()
         lacking = [n for n in mine[path] if n not in have]
+        if not lacking and entry is not None and entry["finished"]:
+            counted = ncg.classify_statuses(entry["status_by_key"], mine[path])
+            stated = (entry["killed"], entry["total"], entry["mutant_status_counts"])
+            if stated != (
+                counted["mutants_killed"],
+                counted["mutants_total"],
+                counted["mutant_status_counts"],
+            ):
+                found.append(
+                    problem(
+                        "fragment_count_mismatch",
+                        f"shard {index} states killed/total {stated[0]}/{stated[1]}, its mutant "
+                        f"statuses give {counted['mutants_killed']}/{counted['mutants_total']}",
+                        index,
+                        path,
+                    )
+                )
         if lacking:
             found.append(
                 problem(
@@ -821,6 +863,7 @@ def _not_final(
         reasons.append(
             ncg.fail_reason("mutation_timeout", ncg.bound_text(message, ncg.MAX_MESSAGE_CHARS))
         )
+        reasons.extend(_shard_reasons(fm))
         out["mutation_reason"] = "timeout"
     else:
         reasons.extend(_shard_reasons(fm))
@@ -859,11 +902,15 @@ def _not_final(
 
 
 def _final(out: dict[str, Any], fm: FileMerge, problems: list[dict[str, Any]]) -> None:
-    killed = sum(fm.entries[i]["killed"] for i in fm.holders)
-    total = sum(fm.entries[i]["total"] for i in fm.holders)
+    killed = 0
+    total = 0
     counts: dict[str, int] = {}
     for index in fm.holders:
-        for status, number in fm.entries[index]["mutant_status_counts"].items():
+        statuses = fm.entries[index]["status_by_key"]
+        shard = ncg.classify_statuses(statuses, statuses)
+        killed += shard["mutants_killed"]
+        total += shard["mutants_total"]
+        for status, number in shard["mutant_status_counts"].items():
             counts[status] = counts.get(status, 0) + number
     if total != len(fm.rec["gated_mutant_names"]):
         problems.append(

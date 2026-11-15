@@ -110,6 +110,64 @@ def test_gate_entry_module_imports_with_only_the_stdlib_available():
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+GATE_EDGES = {
+    "new_code_gate": {"new_code_gate_logic", "new_code_gate_shard"},
+    "new_code_gate_shard": {"new_code_gate_logic"},
+    "new_code_gate_logic": set(),
+}
+
+
+def gate_import_offenders(tree, module):
+    """Module-level imports of another gate module that `module` is not allowed to make."""
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = "." * node.level + (node.module or "")
+            names = [base] + [f"{base}.{alias.name}" for alias in node.names]
+        else:
+            continue
+        for name in names:
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf.startswith("new_code_gate") and leaf != module and leaf not in GATE_EDGES[module]:
+                found.append(name)
+    return found
+
+
+def test_gate_module_import_edges_are_only_the_three_allowed():
+    """S-STDLIB / SH-STDLIB: the import chain is entry -> shard -> logic, never back up."""
+    for module in GATE_EDGES:
+        assert gate_import_offenders(parse(FRAMEWORK / f"{module}.py"), module) == [], module
+    seeded = ast.parse("from scripts.framework import new_code_gate\n")
+    assert gate_import_offenders(seeded, "new_code_gate_shard") == [
+        "scripts.framework.new_code_gate"
+    ]
+    seeded_logic = ast.parse("import scripts.framework.new_code_gate_shard\n")
+    assert gate_import_offenders(seeded_logic, "new_code_gate_logic") != []
+
+
+def test_every_gate_module_imports_with_only_the_stdlib_available():
+    """S-STDLIB / SH-STDLIB (dynamic): `python -E -S` imports each of the three, no heavy tool."""
+    for module in GATE_EDGES:
+        code = (
+            "import sys\n"
+            f"import scripts.framework.{module}\n"
+            "heavy = sorted(m for m in sys.modules if m.split('.')[0] in "
+            "('mutmut', 'libcst', 'coverage', 'pytest', '_pytest'))\n"
+            "sys.exit(1 if heavy else 0)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-E", "-S", "-c", code],
+            cwd=ROOT,
+            env={"PYTHONPATH": str(ROOT)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, module + proc.stdout + proc.stderr
+
+
 def is_real_cwd_call(node):
     return (
         isinstance(node, ast.Call)

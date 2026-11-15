@@ -347,6 +347,69 @@ def test_fragment_hash_ignores_timings_and_its_own_field_only():
     assert ncs.fragment_hash(dict(frag, status="timeout")) != frag["fragment_sha256"]
 
 
+def test_plan_hash_covers_n():
+    plan = band_plan(3)
+    other = dict(plan, N=plan["N"] + 1)
+    assert ncs.plan_hash(other) != plan["plan_hash"]
+    assert ncs.plan_hash(dict(plan, shards=[{"index": 1}])) != plan["plan_hash"]
+
+
+def test_fragment_hash_covers_its_binding_n_and_plan_hash():
+    plan = band_plan(3)
+    frag = fragment(plan, 1)
+    for field, value in (("N", 4), ("plan_hash", "f" * 64)):
+        other = copy.deepcopy(frag)
+        other["binding"][field] = value
+        assert ncs.fragment_hash(other) != frag["fragment_sha256"], field
+
+
+def test_document_hash_drops_exactly_the_eight_timing_names():
+    assert ncs.DOCUMENT_HASH_DROPS == {
+        "started_at",
+        "finished_at",
+        "seconds",
+        "job_seconds",
+        "enumerate_seconds",
+        "workspace_seconds",
+        "mutmut_seconds",
+        "collect_seconds",
+    }
+
+
+def test_isolation_failure_is_hashed_in_plan_and_fragment():
+    plan = band_plan(3)
+    changed = copy.deepcopy(plan)
+    changed["files"][0]["isolation_failure"] = {"stage": "x"}
+    assert ncs.plan_hash(changed) != plan["plan_hash"]
+    frag = fragment(plan, 1)
+    other = copy.deepcopy(frag)
+    other["files"][0]["isolation_failure"] = {"stage": "x"}
+    assert ncs.fragment_hash(other) != frag["fragment_sha256"]
+
+
+def test_timing_only_changes_change_neither_plan_hash_nor_fragment_hash():
+    plan = band_plan(3)
+    frag = fragment(plan, 1)
+    timings = {name: 123 for name in ncs.DOCUMENT_HASH_DROPS}
+    other_plan = copy.deepcopy(plan)
+    other_plan.update(timings)
+    for rec in other_plan["files"]:
+        rec.update(timings)
+    assert ncs.plan_hash(other_plan) == plan["plan_hash"]
+    other_frag = copy.deepcopy(frag)
+    other_frag.update(timings)
+    for entry in other_frag["files"]:
+        entry.update(timings)
+    assert ncs.fragment_hash(other_frag) == frag["fragment_sha256"]
+
+
+def test_records_sha256_still_ignores_n_plan_hash_and_shards():
+    files = [{"path": "a.py", "mutants_killed": 3}]
+    base = ncg.records_sha256(files)
+    varied = [dict(files[0], N=9, plan_hash="x", shards=[{"index": 1}])]
+    assert ncg.records_sha256(varied) == base
+
+
 def test_layout_names_the_function_it_lacks_a_cost_for():
     rec = uniform("a.py", 2, 10)
     rec["function_cost_ms"] = {}
@@ -649,6 +712,12 @@ def case_planned_without_result(plan, frags):
     rehash(frags["new-code-fragment-2-of-3"])
 
 
+def case_stored_counts_mismatch(plan, frags):
+    doc = frags["new-code-fragment-2-of-3"]
+    doc["files"][0]["killed"] = 0
+    rehash(doc)
+
+
 def case_plan_hash_mismatch(plan, frags):
     plan["python"] = "3.13"
 
@@ -707,6 +776,7 @@ CASES = [
     ("two-fragments", case_mutant_in_two_fragments, "mutant_in_two_fragments", 2),
     ("wrong-fragment", case_mutant_in_wrong_fragment, "mutant_in_wrong_fragment", 2),
     ("no-result", case_planned_without_result, "planned_mutant_without_result", 2),
+    ("stored-counts", case_stored_counts_mismatch, "fragment_count_mismatch", 2),
     ("fragment-hash", case_hash_mismatch, "fragment_hash_mismatch", 2),
     ("plan-hash-mismatch", case_plan_hash_mismatch, "plan_hash_mismatch", None),
     ("plan-n-vs-weights", case_plan_n_disagrees_with_its_weights, "plan_inconsistent", None),
@@ -1181,3 +1251,71 @@ def test_files_decided_in_the_cheap_phase_pass_through_the_merge_unchanged():
     assert [r["code"] for r in rec["fail_reasons"]] == ["path_loaded_module"]
     assert set(rec) == set(ncg.FILE_FIELDS)
     assert exit_of(records) == 1
+
+
+# --------------------------------------------------------------------------
+# Merge integrity: counts recomputed from statuses; timeout keeps other shards' reasons
+# --------------------------------------------------------------------------
+
+
+def test_document_drop_set_is_timing_only():
+    assert not {"N", "plan_hash", "shards", "isolation_failure"} & ncs.DOCUMENT_HASH_DROPS
+
+
+def test_merge_counts_from_status_by_key():
+    """SH-RECOUNT: the merge's numbers come from the statuses, and a stored count cannot move them."""
+    plan = band_plan(3)
+    honest = fragment_set(plan, killed=lambda name: sum(map(ord, name)) % 3 != 0)
+    good, good_problems = do_merge(plan, honest)
+    assert "fragment_count_mismatch" not in codes(good_problems)
+    bad_frags = copy.deepcopy(honest)
+    path = plan["assignment"][1]["members"][0]["path"]
+    doc = bad_frags["new-code-fragment-2-of-3"]
+    entry = next(e for e in doc["files"] if e["path"] == path)
+    entry["killed"] = entry["total"]
+    rehash(doc)
+    bad, problems = do_merge(plan, bad_frags)
+    hits = [p for p in problems if p["code"] == "fragment_count_mismatch"]
+    assert hits and hits[0]["shard"] == 2 and hits[0]["file"] == path
+    assert exit_of(bad) == 3
+    want, got = file_of(good, path), file_of(bad, path)
+    for field in ("mutants_killed", "mutants_total", "mutant_score_pct", "mutant_status_counts"):
+        assert got[field] == want[field], field
+    assert [(r["index"], r["total"]) for r in got["shards"]] == [
+        (r["index"], r["total"]) for r in want["shards"]
+    ]
+    assert exit_of(good) in (0, 1)
+
+
+def test_a_fragment_whose_killed_count_disagrees_with_its_statuses_does_not_merge():
+    plan = band_plan(3)
+    frags = fragment_set(plan, killed=lambda name: False)
+    doc = frags["new-code-fragment-1-of-3"]
+    doc["files"][0]["killed"] = doc["files"][0]["total"]
+    rehash(doc)
+    _, problems = do_merge(plan, frags)
+    hits = [p for p in problems if p["code"] == "fragment_count_mismatch"]
+    assert hits and hits[0]["shard"] == 1
+
+
+def test_a_timeout_keeps_the_shard_time_reasons_of_the_files_other_complete_shards():
+    heavy, _ = heavy_and_light()
+    frags = fragment_set(heavy)
+    late = fragment(heavy, 6, status="timeout")
+    late["timeout"] = {"phase": "collect", "file": "", "message": ""}
+    frags["new-code-fragment-6-of-8"] = rehash(late)
+    other = frags["new-code-fragment-7-of-8"]
+    entry = next(e for e in other["files"] if e["path"] == "scripts/framework/b.py")
+    entry.update(
+        fail_reasons=[{"code": "path_loaded_module", "message": "loaded"}],
+        mutation_reason="path_load",
+        status_by_key={},
+        killed=0,
+        total=0,
+        mutant_status_counts={},
+    )
+    rehash(other)
+    records, _ = do_merge(heavy, frags)
+    rec = file_of(records, "scripts/framework/b.py")
+    assert rec["mutation_reason"] == "timeout"
+    assert {"mutation_timeout", "path_loaded_module"} <= {r["code"] for r in rec["fail_reasons"]}

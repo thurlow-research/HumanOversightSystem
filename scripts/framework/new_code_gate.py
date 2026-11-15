@@ -1810,7 +1810,16 @@ def load_shard_plan(opts: ShardOptions) -> dict[str, Any]:
 def assigned_works(plan_doc: Mapping[str, Any], index: int) -> list[FileRun]:
     """One file run per file with mutants assigned to this shard, in path order."""
     by_path = {f["path"]: f for f in plan_doc["files"]}
-    shard = plan_doc["assignment"][index - 1]
+    assignment = plan_doc["assignment"]
+    if (
+        len(assignment) != plan_doc["N"]
+        or not 1 <= index <= len(assignment)
+        or assignment[index - 1]["index"] != index
+    ):
+        raise GateError(
+            f"plan assignment does not hold shard {index} at position {index} of {plan_doc['N']}"
+        )
+    shard = assignment[index - 1]
     works = []
     for member in sorted(shard["members"], key=lambda m: m["path"]):
         rec = by_path.get(member["path"])
@@ -1922,6 +1931,7 @@ def run_shard(opts: ShardOptions, runner: Runner, clock: Clock) -> tuple[dict[st
     try:
         plan_doc = load_shard_plan(opts)
         ctx = Context(opts, runner, clock, ncg.BUDGET_SECONDS)
+        ctx.deadline = t0 + ncg.BUDGET_SECONDS
         ctx.label = f"shard {opts.index} of {plan_doc['N']}"
         ctx.modes = tracked_modes(opts.repo, opts.gated_sha)
         ctx.tracked = list(ctx.modes)

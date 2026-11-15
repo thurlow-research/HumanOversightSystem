@@ -4344,6 +4344,8 @@ def test_shard_runs_from_a_valid_plan_without_coverage_input(rig):
         "index-low",
         "index-high",
         "hash",
+        "plan-n",
+        "assignment-order",
         "internal-errors",
         "symlink",
         "tools",
@@ -4370,6 +4372,15 @@ def test_shard_refuses_unbound_or_tampered_plan(rig, case):
         override["index"] = plan["N"] + 1
     elif case == "hash":
         rewrite_json(path, lambda d: d.update(W_ms=d["W_ms"] + 1))
+    elif case == "plan-n":
+        rewrite_json(path, lambda d: d.update(N=d["N"] + 1))
+    elif case == "assignment-order":
+        # A self-consistent hash over a plan whose assignment[0] claims another index.
+        def reindex(d):
+            d["assignment"][0]["index"] = 2
+            d["plan_hash"] = ncs.plan_hash(d)
+
+        rewrite_json(path, reindex)
     elif case == "internal-errors":
         rewrite_json(path, lambda d: d.update(internal_errors=[{"code": "x", "message": "y"}]))
     elif case == "symlink":
@@ -4386,6 +4397,22 @@ def test_shard_refuses_unbound_or_tampered_plan(rig, case):
     fragment, code = shard_in(rig, runner, plan_dir, **override)
     assert code == 3 and fragment["status"] == "internal_error"
     assert "shard " in fragment["internal_errors"][0]["message"]
+    assert runner.calls_for("mutmut_run") == []
+
+
+def test_shard_deadline_runs_from_process_start_not_from_plan_load(rig, monkeypatch):
+    runner, plan, plan_dir = staged_plan(rig)
+    clock = FakeClock()
+    real = gate.load_shard_plan
+
+    def slow_load(opts):
+        clock.t += ncg.BUDGET_SECONDS + 1
+        return real(opts)
+
+    monkeypatch.setattr(gate, "load_shard_plan", slow_load)
+    opts = gate.shard_options(rig.options(), 1, plan_dir)
+    fragment, code = gate.run_shard(opts, runner, clock)
+    assert fragment["status"] == "timeout" and code == 0
     assert runner.calls_for("mutmut_run") == []
 
 
