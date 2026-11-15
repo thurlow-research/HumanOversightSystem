@@ -1,0 +1,1 @@
+{"actor":"overseer","cid":"2359","event":"human-required","head_sha":"9dd54c3725b60d7d0df24a577330147f1701a503","pr":2360,"reason_category":"GATE_UNSATISFIED","summary":"protected surface .claude/agents/** (CODEOWNER @ScottThurlow); human approval required, expected action APPROVE","tier":"MEDIUM"}
