@@ -6521,8 +6521,10 @@ class TestCycleModel:
         assert r.returncode == 78
         assert not cron.claude_ran()
         assert not cron.token_log.exists()
-        assert "not a single model id" in r.stdout
-        assert cron.audit_records("cycle-model-unresolved")
+        assert "not a single safe model id" in r.stdout
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and recs[-1]["reason"]
+        assert "--dangerous-flag" not in json.dumps(recs[-1])
 
     @pytest.mark.parametrize("role", ["worker", "overseer"])
     def test_missing_agent_file_fails_closed(self, cron, role):
@@ -6534,7 +6536,8 @@ class TestCycleModel:
         assert not cron.token_log.exists(), "fail-closed must precede the token mint"
         assert f".claude/agents/{role}.md" in r.stdout
         assert "unreadable" in r.stdout  # the helper's one-line reason is surfaced
-        assert cron.audit_records("cycle-model-unresolved")
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and "unreadable" in recs[-1]["reason"]
 
     @pytest.mark.parametrize("role", ["worker", "overseer"])
     def test_model_less_agent_file_fails_closed(self, cron, role):
@@ -6545,5 +6548,6 @@ class TestCycleModel:
         assert not cron.claude_ran()
         assert not cron.token_log.exists(), "fail-closed must precede the token mint"
         assert "no top-level model: key" in r.stdout
-        assert cron.audit_records("cycle-model-unresolved")
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and recs[-1]["reason"]
         assert not [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]

@@ -467,7 +467,7 @@ if _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve 
     _cycle_model_reason=""
   else
     _cycle_model_ok=0
-    _cycle_model_reason="resolver output is not a single model id"
+    _cycle_model_reason="helper output is not a single safe model id"  # never the raw rejected value
   fi
 else
   _cycle_model_ok=0
@@ -476,7 +476,7 @@ else
 fi
 if [[ "$_cycle_model_ok" != 1 ]]; then
   echo "$LOG_PREFIX ERROR: cannot resolve model from $_ROLE_AGENT_FILE (${_cycle_model_reason}) — refusing to run on the default model"
-  _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md"
+  _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md" "reason=${_cycle_model_reason:-unknown}"
   exit 78  # EX_CONFIG
 fi
 

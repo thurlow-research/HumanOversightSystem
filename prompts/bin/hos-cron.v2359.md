@@ -78,3 +78,4 @@ Behaviour added after the original brief:
   (2) the helper is captured stdout-only (`2>/dev/null`) on success, the reason re-derived from
   stderr on failure, and the captured value must match `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$`
   (single line) or the cycle fails closed (exit 78, `cycle-model-unresolved`).
+- `cycle-model-unresolved` carries a `reason=` field: the sanitised helper reason (<=600 chars), a fixed string for a rejected value (never the raw value), or `unknown` if empty.
