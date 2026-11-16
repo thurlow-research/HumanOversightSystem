@@ -448,6 +448,23 @@ _audit() {
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
+# ── Role model (#2359) — resolved early so a bad role file fails fast ─────────
+# The agent file's `model:` frontmatter only applies to subagent dispatch, so a top-level
+# cycle would silently run the account default; the model is passed to claude explicitly
+# where `_claude_cmd` is built, from the role's agent file alone (single source of truth: no
+# env/config override). FAIL CLOSED: an unresolvable model aborts the cycle here, never
+# falling back to the default. Resolved before the token mint, auth probe, branch reap and
+# in-progress handling so nothing per-cycle has run: the lock is held (the EXIT trap above
+# frees it) and _HOS_INPROG_ARMED is still unset, so exiting leaves no stale lock or label.
+_ROLE_AGENT_FILE="$REPO_ROOT/.claude/agents/${ROLE}.md"
+# Success prints only stdout, failure only stderr, so the merged output is the model or the reason.
+if ! _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>&1)"; then
+  _cycle_model_reason="$(printf '%s' "$_cycle_model" | tail -n 1 | LC_ALL=C tr -d '\000-\037\177' | cut -c1-600)"
+  echo "$LOG_PREFIX ERROR: cannot resolve model from $_ROLE_AGENT_FILE (${_cycle_model_reason}) — refusing to run on the default model"
+  _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md"
+  exit 78  # EX_CONFIG
+fi
+
 # ── Per-role disk temp dir (#2054, TD §2A.3) ──────────────────────────────────
 # HOS temp lives on disk in <HOS_TMP_ROOT>/<RoleDir> (0700), not on the RAM-backed
 # /tmp. Three variables, all the role dir: TMPDIR (pytest, tempfile, mktemp),
@@ -2317,16 +2334,7 @@ else _TIMEOUT_BIN=""; fi
 # as root and needs a separate enable flag (friction on unattended Linux servers).
 _claude_cmd=("$CLAUDE_BIN" --print --permission-mode bypassPermissions)
 [[ -n "${HOS_CRON_MAX_TURNS:-}" ]] && _claude_cmd+=(--max-turns "$HOS_CRON_MAX_TURNS")
-# #2359: the agent file's `model:` frontmatter only applies to subagent dispatch, so a
-# top-level cycle would silently run the account default. Pass it explicitly, from the role's
-# agent file alone (single source of truth: no env/config override). FAIL CLOSED: an
-# unresolvable model aborts the cycle before claude runs, never falling back to the default.
-_ROLE_AGENT_FILE="$REPO_ROOT/.claude/agents/${ROLE}.md"
-if ! _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>/dev/null)"; then
-  echo "$LOG_PREFIX ERROR: cannot resolve model from $_ROLE_AGENT_FILE (missing file, no frontmatter, or no safe model: value) — refusing to run on the default model"
-  _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md"
-  exit 78
-fi
+# #2359: pass the model resolved above (see "Role model" near _audit) explicitly.
 _claude_cmd+=(--model "$_cycle_model")
 echo "$LOG_PREFIX model=$_cycle_model (from .claude/agents/$ROLE.md)"
 _audit cycle-model "role=$ROLE" "model=$_cycle_model" "source=.claude/agents/$ROLE.md"

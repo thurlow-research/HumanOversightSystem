@@ -85,3 +85,16 @@ def test_unsafe_value(tmp_path, raw):
 def test_nested_or_indented_model_is_not_read(tmp_path):
     p = _agent(tmp_path, "---\nname: x\nmeta:\n  model: opus\n---\n")
     _fails(_resolve(p), p)
+
+
+@pytest.mark.parametrize("raw", ["inherit", "Inherit", "INHERIT", '"inherit"'])
+def test_inherit_is_rejected(tmp_path, raw):
+    p = _agent(tmp_path, f"---\nmodel: {raw}\n---\n")
+    _fails(_resolve(p), p)
+    assert "inherit" in _resolve(p).stderr
+
+
+def test_duplicate_model_keys_fail_closed(tmp_path):
+    p = _agent(tmp_path, "---\nmodel: opus\nname: x\nmodel: sonnet\n---\n")
+    _fails(_resolve(p), p)
+    assert "duplicate" in _resolve(p).stderr

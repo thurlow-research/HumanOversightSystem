@@ -6506,9 +6506,11 @@ class TestCycleModel:
         cron.install_cycle_log()
         (cron.repo / ".claude" / "agents" / f"{role}.md").unlink()
         r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
-        assert r.returncode != 0
+        assert r.returncode == 78
         assert not cron.claude_ran()
+        assert not cron.token_log.exists(), "fail-closed must precede the token mint"
         assert f".claude/agents/{role}.md" in r.stdout
+        assert "unreadable" in r.stdout  # the helper's one-line reason is surfaced
         assert cron.audit_records("cycle-model-unresolved")
 
     @pytest.mark.parametrize("role", ["worker", "overseer"])
@@ -6516,7 +6518,9 @@ class TestCycleModel:
         cron.install_cycle_log()
         cron.write_role_agent(role, None)
         r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
-        assert r.returncode != 0
+        assert r.returncode == 78
         assert not cron.claude_ran()
+        assert not cron.token_log.exists(), "fail-closed must precede the token mint"
+        assert "no top-level model: key" in r.stdout
         assert cron.audit_records("cycle-model-unresolved")
         assert not [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]
