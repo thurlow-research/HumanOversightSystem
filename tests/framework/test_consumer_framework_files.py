@@ -200,9 +200,9 @@ def test_bin_hos_cron_bootstrap_lib_helpers_ship_to_consumers():
     import re
 
     cron = (ROOT / "bin" / "hos-cron").read_text()
-    called = set(
-        re.findall(r'python3 -I "\$REPO_ROOT/(bootstrap/lib/[A-Za-z0-9_]+\.py)"', cron)
-    )
+    called = set(re.findall(r'python3 -I "\$REPO_ROOT/(bootstrap/lib/[A-Za-z0-9_]+\.py)"', cron))
     assert called, "no bootstrap/lib helper invocations found in bin/hos-cron (pattern drift?)"
     missing = called - set(_consumer_files())
-    assert not missing, f"bin/hos-cron invokes {sorted(missing)} but the consumer ship-set omits them"
+    assert (
+        not missing
+    ), f"bin/hos-cron invokes {sorted(missing)} but the consumer ship-set omits them"
