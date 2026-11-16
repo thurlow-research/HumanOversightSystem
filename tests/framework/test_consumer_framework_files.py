@@ -190,3 +190,19 @@ def test_sandbox_template_allows_delete_branch_invocation():
     assert any(
         fnmatch.fnmatchcase("bash bootstrap/delete_branch.sh --pr 1 --app worker", r) for r in rules
     ), "sandbox template has no Bash allow rule covering bootstrap/delete_branch.sh"
+
+
+def test_bin_hos_cron_bootstrap_lib_helpers_ship_to_consumers():
+    """Every bootstrap/lib/*.py that bin/hos-cron runs must be in the ship-set (#2359).
+
+    hos-cron calls these unconditionally; an omitted one makes every consumer cycle fail.
+    """
+    import re
+
+    cron = (ROOT / "bin" / "hos-cron").read_text()
+    called = set(re.findall(r'python3 -I "\$REPO_ROOT/(bootstrap/lib/[A-Za-z0-9_]+\.py)"', cron))
+    assert called, "no bootstrap/lib helper invocations found in bin/hos-cron (pattern drift?)"
+    missing = called - set(_consumer_files())
+    assert (
+        not missing
+    ), f"bin/hos-cron invokes {sorted(missing)} but the consumer ship-set omits them"
