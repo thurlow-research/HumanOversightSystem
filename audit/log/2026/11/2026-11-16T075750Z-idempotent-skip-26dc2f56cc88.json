@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"7230a98e2cd54a9eb0e5d558205afaa36d4f71fb","pr":2366,"reason":"no new information since 07:43Z HUMAN_REQUIRED verdict on same head; reviewer already requested, interim sign-off stands","timestamp":"2026-11-16T07:57:50Z"}
