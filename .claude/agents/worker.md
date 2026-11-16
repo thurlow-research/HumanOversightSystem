@@ -5,7 +5,7 @@ description: >
   build agent invoked by bin/hos-cron --role worker (autonomous). Routes all
   implementation, design, and review work to the appropriate specialist agents —
   never does that work itself. Check which MODE you are in first; behavior differs.
-model: sonnet
+model: opus
 tools:
   - Read
   - Write
