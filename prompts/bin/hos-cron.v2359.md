@@ -62,3 +62,19 @@ AI-Model: claude-opus-5-5
 AI-Risk: HIGH
 Supervised-by: ScottThurlow
 ```
+
+## Addendum — iteration 2 (2026-11-16)
+
+Behaviour added after the original brief:
+
+- Model resolution moved before the token mint, immediately after `_audit` is defined, so a bad
+  role file fails before any per-cycle work (lock held, EXIT trap frees it, no in-progress label).
+- Fail-closed exit code is 78 (EX_CONFIG).
+- The helper's one-line reason is surfaced in the log, sanitised (control bytes stripped, 600 chars).
+- `model: inherit` and duplicate top-level `model:` keys are rejected by the resolver.
+- Iteration 2 items: (1) `bootstrap/lib/agent_model.py` added to
+  `scripts/framework/framework_consumer_files.txt` (installed hos-cron calls it unconditionally),
+  with a guard test that every `bootstrap/lib/*.py` hos-cron invokes is in that list;
+  (2) the helper is captured stdout-only (`2>/dev/null`) on success, the reason re-derived from
+  stderr on failure, and the captured value must match `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$`
+  (single line) or the cycle fails closed (exit 78, `cycle-model-unresolved`).

@@ -457,9 +457,24 @@ _audit() {
 # in-progress handling so nothing per-cycle has run: the lock is held (the EXIT trap above
 # frees it) and _HOS_INPROG_ARMED is still unset, so exiting leaves no stale lock or label.
 _ROLE_AGENT_FILE="$REPO_ROOT/.claude/agents/${ROLE}.md"
-# Success prints only stdout, failure only stderr, so the merged output is the model or the reason.
-if ! _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>&1)"; then
-  _cycle_model_reason="$(printf '%s' "$_cycle_model" | tail -n 1 | LC_ALL=C tr -d '\000-\037\177' | cut -c1-600)"
+# Stdout only on success: the value becomes --model, so stderr noise must never reach it.
+# On failure stdout is empty, so re-run for the reason (last line: a crash prints a traceback).
+# A value that is not a single plain model id is treated as unresolved (same fail-closed path).
+_cycle_model_ok=1
+_cycle_model_re='^[A-Za-z0-9][][A-Za-z0-9._:-]*$'  # ERE: ] first in the set, - last
+if _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>/dev/null)"; then
+  if [[ "$_cycle_model" =~ $_cycle_model_re ]]; then
+    _cycle_model_reason=""
+  else
+    _cycle_model_ok=0
+    _cycle_model_reason="resolver output is not a single model id"
+  fi
+else
+  _cycle_model_ok=0
+  _cycle_model_reason="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>&1 >/dev/null | tail -n 1)" || true  # pipefail: the resolver just failed
+  _cycle_model_reason="$(printf '%s' "$_cycle_model_reason" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-600)"
+fi
+if [[ "$_cycle_model_ok" != 1 ]]; then
   echo "$LOG_PREFIX ERROR: cannot resolve model from $_ROLE_AGENT_FILE (${_cycle_model_reason}) — refusing to run on the default model"
   _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md"
   exit 78  # EX_CONFIG
