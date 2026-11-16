@@ -213,6 +213,8 @@ class CronEnv:
             '  echo "tmpdir=${TMPDIR:-UNSET}"\n'
             '  echo "claude_code_tmpdir=${CLAUDE_CODE_TMPDIR:-UNSET}"\n'
             '  echo "hos_tmp_dir=${HOS_TMP_DIR:-UNSET}"\n'
+            # #2359: the launcher must pass --model from the role's agent file.
+            '  echo "argv=$*"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -486,6 +488,7 @@ class CronEnv:
             "scripts/framework/requester_trust.py",
             "scripts/framework/require_human_approval.py",
             "bootstrap/lib/hos_tmp_root.py",  # #2054: the launcher's temp-dir resolver
+            "bootstrap/lib/agent_model.py",  # #2359: the launcher's per-role model resolver
         ):
             _dst = self.repo / _rel
             _dst.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +528,10 @@ class CronEnv:
         for _role in ("worker", "overseer"):
             self.prompt_file(_role).parent.mkdir(parents=True, exist_ok=True)
             self.prompt_file(_role).write_text(f"## {_role} cron prompt\n")
+        # #2359: the launcher passes --model from each role's agent file and fails closed
+        # without one. Distinct values per role prove the per-role file is the source.
+        for _role, _model in (("worker", "opus"), ("overseer", "sonnet")):
+            self.write_role_agent(_role, _model)
 
     @property
     def lock_dir(self) -> Path:
@@ -679,12 +686,24 @@ class CronEnv:
             env=child_env(env),
         )
 
+    def write_role_agent(self, role: str, model: Optional[str]) -> Path:
+        """Write .claude/agents/<role>.md; frontmatter carries `model:` unless model is None (#2359)."""
+        p = self.repo / ".claude" / "agents" / f"{role}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        model_line = f"model: {model}\n" if model is not None else ""
+        p.write_text(f"---\nname: {role}\n{model_line}---\n# {role}\n")
+        return p
+
     def add_agent_files(self, *slugs: str) -> None:
-        """Create .claude/agents/<slug>.md stubs for the given agent slugs."""
+        """Create .claude/agents/<slug>.md stubs for the given agent slugs.
+
+        An existing file is kept: the role files carry the `model:` frontmatter the
+        launcher requires (#2359)."""
         for slug in slugs:
             p = self.repo / ".claude" / "agents" / f"{slug}.md"
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(f"# {slug}\n")
+            if not p.exists():
+                p.write_text(f"# {slug}\n")
 
     def set_consumer_agents(self, *slugs: str) -> None:
         """Write a consumer_agents.txt with only the given slugs (no comments)."""
@@ -6463,3 +6482,41 @@ class TestUsagePauseGate:
         lines = _usage_lines(r)
         assert len(lines) == 1 and "[USAGE-OK]" in lines[0], r.stdout + r.stderr
         assert cron.claude_ran()
+
+
+# ──────────────────── Cycle model from the role agent file (#2359) ────────────────────
+class TestCycleModel:
+    """The top-level cycle ignores the agent file's `model:` unless the launcher passes it."""
+
+    @pytest.mark.parametrize("role,model", [("worker", "opus"), ("overseer", "sonnet")])
+    def test_claude_argv_carries_the_role_agent_files_model(self, cron, role, model):
+        cron.install_cycle_log()
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert cron.claude_ran(), r.stdout + r.stderr
+        assert f"argv=--print --permission-mode bypassPermissions --model {model}" in (
+            cron.claude_record()
+        )
+        assert f"model={model} (from .claude/agents/{role}.md)" in r.stdout
+        recs = [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]
+        assert recs, "cycle-model audit record missing"
+        assert model in json.dumps(recs[-1])
+
+    @pytest.mark.parametrize("role", ["worker", "overseer"])
+    def test_missing_agent_file_fails_closed(self, cron, role):
+        cron.install_cycle_log()
+        (cron.repo / ".claude" / "agents" / f"{role}.md").unlink()
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode != 0
+        assert not cron.claude_ran()
+        assert f".claude/agents/{role}.md" in r.stdout
+        assert cron.audit_records("cycle-model-unresolved")
+
+    @pytest.mark.parametrize("role", ["worker", "overseer"])
+    def test_model_less_agent_file_fails_closed(self, cron, role):
+        cron.install_cycle_log()
+        cron.write_role_agent(role, None)
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode != 0
+        assert not cron.claude_ran()
+        assert cron.audit_records("cycle-model-unresolved")
+        assert not [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]
