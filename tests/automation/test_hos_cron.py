@@ -6501,6 +6501,29 @@ class TestCycleModel:
         assert recs, "cycle-model audit record missing"
         assert model in json.dumps(recs[-1])
 
+    def test_helper_stderr_noise_on_success_never_reaches_model(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "bootstrap" / "lib" / "agent_model.py").write_text(
+            "import sys\nprint('WARNING: noisy', file=sys.stderr)\nprint('opus')\n"
+        )
+        r = cron.run(role="worker", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert cron.claude_ran(), r.stdout + r.stderr
+        rec = cron.claude_record()
+        assert "--model opus" in rec
+        assert "noisy" not in rec
+
+    def test_non_model_helper_output_fails_closed(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "bootstrap" / "lib" / "agent_model.py").write_text(
+            "print('opus --dangerous-flag')\n"
+        )
+        r = cron.run(role="worker", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode == 78
+        assert not cron.claude_ran()
+        assert not cron.token_log.exists()
+        assert "not a single model id" in r.stdout
+        assert cron.audit_records("cycle-model-unresolved")
+
     @pytest.mark.parametrize("role", ["worker", "overseer"])
     def test_missing_agent_file_fails_closed(self, cron, role):
         cron.install_cycle_log()
