@@ -34,6 +34,9 @@ THE RULINGS
     exempted on a SHORTER box, 2026-12-31 (not 2027-01-31), tracked in #2120, on
     the premise that HOS never imports mcp or runs an MCP client or server. Each
     record goes inert as soon as mcp>=1.30.0 is installed (semgrep unpinning).
+  * 2026-11-15 (#2352): opentelemetry-api CVE-2026-126360 (regex DoS in
+    TraceContextTextMapPropagator.extract) is exempted on the 2027-01-31 timebox,
+    same premise and same semgrep pin as CVE-2026-114603; upgrade tracked in #2179.
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -373,6 +376,31 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "opentelemetry-api once semgrep unpins it, tracked in #2179. The "
             "no-import and no-extract premises are enforced by tests PR6, PR6b and "
             "PR7. Human ruling #2147, 2026-10-25."
+        ),
+    ),
+    Exemption(
+        package="opentelemetry-api",
+        advisory_id="CVE-2026-126360",
+        fixed_in="1.45.2",
+        expires=datetime.date(2027, 1, 31),
+        tracking_issue=2179,
+        # What: TraceContextTextMapPropagator.extract() is open to regex DoS (a
+        # crafted `traceparent` with a long whitespace run and an embedded newline
+        # backtracks quadratically). Only extract() on an attacker-controlled
+        # carrier that keeps newlines is affected; CPU exhaustion only.
+        reason=(
+            "TraceContextTextMapPropagator.extract() is open to regex denial of "
+            "service via a crafted traceparent (long whitespace run, embedded "
+            "newline); only extract() on an attacker-controlled carrier is affected. "
+            "HOS never imports opentelemetry and never calls propagate.extract or "
+            "TraceContextTextMapPropagator; opentelemetry-api is installed only as a "
+            "dependency of semgrep, whose only propagate.extract call "
+            "(semgrep/telemetry.py) builds the traceparent from its own "
+            "SEMGREP_TRACE_PARENT_* environment variables, with no network or JSON "
+            "carrier. semgrep pins opentelemetry-api~=1.37.0, so no fixed combination "
+            "is installable; upgrade opentelemetry-api once semgrep unpins it, "
+            "tracked in #2179. The no-import and no-extract premises are enforced by "
+            "tests PR6, PR6b, PR7 and PR8. Human ruling #2352, 2026-11-15."
         ),
     ),
 )

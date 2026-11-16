@@ -59,6 +59,8 @@ two files.
 
   Worker prompt to `coder` (essential instructions): add three `mcp` `Exemption` records (fixed_in `1.30.0`, expires `2026-12-31`, tracking_issue 2120) after CVE-2026-59951, mirroring its shape, with reasons that state only verified facts and name their premise tests; the "earlier at 1.30.0+" clause is delivered by `fixed_in` (record goes inert once a fixed mcp is installed); add a RULINGS bullet; update R1 (eight records, separate `_EXPIRES_MCP_2194`); add a suppressed-at-1.29.0/kept-at-1.30.0 test; add a premise test scanning tracked scripts/bootstrap/bin/tests/workflows for `ClientSession|streamablehttp_client|sse_client` with narrow asserted exclusions, plus a pattern test; update the X5 docstring cliff; touch no other file. CVE-2026-59951 keeps its 2027-01-31 expiry.
 
+- v4 (2026-11-15, #2352): opentelemetry-api CVE-2026-126360 exemption (fixed_in `1.45.2`, expires 2027-01-31, tracking #2179) plus premise test PR8 (installed semgrep's only `propagate.extract` call builds its traceparent from its own environment), per the human ruling on #2352 (ScottThurlow, 2026-11-15T18:47:15Z): option A, expiry 2027-01-31, premise test, check the advisory against HOS usage first.
+
 ## Human Review Notes
 
 <!-- Filled in at CODEOWNERS review. -->
