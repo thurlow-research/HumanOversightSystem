@@ -2317,6 +2317,19 @@ else _TIMEOUT_BIN=""; fi
 # as root and needs a separate enable flag (friction on unattended Linux servers).
 _claude_cmd=("$CLAUDE_BIN" --print --permission-mode bypassPermissions)
 [[ -n "${HOS_CRON_MAX_TURNS:-}" ]] && _claude_cmd+=(--max-turns "$HOS_CRON_MAX_TURNS")
+# #2359: the agent file's `model:` frontmatter only applies to subagent dispatch, so a
+# top-level cycle would silently run the account default. Pass it explicitly, from the role's
+# agent file alone (single source of truth: no env/config override). FAIL CLOSED: an
+# unresolvable model aborts the cycle before claude runs, never falling back to the default.
+_ROLE_AGENT_FILE="$REPO_ROOT/.claude/agents/${ROLE}.md"
+if ! _cycle_model="$(python3 -I "$REPO_ROOT/bootstrap/lib/agent_model.py" resolve --agent-file "$_ROLE_AGENT_FILE" 2>/dev/null)"; then
+  echo "$LOG_PREFIX ERROR: cannot resolve model from $_ROLE_AGENT_FILE (missing file, no frontmatter, or no safe model: value) — refusing to run on the default model"
+  _audit cycle-model-unresolved "role=$ROLE" "file=.claude/agents/$ROLE.md"
+  exit 78
+fi
+_claude_cmd+=(--model "$_cycle_model")
+echo "$LOG_PREFIX model=$_cycle_model (from .claude/agents/$ROLE.md)"
+_audit cycle-model "role=$ROLE" "model=$_cycle_model" "source=.claude/agents/$ROLE.md"
 # #1446: fixed-path capture of claude's own stdout, rewritten in full on every
 # run (`tee` truncates by default — no `-a`) so the usage-limit breaker below
 # can grep the current cycle's output only, never a growing log (human ruling
