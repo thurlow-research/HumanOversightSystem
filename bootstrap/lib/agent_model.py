@@ -45,15 +45,19 @@ def resolve_model(agent_file: str) -> str:
         end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
     except StopIteration:
         raise ModelError(f"{agent_file}: unterminated YAML frontmatter") from None
-    for line in lines[1:end]:
-        match = _MODEL_LINE.match(line)  # top-level only: no leading whitespace
-        if not match:
-            continue
+    found = [m for m in (_MODEL_LINE.match(ln) for ln in lines[1:end]) if m]  # top-level only
+    if len(found) > 1:
+        raise ModelError(f"{agent_file}: duplicate top-level model: keys (ambiguous)")
+    for match in found:
         value = re.sub(r"\s+#.*$", "", match.group(1)).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1].strip()
         if not value:
             raise ModelError(f"{agent_file}: model is empty")
+        if value.lower() == "inherit":
+            raise ModelError(
+                f"{agent_file}: model 'inherit' is valid for subagents but not for claude --model"
+            )
         if not _SAFE_MODEL.match(value):
             raise ModelError(f"{agent_file}: model value is not a safe model name")
         return value
