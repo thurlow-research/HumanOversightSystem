@@ -2385,6 +2385,63 @@ class BounceLockUnavailable(RuntimeError):
         return "transient" if self.errno in _TRANSIENT_LOCK_ERRNOS else "deterministic"
 
 
+KeyedLockTimeout = BounceLockTimeout
+KeyedLockUnavailable = BounceLockUnavailable
+
+_LOCK_NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")
+
+
+@contextlib.contextmanager
+def keyed_flock(
+    namespace: str,
+    key: str,
+    *,
+    subject: str,
+    repo_root: str = ".",
+    timeout: float = BOUNCE_LOCK_TIMEOUT_SECONDS,
+):
+    """Serialize a critical section for one `key` in `namespace` under `repo_root` (#2227, #2357).
+
+    A kernel flock, not a PID file: the kernel drops it when the holder dies, so
+    a crash cannot leave a stale lock, and no PID liveness check is needed
+    (those fail across sandbox PID namespaces, #1616). The file is never
+    deleted: unlinking a flock file races with a waiter holding the old inode.
+    The lock file is `<repo_root>/.claudetmp/locks/<namespace>-<sha256(key)[:24]>.lock`.
+    Raises ValueError for a malformed namespace before any filesystem call.
+    """
+    if not _LOCK_NAMESPACE_RE.match(namespace):
+        raise ValueError(f"lock namespace must match {_LOCK_NAMESPACE_RE.pattern}: {namespace!r}")
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    lock_dir = Path(repo_root) / ".claudetmp" / "locks"
+    lock_path = lock_dir / f"{namespace}-{digest}.lock"
+    try:
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise BounceLockUnavailable(
+            f"{namespace} lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
+        ) from exc
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise BounceLockTimeout(
+                        f"{namespace} lock for {subject} not acquired within {timeout:g}s"
+                    ) from None
+                time.sleep(_BOUNCE_LOCK_POLL_SECONDS)
+            except OSError as exc:
+                raise BounceLockUnavailable(
+                    f"{namespace} lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
+                ) from exc
+        yield
+    finally:
+        os.close(fd)  # closing the fd releases the flock
+
+
 @contextlib.contextmanager
 def _bounce_lock(
     owner: str,
@@ -2396,40 +2453,17 @@ def _bounce_lock(
 ):
     """Serialize the bounce critical section for one (repo, cid) under `repo_root` (#2227).
 
-    A kernel flock, not a PID file: the kernel drops it when the holder dies, so
-    a crash cannot leave a stale lock, and no PID liveness check is needed
-    (those fail across sandbox PID namespaces, #1616). The file is never
-    deleted: unlinking a flock file races with a waiter holding the old inode.
+    Delegates to `keyed_flock` (#2357); the lock path, messages and exception
+    types are unchanged.
     """
-    digest = hashlib.sha256(f"{owner}/{repo}\0{cid}".encode("utf-8")).hexdigest()[:24]
-    lock_dir = Path(repo_root) / ".claudetmp" / "locks"
-    lock_path = lock_dir / f"bounce-{digest}.lock"
-    try:
-        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError as exc:
-        raise BounceLockUnavailable(
-            f"bounce lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
-        ) from exc
-    try:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise BounceLockTimeout(
-                        f"bounce lock for {cid} not acquired within {timeout:g}s"
-                    ) from None
-                time.sleep(_BOUNCE_LOCK_POLL_SECONDS)
-            except OSError as exc:
-                raise BounceLockUnavailable(
-                    f"bounce lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
-                ) from exc
+    with keyed_flock(
+        "bounce",
+        f"{owner}/{repo}\0{cid}",
+        subject=cid,
+        repo_root=repo_root,
+        timeout=timeout,
+    ):
         yield
-    finally:
-        os.close(fd)  # closing the fd releases the flock
 
 
 class RepairReadError(GitHubError):

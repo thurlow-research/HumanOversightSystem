@@ -55,6 +55,11 @@
 #   ./scripts/run_second_review.sh --step 3 --no-diff-only   # disable diff-centric (warns)
 #   --diff-only       (default) reviewers get only the diff; advisory on context requests
 #   --no-diff-only    disable diff-centric mode — full context allowed (NOT recommended)
+#   ./scripts/run_second_review.sh --authority --out-dir <abs dir> --step pr<N> \
+#       --diff <sha40>..<sha40> --tier MEDIUM|HIGH|CRITICAL --score 0
+#   --authority       overseer-only (#2357): no ledger, no issue creation, no cwd validator
+#                     inputs, every tier vendor required (no codex-for-agy substitution).
+#                     Exit: 0 approve/unparseable, 1 error, 2 request_changes, 64 usage.
 #
 # Prerequisites: agy authenticated (`agy` login), codex authenticated (`codex` login)
 
@@ -124,6 +129,13 @@ _SUBCMD=""
 _REC_FILES=""
 _REC_CLASS=""
 _REC_DISP=""
+# #2357: overseer authority mode (TD-2357-S1a §3). Off unless --authority is given.
+AUTHORITY=0
+_AUTH_OUT_DIR=""
+_AUTH_OUT_DIR_SET=0
+_AUTH_VENDORS=""
+_AUTH_FILES=0
+_AUTH_BINARY=0
 
 # SPEC-219: the reviewed commit range, recorded in every report header so the
 # oversight-evaluator can verify the second review covered the step's canonical
@@ -153,6 +165,10 @@ while [[ $# -gt 0 ]]; do
             shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift ;;
         --reset)
             _SUBCMD="reset"; shift ;;
+        --authority)    AUTHORITY=1; shift ;;
+        --out-dir)
+            _AUTH_OUT_DIR_SET=1; _AUTH_OUT_DIR="${2:-}"
+            shift; [[ $# -ge 1 ]] && shift ;;
         *)              shift ;;
     esac
 done
@@ -167,8 +183,64 @@ if [[ -z "$STEP" ]]; then
     exit 1
 fi
 
-# SPEC-78: resolve ledger path now that STEP is confirmed.
-LEDGER_FILE="${OUT_DIR}/step${STEP}-ledger.jsonl"
+# #2357 authority validation (TD-2357-S1a §3.3). Every refusal is exit 64 and writes nothing.
+_auth_usage() {
+    echo "run_second_review: --authority: $1" >&2
+    exit 64
+}
+if [[ "$_AUTH_OUT_DIR_SET" -eq 1 && "$AUTHORITY" -eq 0 ]]; then
+    _auth_usage "--out-dir requires --authority"
+fi
+if [[ "$AUTHORITY" -eq 1 ]]; then
+    _auth_sha_range_re='^[0-9a-f]{40}\.\.[0-9a-f]{40}$'
+    _auth_step_re='^[A-Za-z0-9-]{1,32}$'
+    [[ -z "$_SUBCMD" ]] || _auth_usage "--record/--reset are refused in authority mode"
+    [[ "$STEP" =~ $_auth_step_re ]] || _auth_usage "--step must match ${_auth_step_re}"
+    [[ "$_AUTH_OUT_DIR" == /* ]] || _auth_usage "--out-dir must be an absolute path"
+    [[ -d "$_AUTH_OUT_DIR" && ! -L "$_AUTH_OUT_DIR" ]] \
+        || _auth_usage "--out-dir must be an existing directory and not a symlink"
+    if compgen -G "$_AUTH_OUT_DIR/*.md" >/dev/null; then
+        _auth_usage "--out-dir already contains a report"
+    fi
+    [[ "$DIFF_REF" =~ $_auth_sha_range_re ]] || _auth_usage "--diff must be <sha40>..<sha40>"
+    [[ ${#FILES[@]} -eq 0 ]] || _auth_usage "--files is refused in authority mode"
+    [[ "$TIER" == "MEDIUM" || "$TIER" == "HIGH" || "$TIER" == "CRITICAL" ]] \
+        || _auth_usage "--tier must be MEDIUM, HIGH or CRITICAL"
+    [[ "$SCORE" == "0" ]] || _auth_usage "--score must be exactly 0"
+    [[ "$DIFF_ONLY" -eq 1 ]] || _auth_usage "--no-diff-only is refused in authority mode"
+    OUT_DIR="$_AUTH_OUT_DIR"
+    LEDGER_FILE="$OUT_DIR/no-ledger.jsonl"
+    [[ ! -e "$LEDGER_FILE" ]] || _auth_usage "no-ledger path already exists"
+    # Inert thresholds: score is pinned to 0, so only the tier table selects vendors
+    # and a .env value cannot add or remove one.
+    AGY_THRESHOLD=1
+    CODEX_THRESHOLD=1
+    unset _auth_sha_range_re _auth_step_re
+fi
+
+# authority_fail <reason>: write an error report whose reason is a closed literal, exit 1.
+authority_fail() {
+    local ts
+    ts=$(date +%Y%m%dT%H%M%S)
+    {
+        printf "# Second Review — Step %s\n" "$STEP"
+        printf "Timestamp: %s\n" "$ts"
+        printf "mode: authority\n"
+        printf "verdict: error\n"
+        printf "reason: %s\n" "$1"
+        printf "reviewed_range: %s\n" "$DIFF_REF"
+        printf "highest_severity: none\n"
+        printf "unresolved_findings: 0\n"
+        printf "vendors_required: %s\n" "${_AUTH_VENDORS:-unknown}"
+        printf "validator_digest: omitted\n"
+    } > "$OUT_DIR/step${STEP}-${ts}.md"
+    exit 1
+}
+
+# SPEC-78: resolve ledger path now that STEP is confirmed (authority mode set it above).
+if [[ "$AUTHORITY" -eq 0 ]]; then
+    LEDGER_FILE="${OUT_DIR}/step${STEP}-ledger.jsonl"
+fi
 
 # SPEC-78: post-parse dispatch for --record and --reset subcommands.
 # These short-circuit before any reviewer invocation or diff-derivation.
@@ -193,7 +265,7 @@ if [[ "$_SUBCMD" == "reset" ]]; then
 fi
 
 # Read score from validator summary if not provided
-if [[ -z "$SCORE" && -f ".claudetmp/oversight/validators/summary.json" ]]; then
+if [[ "$AUTHORITY" -eq 0 && -z "$SCORE" && -f ".claudetmp/oversight/validators/summary.json" ]]; then
     SCORE=$(python3 -c \
         "import json; d=json.load(open('.claudetmp/oversight/validators/summary.json')); \
          print(d.get('composite_score', 0))" 2>/dev/null || echo "0")
@@ -230,7 +302,22 @@ if [[ -z "$SELECT_OUT" ]]; then
 fi
 eval "$SELECT_OUT"   # sets RUN_AGY / RUN_CODEX to true|false
 
+if [[ "$AUTHORITY" -eq 1 ]]; then
+    if $RUN_AGY && ! $RUN_CODEX; then
+        _AUTH_VENDORS="agy"
+    elif $RUN_AGY && $RUN_CODEX; then
+        _AUTH_VENDORS="agy+codex"
+    else
+        authority_fail review-inconsistent
+    fi
+fi
+
 if ! $RUN_AGY && ! $RUN_CODEX; then
+    if [[ "$AUTHORITY" -eq 1 ]]; then
+        # Unreachable (tier is MEDIUM or above): the skip sentinel is never written here.
+        echo "run_second_review: --authority reached the below-threshold skip path" >&2
+        exit 64
+    fi
     echo "run_second_review: score=$SCORE below both thresholds (agy≥$AGY_THRESHOLD, codex≥$CODEX_THRESHOLD) and tier=${TIER:-none} below MEDIUM — skip"
     # Write a sentinel so oversight-evaluator can distinguish "skipped" from "missing"
     mkdir -p ".claudetmp/second-review"
@@ -251,6 +338,17 @@ fi
 # Check availability
 command -v agy &>/dev/null  && AGY_AVAILABLE=true  || true
 command -v codex &>/dev/null && CODEX_AVAILABLE=true || true
+
+# #2357 preflight: every tier vendor is required, checked before any vendor call.
+# agy first, so with both missing at HIGH the reason is vendor-unavailable:agy.
+if [[ "$AUTHORITY" -eq 1 ]]; then
+    if $RUN_AGY && ! $AGY_AVAILABLE; then
+        authority_fail "vendor-unavailable:agy"
+    fi
+    if $RUN_CODEX && ! $CODEX_AVAILABLE; then
+        authority_fail "vendor-unavailable:codex"
+    fi
+fi
 
 # Fallback: if agy unavailable and codex threshold reached, codex handles both lenses
 if $RUN_AGY && ! $AGY_AVAILABLE && $CODEX_AVAILABLE && $RUN_CODEX; then
@@ -294,7 +392,40 @@ OUTFILE="$OUT_DIR/step${STEP}-${TIMESTAMP}.md"
 # the recorded range and the diff source can never diverge (binding B3), and the
 # UNCOMMITTED/none sentinels are mutually exclusive by construction (binding B4):
 # only one branch runs. All SHAs are full 40-char (git rev-parse / get_step_range).
-if [[ -n "$DIFF_REF" && "$DIFF_REF" == *..* ]]; then
+if [[ "$AUTHORITY" -eq 1 ]]; then
+    # #2357: the whole diff from git objects, neutralising user/system git config and
+    # attributes so nothing can hide or rewrite a file. Any git failure is a hard error;
+    # the `|| echo ""` swallow of the worker path is deliberately not copied.
+    # In-tree .gitattributes and .git/info/attributes can still mark a file `-diff`. That is
+    # deliberate and fails closed: numstat reports such a file as binary, and classify_run
+    # then holds the PR as `binary-unreviewed`.
+    _auth_git() {
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.attributesFile=/dev/null "$@"
+    }
+    _RANGE_A="${DIFF_REF%%..*}"
+    _RANGE_B="${DIFF_REF##*..}"
+    for _auth_sha in "$_RANGE_A" "$_RANGE_B"; do
+        _auth_resolved=$(_auth_git rev-parse --verify --quiet "${_auth_sha}^{commit}") \
+            || authority_fail diff-failed
+        [[ "$_auth_resolved" == "$_auth_sha" ]] || authority_fail diff-failed
+    done
+    DIFF_CONTENT=$(_auth_git diff --no-ext-diff --no-textconv --no-color "$DIFF_REF") \
+        || authority_fail diff-failed
+    _NUMSTAT=$(_auth_git diff --no-ext-diff --no-textconv --numstat "$DIFF_REF") \
+        || authority_fail diff-failed
+    _RAW=$(_auth_git diff --no-ext-diff --raw --no-abbrev "$DIFF_REF") \
+        || authority_fail diff-failed
+    _AUTH_FILES=$(printf '%s\n' "$_NUMSTAT" | grep -c . || true)
+    _AUTH_BINARY=$(printf '%s\n' "$_NUMSTAT" | grep -c $'^-\t-\t' || true)
+    # A gitlink on either side shows a vendor only a commit pointer: count it as binary.
+    # Its numstat line is never `-<TAB>-`, so nothing is counted twice.
+    _AUTH_GITLINKS=$(printf '%s\n' "$_RAW" | grep -cE '^:(160000 [0-7]{6}|[0-7]{6} 160000) ' || true)
+    _AUTH_BINARY=$((_AUTH_BINARY + _AUTH_GITLINKS))
+    if [[ -z "$DIFF_CONTENT" ]]; then
+        authority_fail empty-diff
+    fi
+    REVIEWED_RANGE="$DIFF_REF"
+elif [[ -n "$DIFF_REF" && "$DIFF_REF" == *..* ]]; then
     # Path: --diff <A>..<B> (range form). BASE=rev-parse A, HEAD=rev-parse B.
     DIFF_CONTENT=$(git diff "$DIFF_REF" 2>/dev/null || echo "")
     _RANGE_A="${DIFF_REF%%..*}"
@@ -440,7 +571,7 @@ fi
 # latter exits 0 by design — a degraded digest must not kill the review — so
 # that stderr line is the only operator signal that context was lost.
 VALIDATOR_DIGEST=""
-if [[ -f ".claudetmp/oversight/validators/summary.json" ]]; then
+if [[ "$AUTHORITY" -eq 0 && -f ".claudetmp/oversight/validators/summary.json" ]]; then
     VALIDATOR_DIGEST=$(python3 "$(dirname "$0")/oversight/second_review_logic.py" \
         digest-validators --file ".claudetmp/oversight/validators/summary.json")
 fi
@@ -463,11 +594,20 @@ echo ""
     printf "unresolved_findings: 0\n"
     printf "blocking_count: 0\n"
     printf "new_blocking_count: 0\n"
+    if [[ "$AUTHORITY" -eq 1 ]]; then
+        printf "mode: authority\n"
+        printf "vendors_required: %s\n" "$_AUTH_VENDORS"
+        printf "validator_digest: omitted\n"
+        printf "files_reviewed: %s\n" "$_AUTH_FILES"
+        printf "binary_files: %s\n" "$_AUTH_BINARY"
+    fi
     printf "agy_threshold: %s | codex_threshold: %s\n\n" "$AGY_THRESHOLD" "$CODEX_THRESHOLD"
 } > "$OUTFILE"
 
 # ── Helper: create GitHub issue for high/critical findings ──────────────────
 create_finding_issues() {
+    # #2357: the authority run has no GitHub side effects; one guard covers every call site.
+    if [[ "$AUTHORITY" -eq 1 ]]; then return 0; fi
     local reviewer="$1"
     local findings_json="$2"
 
@@ -928,7 +1068,17 @@ Return JSON only:
     stdout_file=$(vendor_invoke_tmpfile)
     printf '%s' "$prompt" > "$prompt_file"
 
-    if vendor_invoke codex "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file"; then
+    # #2357: the authority run asks codex for an explicit read-only sandbox; worker mode is
+    # unchanged. Explicit if/else (no empty-array expansion) keeps the worker argv identical.
+    local codex_rc=0
+    if [[ "$AUTHORITY" -eq 1 ]]; then
+        vendor_invoke codex "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" \
+            --sandbox read-only || codex_rc=$?
+    else
+        vendor_invoke codex "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" \
+            || codex_rc=$?
+    fi
+    if [[ "$codex_rc" -eq 0 ]]; then
         result=$(cat "$stdout_file")
     else
         # Invocation failed outright (harness or vendor — ADR-1683 D-4).
@@ -999,7 +1149,7 @@ if $RUN_AGY && $AGY_AVAILABLE; then
     log_context_advisory "agy" "$AGY_OUT"
     echo "  done"
 
-elif $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
+elif [[ "$AUTHORITY" -eq 0 ]] && $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
     # Fallback: codex handles correctness lens since agy is unavailable
     echo "Running codex (FALLBACK correctness — agy unavailable)..."
     FALLBACK_OUT=$(run_codex_review \
@@ -1050,8 +1200,13 @@ echo ""
 # ledgered fixed/filed:#N aggregates as approve. Without this, `process` below
 # (which never downgrades, #683) could never converge a step whose only blocking
 # finding was already filed. Prose sections are not ledger-aware.
-python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate \
-    --file "$OUTFILE" --ledger "$LEDGER_FILE"
+if [[ "$AUTHORITY" -eq 1 ]]; then
+    # #2357: no --ledger, so no disposition can downgrade the authority's findings.
+    python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate --file "$OUTFILE"
+else
+    python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate \
+        --file "$OUTFILE" --ledger "$LEDGER_FILE"
+fi
 
 # Step 2 (SPEC-78 C1): validation_logic.py process rewrites new_blocking_count
 # (and re-keys verdict) against the step-scoped convergence ledger. It is
@@ -1083,12 +1238,18 @@ python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate \
 python3 "$(dirname "$0")/oversight/validation_logic.py" process \
     --file "$OUTFILE" --ledger "$LEDGER_FILE" --strict-empty
 
+# #2357: `process` never writes its --ledger; if one appeared, something is wrong.
+if [[ "$AUTHORITY" -eq 1 && -e "$LEDGER_FILE" ]]; then
+    echo "run_second_review: --authority: ledger path appeared during the run" >&2
+    exit 1
+fi
+
 echo "Second review complete: $OUTFILE"
 echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCALATE."
 
 # ── Token usage report ───────────────────────────────────────────────────────
 TRACKER="$(dirname "$0")/oversight/token_tracker.py"
-if [[ -f "$TRACKER" ]]; then
+if [[ "$AUTHORITY" -eq 0 && -f "$TRACKER" ]]; then
     # Record agy usage — estimate prompt size from source content (prompt is function-local in run_agy_review)
     if $RUN_AGY && [[ -n "${AGY_OUT:-}" ]]; then
         # ADR-1683 D-3: the prompt embeds the digest, not the raw summary — use

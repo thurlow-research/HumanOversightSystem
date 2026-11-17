@@ -98,6 +98,7 @@ excluded.
 - `scripts/automation/lib/merge_config.py` — AD-9 configuration resolution and repo identity (#1357).
 - `scripts/automation/lib/multi_customer.py` — Multi-customer fairness wiring (B14, R12.1–R12.3, O15).
 - `scripts/automation/lib/observability.py` — Observability — JSONL-first run ledger consumers and derived Markdown log (T14, R11.8).
+- `scripts/automation/lib/overseer_second_review.py` — the overseer's own cross-vendor second review per PR head (#2357, ADR-2357).
 - `scripts/automation/lib/overseer_state.py` — Deterministic state helpers for the HOS oversight loop.
 - `scripts/automation/lib/posture.py` — shared posture validation, rules V1-V14 (ADR-1643 AD-7, TD-D26).
 - `scripts/automation/lib/pr_readiness.py` — worker pre-PR deterministic self-assessment gate (#317, #1131).
