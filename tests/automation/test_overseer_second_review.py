@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2428,3 +2429,486 @@ def test_t30e_a_known_vendor_set_with_no_base_holds_at_that_vendor_set(h):
     assert (third["verdict"], third["reason"], third["reused"]) == ("hold", "pending-stuck", False)
     assert third["record"] == str(h.record_path("agy"))
     assert not h.record_path("agy+codex").exists()
+
+
+# =============================================================================
+# Mutation-gap tests (mutmut #2384): boundaries, loops, defaults
+# =============================================================================
+
+
+def _pad_json(total: int) -> bytes:
+    body = b'{"k": 1}'
+    return body + b" " * (total - len(body))
+
+
+def test_read_json_dict_accepts_exactly_max_bytes_and_refuses_one_more(tmp_path):
+    # kills x__read_json_dict__mutmut_12 and mutmut_27 (>= instead of >)
+    exact = tmp_path / "exact.json"
+    exact.write_bytes(_pad_json(64))
+    over = tmp_path / "over.json"
+    over.write_bytes(_pad_json(65))
+    assert osr._read_json_dict(exact, 64) == {"k": 1}
+    assert osr._read_json_dict(over, 64) is None
+
+
+def test_read_json_dict_refuses_a_non_regular_file_even_when_small(tmp_path):
+    # kills x__read_json_dict__mutmut_9 (non-regular AND oversize instead of OR)
+    fifo = tmp_path / "fifo.json"
+    os.mkfifo(fifo)
+
+    def feed():
+        with contextlib.suppress(OSError):
+            fd = os.open(fifo, os.O_WRONLY)
+            try:
+                os.write(fd, b'{"k": 1}')
+            finally:
+                os.close(fd)
+
+    writer = threading.Thread(target=feed, daemon=True)
+    writer.start()
+    try:
+        assert osr._read_json_dict(fifo, 1024) is None
+    finally:
+        # release the writer if the reader never opened the fifo
+        with contextlib.suppress(OSError):
+            os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+        writer.join(timeout=5)
+
+
+def _classify(tmp_path, report_text, *, vendorset="agy", rc=0, name="r.md", link=False):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(exist_ok=True)
+    if link:
+        target = tmp_path / "real-report.txt"
+        target.write_text(report_text)
+        (run_dir / name).symlink_to(target)
+    else:
+        (run_dir / name).write_text(report_text)
+    return osr.classify_run(osr.CmdResult(rc, "", ""), run_dir, vendorset, MB, HEAD)
+
+
+def test_classify_run_report_size_cap_is_inclusive(tmp_path, monkeypatch):
+    # kills x_classify_run__mutmut_27 (>= instead of > on REPORT_MAX_BYTES)
+    text = make_report()
+    size = len(text.encode("utf-8"))
+    monkeypatch.setattr(osr, "REPORT_MAX_BYTES", size)
+    ok = _classify(tmp_path, text)
+    assert (ok.kind, ok.verdict) == ("final", "approve")
+    monkeypatch.setattr(osr, "REPORT_MAX_BYTES", size - 1)
+    (tmp_path / "b").mkdir()
+    refused = _classify(tmp_path / "b", text)
+    assert (refused.kind, refused.reason) == ("pending", "review-failed")
+
+
+def test_classify_run_refuses_a_symlinked_report(tmp_path):
+    # kills x_classify_run__mutmut_24 (non-regular AND oversize instead of OR)
+    outcome = _classify(tmp_path, make_report(), link=True)
+    assert (outcome.kind, outcome.reason) == ("pending", "review-failed")
+
+
+def test_classify_run_header_without_mode_is_review_failed(tmp_path):
+    # kills x_classify_run__mutmut_51 (verdict None AND mode missing instead of OR)
+    outcome = _classify(tmp_path, make_report(over={"mode": None}))
+    assert (outcome.kind, outcome.reason) == ("pending", "review-failed")
+
+
+def test_classify_run_two_sections_for_one_vendor_are_inconsistent(tmp_path):
+    # kills x_classify_run__mutmut_200 (> 2 instead of > 1): heading count == required count
+    report = make_report(
+        vendorset="agy+codex",
+        sections=[section("agy", AGY_APPROVE), section("agy", AGY_APPROVE)],
+    )
+    outcome = _classify(tmp_path, report, vendorset="agy+codex")
+    assert (outcome.kind, outcome.reason) == ("hold", "review-inconsistent")
+
+
+def test_findings_shape_ok_requires_a_non_empty_findings_list(tmp_path):
+    # kills x__findings_shape_ok__mutmut_22 (>= 0 instead of > 0)
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"findings": [], "reviewed_head": HEAD}))
+    full = tmp_path / "full.json"
+    full.write_text(json.dumps({"findings": [{"slug": "x"}], "reviewed_head": HEAD}))
+    assert osr._findings_shape_ok(empty, HEAD) is False
+    assert osr._findings_shape_ok(full, HEAD) is True
+
+
+@pytest.mark.parametrize("files_reviewed, expected", [(1, True), (0, False)])
+def test_load_record_approve_needs_at_least_one_file_reviewed(h, files_reviewed, expected):
+    # kills x_load_record__mutmut_117 and mutmut_118 (> 1 / >= 2 instead of >= 1)
+    h.run()
+    path = h.record_path()
+    rec = json.loads(path.read_text())
+    rec["files_reviewed"] = files_reviewed
+    path.write_text(json.dumps(rec))
+    loaded = osr.load_record(h.root, repo=SLUG, pr=PR, head_sha=HEAD, vendorset="agy")
+    assert (loaded is not None) is expected
+
+
+def test_find_records_returns_the_newest_record_first(h):
+    # kills x_find_records__mutmut_28 (reverse=False)
+    h.run()
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    h.run()
+    found = osr.find_records(h.root, repo=SLUG, pr=PR, head_sha=HEAD)
+    assert [r["vendors_required"] for r in found] == [["agy", "codex"], ["agy"]]
+
+
+def test_write_raise_pr_bounds_are_inclusive(tmp_path):
+    # kills x_write_raise__mutmut_14, mutmut_15, mutmut_16 (1 <= pr <= MAX_PR_NUMBER)
+    for pr in (1, osr.MAX_PR_NUMBER):
+        path = osr.write_raise(tmp_path, repo=SLUG, pr=pr, head_sha=HEAD, tier="HIGH")
+        assert path.exists()
+    for pr in (0, osr.MAX_PR_NUMBER + 1, True):
+        with pytest.raises(ValueError, match="pr out of range"):
+            osr.write_raise(tmp_path, repo=SLUG, pr=pr, head_sha=HEAD, tier="HIGH")
+
+
+def test_write_raise_with_an_equal_existing_tier_does_not_rewrite(tmp_path):
+    # kills x_write_raise__mutmut_54 (> instead of >= on the existing tier)
+    path = osr.write_raise(tmp_path, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    rec = json.loads(path.read_text())
+    rec["created_at"] = "2000-01-01T00:00:00Z"
+    path.write_text(json.dumps(rec))
+    osr.write_raise(tmp_path, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    assert json.loads(path.read_text())["created_at"] == "2000-01-01T00:00:00Z"
+
+
+def test_run_pr_number_bounds_are_inclusive(h):
+    # kills x_run__mutmut_6, mutmut_7, mutmut_8 (1 <= pr_number <= MAX_PR_NUMBER)
+    deps = h.deps()
+    missing = osr.Deps(lambda *a: None, deps.run_cmd, deps.now, deps.write_audit)
+    for pr in (1, osr.MAX_PR_NUMBER):
+        assert osr.run(pr, config=h.cfg, deps=missing)["reason"] == "pr-not-found"
+    for pr in (0, osr.MAX_PR_NUMBER + 1, True):
+        with pytest.raises(ValueError, match="pr_number must be an int"):
+            osr.run(pr, config=h.cfg, deps=missing)
+
+
+def test_sanitize_truncates_only_above_the_detail_cap():
+    # kills x_sanitize__mutmut_62 (>= instead of >)
+    exact = "a" * osr.DETAIL_MAX_CHARS
+    assert osr.sanitize(exact) == exact
+    over = osr.sanitize("a" * (osr.DETAIL_MAX_CHARS + 1))
+    assert over == "a" * (osr.DETAIL_MAX_CHARS - 1) + "…"
+
+
+def test_detail_of_skips_unusable_values_but_keeps_later_keys():
+    # kills x__detail_of__mutmut_4, mutmut_5 (bool/str handling) and mutmut_6 (continue -> break)
+    item = {"finding": "f", "why": None, "attack_scenario": True, "suggestion": "s", "line": 3}
+    assert osr._detail_of(item) == "finding: f | suggestion: s | line: 3"
+
+
+def test_fp8_fallback_ignores_key_order(monkeypatch):
+    # kills x__fp8__mutmut_10 (sort_keys=False in the fallback fingerprint)
+    def boom(item):
+        raise TypeError("nope")
+
+    monkeypatch.setattr(osr.validation_logic, "fingerprint", boom)
+    assert osr._fp8({"a": 1, "b": 2}) == osr._fp8({"b": 2, "a": 1})
+
+
+def test_build_entries_processes_vendors_after_a_non_blocking_one():
+    # kills x_build_entries__mutmut_5 (continue -> break on a non-request_changes status)
+    statuses = [
+        osr._VendorStatus("agy", "approve"),
+        _status("codex", items=[("high", _finding())]),
+    ]
+    entries = osr.build_entries(statuses, {"a.py"})
+    assert [e["slug"].startswith("sr-codex-") for e in entries] == [True]
+
+
+def test_build_entries_keeps_entries_that_follow_a_duplicate():
+    # kills x_build_entries__mutmut_73 (continue -> break after a dropped duplicate)
+    items = [
+        ("high", _finding(file="a.py")),
+        ("high", _finding(file="a.py")),
+        ("high", _finding(file="a.py", category="other")),
+    ]
+    entries = osr.build_entries([_status(items=items)], {"a.py"})
+    assert len(entries) == 2 and "(+1 more" in entries[0]["summary"]
+
+
+def test_build_entries_exactly_at_the_cap_has_no_overflow_entry():
+    # kills x_build_entries__mutmut_82 (>= instead of > on SR_ENTRY_CAP)
+    items = [("high", _finding(file="a.py", category=f"c{i}")) for i in range(osr.SR_ENTRY_CAP)]
+    entries = osr.build_entries([_status(items=items)], {"a.py"})
+    assert len(entries) == osr.SR_ENTRY_CAP
+    assert all(e["slug"] != "sr-overflow" for e in entries)
+
+
+def test_serialize_findings_is_sorted_and_keeps_non_ascii_literal():
+    # kills x__serialize_findings__mutmut_13 (ensure_ascii) and mutmut_14 (sort_keys)
+    text = osr._serialize_findings([{"path": None, "detail": "é"}], HEAD)
+    assert text == f'{{"findings": [{{"detail": "é", "path": null}}], "reviewed_head": "{HEAD}"}}\n'
+
+
+def test_serialize_findings_budget_is_inclusive_at_both_levels(monkeypatch):
+    # kills x__serialize_findings__mutmut_18, mutmut_35 (< instead of <= budget) and
+    # mutmut_27, mutmut_29, mutmut_30 (500-char detail truncation boundary)
+    entries = [
+        {"slug": "e1", "detail": "a" * 500},
+        {"slug": "e2", "detail": "b" * 501},
+        {"slug": "e3", "detail": "c" * 502},
+        {"slug": "e4", "detail": "d" * 2000},
+    ]
+    trimmed = [
+        {"slug": "e1", "detail": "a" * 500},
+        {"slug": "e2", "detail": "b" * 499 + "…"},
+        {"slug": "e3", "detail": "c" * 499 + "…"},
+        {"slug": "e4", "detail": "d" * 499 + "…"},
+    ]
+    monkeypatch.setattr(osr, "FINDINGS_FILE_BUDGET_BYTES", 10**9)
+    full_text = osr._serialize_findings(entries, HEAD)
+    trimmed_text = osr._serialize_findings(trimmed, HEAD)
+    assert len(trimmed_text.encode()) < len(full_text.encode())
+    monkeypatch.setattr(osr, "FINDINGS_FILE_BUDGET_BYTES", len(full_text.encode()))
+    assert osr._serialize_findings(entries, HEAD) == full_text
+    monkeypatch.setattr(osr, "FINDINGS_FILE_BUDGET_BYTES", len(trimmed_text.encode()))
+    assert osr._serialize_findings(entries, HEAD) == trimmed_text
+
+
+@pytest.mark.parametrize(
+    "detail, expected",
+    [
+        ("binary_not_found", "vendor-unavailable:agy"),
+        ("not_executable", "vendor-unavailable:agy"),
+        ("exec_failed", "vendor-unavailable:agy"),
+        ("something-else", "vendor-error:agy"),
+        (None, "vendor-error:agy"),
+    ],
+)
+def test_detail_token_maps_only_the_unavailable_details(detail, expected):
+    # kills x__detail_token__mutmut_12 (not in instead of in)
+    assert osr._detail_token(detail, "agy") == expected
+
+
+def _vs(*objs):
+    return osr._vendor_status("agy", section("agy", "\n".join(json.dumps(o) for o in objs)))
+
+
+def test_vendor_status_keeps_the_first_request_changes_summary():
+    # kills x__vendor_status__mutmut_119 and mutmut_120 (summary fallback and/or swaps)
+    status = _vs(
+        {"verdict": "request_changes", "summary": "first", "findings": []},
+        {"verdict": "request_changes", "summary": "second", "findings": []},
+    )
+    assert status.status == "request_changes" and status.verdict_detail == "first"
+
+
+def test_vendor_status_an_unknown_verdict_is_not_an_approve():
+    # kills x__vendor_status__mutmut_128 (all_approve = True)
+    assert _vs({"verdict": "maybe", "findings": []}).status == "unparseable"
+
+
+def test_vendor_status_reads_attacks_when_findings_is_absent():
+    # kills x__vendor_status__mutmut_134 (continue -> break on a missing key)
+    status = _vs({"verdict": "request_changes", "attacks": [_finding()]})
+    assert [sev for sev, _ in status.blocking] == ["high"]
+
+
+def test_vendor_status_reads_attacks_after_a_malformed_findings_value():
+    # kills x__vendor_status__mutmut_139 (continue -> break on a non-list)
+    status = _vs({"verdict": "request_changes", "findings": "oops", "attacks": [_finding()]})
+    assert [sev for sev, _ in status.blocking] == ["high"]
+
+
+def test_vendor_status_keeps_items_after_a_non_dict_item():
+    # kills x__vendor_status__mutmut_141 (continue -> break on a non-dict item)
+    status = _vs({"verdict": "request_changes", "findings": ["junk", _finding()]})
+    assert [sev for sev, _ in status.blocking] == ["high"]
+
+
+def test_result_range_needs_both_base_and_head(h):
+    # kills x__result__mutmut_16 (base or head instead of and)
+    ctx = osr._Ctx(config=h.cfg, deps=h.deps(), pr=PR)
+    ctx.head = HEAD
+    assert osr._result(ctx)["range"] is None
+    ctx.head, ctx.base = None, MB
+    assert osr._result(ctx)["range"] is None
+    ctx.head = HEAD
+    assert osr._result(ctx)["range"] == f"{MB}..{HEAD}"
+
+
+def test_result_from_record_prefers_the_record_base(h):
+    # kills x__result_from_record__mutmut_6 (and instead of or)
+    ctx = osr._Ctx(config=h.cfg, deps=h.deps(), pr=PR, slug=SLUG, head=HEAD)
+    ctx.base = "5" * 40
+    rec = {
+        "vendors_required": ["agy"],
+        "verdict": "approve",
+        "status": "final",
+        "head_sha": HEAD,
+        "base_sha": MB,
+    }
+    result = osr._result_from_record(ctx, rec, reused=True)
+    assert ctx.base == MB and result["base_sha"] == MB
+
+
+def test_audit_event_actor_reused_and_unresolved_default(h, monkeypatch):
+    # kills x__audit__mutmut_10 (actor and None) and mutmut_77 (reused True)
+    monkeypatch.setenv("HOS_BOT_LOGIN", "hos-overseer[bot]")
+    h.run()
+    assert h.audits[-1]["actor"] == "hos-overseer[bot]"
+    assert h.audits[-1]["reused"] is False
+    monkeypatch.setenv("HOS_BOT_LOGIN", "")
+    h.reset_calls()
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    h.run()
+    assert h.audits[-1]["actor"] is None
+
+
+def test_a_pending_stuck_hold_records_zero_unresolved_findings(h):
+    # kills x__write_record__mutmut_1 (unresolved default 1)
+    third = _stuck(_stuck_ctx(h))
+    assert third["reason"] == "pending-stuck"
+    assert h.record("agy+codex")["unresolved_findings"] == 0
+
+
+def test_refresh_raise_with_an_equal_tier_changes_nothing(h):
+    # kills x__refresh_raise_locked__mutmut_21 (< instead of <=)
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    ctx = _stuck_ctx(h, vendorset="agy+codex", tier="HIGH")
+    ctx.tier_sources = {"floor": "HIGH", "declared": "HIGH", "raise": None, "defaulted": []}
+    osr._refresh_raise_locked(ctx)
+    assert ctx.tier_sources["raise"] is None
+
+
+def test_refresh_raise_with_a_valid_raise_records_no_raise_invalid(h):
+    # kills x__refresh_raise_locked__mutmut_31 (or instead of and)
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    ctx = _stuck_ctx(h, vendorset="agy", tier="MEDIUM")
+    ctx.tier_sources = {"floor": "MEDIUM", "declared": "MEDIUM", "raise": None, "defaulted": []}
+    osr._refresh_raise_locked(ctx)
+    assert (ctx.tier, ctx.vendorset) == ("HIGH", "agy+codex")
+    assert ctx.tier_sources["raise"] == "HIGH" and ctx.tier_sources["defaulted"] == []
+
+
+def test_count_pending_with_a_base_but_no_vendorset_holds_at_agy_codex(h):
+    # kills x__count_pending_locked__mutmut_33 (or instead of and)
+    third = _stuck(_stuck_ctx(h, base=MB, vendorset=None, tier=None))
+    assert (third["verdict"], third["reason"]) == ("hold", "pending-stuck")
+    assert third["record"] == str(h.record_path("agy+codex"))
+
+
+def test_count_pending_with_no_base_does_not_reuse_a_final_record(h):
+    # kills x__count_pending_locked__mutmut_33 (or instead of and), the other direction
+    assert h.run()["verdict"] == "approve"
+    third = _stuck(_stuck_ctx(h, base=None, vendorset="agy", tier="MEDIUM"))
+    assert (third["verdict"], third["reason"], third["reused"]) == ("hold", "pending-stuck", False)
+
+
+@pytest.mark.parametrize("failing", ["symbolic-ref", "rev-parse", "status"])
+def test_trusted_checkout_is_false_when_any_git_read_fails(h, failing):
+    # kills x__trusted_checkout__mutmut_48 (return True after a failed git read)
+    inner = h.deps()
+
+    def run_cmd(argv, cwd, timeout, env):
+        if failing in argv and argv[0] == "git":
+            return osr.CmdResult(1, "main\n" if failing == "symbolic-ref" else "", "")
+        return inner.run_cmd(argv, cwd, timeout, env)
+
+    deps = osr.Deps(inner.get_pull, run_cmd, inner.now, inner.write_audit)
+    result = osr.run(PR, config=h.cfg, deps=deps)
+    assert result["reason"] == "untrusted-checkout" and h.get_pull_calls == 0
+
+
+@pytest.mark.parametrize("rc, warns", [(0, False), (1, True), (5, True)])
+def test_cleanup_worktree_warns_only_on_a_nonzero_exit(h, capsys, rc, warns):
+    # kills x__cleanup_worktree__mutmut_21 (rc == 0) and mutmut_22 (rc != 1)
+    deps = osr.Deps(
+        lambda *a: None, lambda *a: osr.CmdResult(rc, "", ""), h._now, lambda e, p: None
+    )
+    osr._cleanup_worktree(osr._Ctx(config=h.cfg, deps=deps, pr=PR))
+    err = capsys.readouterr().err
+    assert ("worktree cleanup exited" in err) is warns
+    if warns:
+        assert f"exited {rc}" in err
+
+
+def test_a_tier_below_medium_result_is_not_marked_reused(h):
+    # kills x__review_and_record__mutmut_63 (reused=True on the not-required path)
+    h.set_tier("LOW")
+    result = h.run()
+    assert (result["verdict"], result["vendors"], result["reused"]) == (
+        "not-required",
+        "none",
+        False,
+    )
+
+
+def test_review_fetches_the_worktree_exactly_once(h):
+    # kills x__review_and_record__mutmut_74 (inverted worktree_created test)
+    h.run()
+    assert h.n("worktree") == 1 and h.n("review") == 1
+    h2 = Harness(h.tmp_path, name="repo-fetch")
+    h2.objects = "after-fetch"
+    assert h2.run()["verdict"] == "approve"
+    assert h2.n("worktree") == 1 and h2.n("review") == 1
+
+
+def test_a_fetch_failure_under_the_lock_counts_without_blocking(h):
+    # kills x__review_and_record__mutmut_84 (lock_held=False would stall on our own lock)
+    h.worktree_rc = 3
+    start = time.monotonic()
+    result = h.run()
+    assert result["reason"] == "fetch-failed"
+    assert time.monotonic() - start < 5
+    assert _counter(h) == 1
+
+
+def test_a_run_dir_collision_is_a_state_write_failure(h, monkeypatch):
+    # kills x__review_and_record__mutmut_111 (mkdir exist_ok=True)
+    fixed = datetime(2026, 11, 16, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(osr.secrets, "token_hex", lambda n: "abcdef")
+    name = f"pr{PR}-{HEAD[:12]}-{fixed.strftime('%Y%m%dT%H%M%SZ')}-abcdef"
+    (osr.runs_dir(h.root) / name).mkdir(parents=True)
+    inner = h.deps()
+    deps = osr.Deps(inner.get_pull, inner.run_cmd, lambda: fixed, inner.write_audit)
+    result = osr.run(PR, config=h.cfg, deps=deps)
+    assert (result["verdict"], result["reason"]) == ("pending", "state-write-failed")
+    assert h.n("review") == 0
+
+
+def test_an_approve_record_has_no_findings_file(h):
+    # kills x__review_and_record__mutmut_159 (final OR request_changes)
+    result = h.run()
+    assert result["verdict"] == "approve" and result["findings_file"] is None
+    assert h.record()["findings_file"] is None
+    assert not list(osr.runs_dir(h.root).glob("*/findings.json"))
+
+
+def test_non_dict_and_nameless_labels_are_ignored_but_real_ones_still_hold(h):
+    # kills x__run__mutmut_102 (isinstance(label, dict) or "name" in label)
+    h.pull_override = {
+        "state": "open",
+        "head": {"sha": HEAD},
+        "base": {"sha": BASE_TIP},
+        "labels": ["filename", {"color": "red"}, {"name": "needs-human"}],
+    }
+    result = h.run()
+    assert (result["verdict"], result["reason"]) == ("skipped-held", "held-label")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [],
+        ["run"],
+        ["mark-hold-label", "--head", HEAD, "--applied", "true"],
+        ["mark-hold-label", "--pr", "1", "--applied", "true"],
+        ["mark-hold-label", "--pr", "1", "--head", HEAD],
+    ],
+    ids=["no-command", "run-no-pr", "mark-no-pr", "mark-no-head", "mark-no-applied"],
+)
+def test_parser_requires_the_command_and_its_flags(argv):
+    # kills x__build_parser__mutmut_15, mutmut_34, mutmut_60, mutmut_78 (required=False)
+    with pytest.raises(SystemExit) as info:
+        osr._build_parser().parse_args(argv)
+    assert info.value.code == 2
+
+
+def test_main_output_is_sorted_compact_ascii_json(monkeypatch, capsys):
+    # kills x_main__mutmut_21 (sort_keys=False) and mutmut_24 (ensure_ascii=False)
+    monkeypatch.setattr(osr, "run", lambda *a, **k: {"z": "é", "a": 1})
+    assert osr.main(["run", "--pr", "7"]) == 0
+    assert capsys.readouterr().out == '{"a":1,"z":"\\u00e9"}\n'
