@@ -973,3 +973,60 @@ def test_invalid_cap_raises_before_any_github_call(tmp_path, bad):
     post.assert_not_called()
     run_gh.assert_not_called()
     lock.assert_not_called()
+
+
+# --- mutmut #2384: keyed_flock / _bounce_lock default and message survivors -------
+
+
+def test_keyed_flock_default_repo_root_is_cwd(tmp_path, monkeypatch):
+    # kills keyed_flock default repo_root (mutmut #2384)
+    from hashlib import sha256
+
+    from scripts.automation.lib.merge_authority import keyed_flock
+
+    monkeypatch.chdir(tmp_path)
+    digest = sha256(b"some-key").hexdigest()[:24]
+    with keyed_flock("ns", "some-key", subject="s"):
+        assert (tmp_path / ".claudetmp" / "locks" / f"ns-{digest}.lock").exists()
+
+
+def test_bounce_lock_default_repo_root_is_cwd(tmp_path, monkeypatch):
+    # kills _bounce_lock default repo_root (mutmut #2384)
+    monkeypatch.chdir(tmp_path)
+    with _bounce_lock(OWNER, REPO, "cid-1"):
+        assert _hold(tmp_path).exists()
+
+
+def test_keyed_flock_malformed_namespace_message_names_pattern_and_value(tmp_path):
+    # kills keyed_flock ValueError message mutants (mutmut #2384)
+    from scripts.automation.lib.merge_authority import _LOCK_NAMESPACE_RE, keyed_flock
+
+    with pytest.raises(ValueError) as info:
+        with keyed_flock("Bad NS!", "k", subject="s", repo_root=str(tmp_path)):
+            pass
+    assert str(info.value) == (f"lock namespace must match {_LOCK_NAMESPACE_RE.pattern}: 'Bad NS!'")
+
+
+def test_keyed_flock_flock_oserror_message_has_namespace_errno_and_strerror(tmp_path):
+    # kills keyed_flock flock-OSError message mutants (mutmut #2384)
+    from hashlib import sha256
+
+    from scripts.automation.lib.merge_authority import keyed_flock
+
+    with patch(f"{MA}.fcntl.flock", side_effect=OSError(errno.EBADF, "bad")):
+        with pytest.raises(BounceLockUnavailable) as info:
+            with keyed_flock("ns", "k", subject="s", repo_root=str(tmp_path)):
+                pass
+    msg = str(info.value)
+    digest = sha256(b"k").hexdigest()[:24]
+    lock_path = tmp_path / ".claudetmp" / "locks" / f"ns-{digest}.lock"
+    assert str(lock_path) in msg
+    assert msg.startswith("ns lock ") and "(errno 9): bad" in msg and "ns-" in msg
+
+
+def test_bounce_lock_timeout_message_names_the_cid(tmp_path):
+    # kills _bounce_lock subject=cid (mutmut #2384)
+    with _bounce_lock(OWNER, REPO, "cid-xyz", repo_root=str(tmp_path)):
+        with pytest.raises(BounceLockTimeout, match="bounce lock for cid-xyz not acquired"):
+            with _bounce_lock(OWNER, REPO, "cid-xyz", repo_root=str(tmp_path), timeout=0.1):
+                pass
