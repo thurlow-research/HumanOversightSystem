@@ -9,6 +9,7 @@ Everything lives under pytest's tmp_path.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import multiprocessing
 import os
@@ -1233,6 +1234,174 @@ def test_t27_a_stuck_pending_under_the_lock_returns_only_a_matching_final(h):
         other = _stuck(_stuck_ctx(h, vendorset="agy+codex"))
     assert (other["verdict"], other["reason"], other["reused"]) == ("hold", "pending-stuck", False)
     assert h.record_path().read_bytes() == before
+
+
+# -- T31 raise re-read under the lock (P6, CWE-367) ----------------------------
+
+
+def _write_raise_file(h, tier="HIGH", **changes):
+    path = osr._raise_path(h.root, PR, HEAD)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "schema": 1,
+        "check": osr.CHECK,
+        "repo": SLUG,
+        "pr": PR,
+        "head_sha": HEAD,
+        "tier": tier,
+        **changes,
+    }
+    osr._atomic_write_json(path, rec)
+
+
+def _race(monkeypatch, hook):
+    """Wrap head_lock so `hook` runs once, inside the real lock, as the first acquirer sees it."""
+    real = osr.head_lock
+    fired = []
+
+    @contextlib.contextmanager
+    def racing(*args, **kwargs):
+        with real(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                hook()
+            yield
+
+    monkeypatch.setattr(osr, "head_lock", racing)
+    return fired
+
+
+def _review_tiers(h):
+    return [argv[argv.index("--tier") + 1] for kind, argv in h.calls if kind == "review"]
+
+
+def _assert_floor_and_declared_read_once(h):
+    assert h.n("classifier") == 1
+    assert sum(1 for k, a in h.calls if k == "git" and a[0] == "log") == 1
+
+
+def test_t31a_a_raise_between_r7_and_the_lock_defeats_a_cached_lower_approve(h, monkeypatch):
+    h.set_tier("MEDIUM")
+    assert h.run()["vendors"] == "agy"
+    before = h.record_path("agy").read_bytes()
+    h.reset_calls()
+    fired = _race(monkeypatch, lambda: _write_raise_file(h, "HIGH"))
+    result = h.run()
+    assert fired
+    assert (result["tier"], result["vendors"], result["reused"]) == ("HIGH", "agy+codex", False)
+    assert _review_tiers(h) == ["HIGH"]
+    rec = h.record("agy+codex")
+    assert rec["vendors_required"] == ["agy", "codex"]
+    assert rec["tier_sources"]["raise"] == "HIGH"
+    assert h.record_path("agy").read_bytes() == before
+    _assert_floor_and_declared_read_once(h)
+
+
+def test_t31a_control_without_the_hook_the_cached_record_is_reused(h):
+    h.set_tier("MEDIUM")
+    assert h.run()["vendors"] == "agy"
+    h.reset_calls()
+    result = h.run()
+    assert (result["vendors"], result["reused"]) == ("agy", True)
+    assert h.n("review") == 0
+
+
+@pytest.mark.parametrize("kind", ["schema", "symlink"])
+def test_t31b_an_invalid_raise_that_appears_counts_as_high(h, monkeypatch, kind):
+    h.set_tier("MEDIUM")
+    assert h.run()["vendors"] == "agy"
+    before = h.record_path("agy").read_bytes()
+    h.reset_calls()
+
+    def hook():
+        if kind == "schema":
+            _write_raise_file(h, "HIGH", schema=2)
+        else:
+            target = h.tmp_path / "elsewhere.json"
+            target.write_text("{}")
+            path = osr._raise_path(h.root, PR, HEAD)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(target)
+
+    _race(monkeypatch, hook)
+    result = h.run()
+    assert (result["tier"], result["vendors"], result["reused"]) == ("HIGH", "agy+codex", False)
+    assert _review_tiers(h) == ["HIGH"]
+    sources = h.record("agy+codex")["tier_sources"]
+    assert sources["raise"] is None
+    assert sources["defaulted"].count("raise-invalid") == 1
+    assert h.record_path("agy").read_bytes() == before
+
+
+def test_t31c_low_is_lifted_to_medium(h, monkeypatch):
+    h.set_tier("LOW")
+    _race(monkeypatch, lambda: _write_raise_file(h, "MEDIUM"))
+    result = h.run()
+    assert (result["tier"], result["vendors"]) == ("MEDIUM", "agy")
+    assert _review_tiers(h) == ["MEDIUM"]
+    assert h.record("agy")["status"] == "final"
+    assert not h.record_path("none").exists()
+    _assert_floor_and_declared_read_once(h)
+
+
+def test_t31d_a_raise_never_lowers_and_floor_and_declared_are_not_reread(h, monkeypatch):
+    h.set_tier("HIGH")
+    _race(monkeypatch, lambda: _write_raise_file(h, "MEDIUM"))
+    result = h.run()
+    assert result["tier"] == "HIGH"
+    assert h.record("agy+codex")["tier_sources"]["raise"] is None
+    _assert_floor_and_declared_read_once(h)
+
+
+def test_t31d_a_raise_that_vanishes_leaves_the_r7_values(tmp_path, monkeypatch):
+    h = Harness(tmp_path)
+    h.set_tier("MEDIUM")
+    _write_raise_file(h, "HIGH")
+    _race(monkeypatch, lambda: osr._raise_path(h.root, PR, HEAD).unlink())
+    result = h.run()
+    assert (result["tier"], result["vendors"]) == ("HIGH", "agy+codex")
+    assert h.record("agy+codex")["tier_sources"]["raise"] == "HIGH"
+    _assert_floor_and_declared_read_once(h)
+
+
+def _seeded_stuck(h):
+    h.set_tier("MEDIUM")
+    assert h.run()["vendors"] == "agy"
+    ctx = _stuck_ctx(h, vendorset="agy", tier="MEDIUM")
+    osr._atomic_write_json(
+        osr._pending_path(h.root, PR, HEAD),
+        {
+            "schema": osr.SCHEMA,
+            "check": osr.CHECK,
+            "repo": SLUG,
+            "pr": PR,
+            "head_sha": HEAD,
+            "count": osr.PENDING_STUCK_AT - 1,
+            "last_reason": "review-failed",
+            "updated_at": "2026-11-16T12:00:00Z",
+        },
+    )
+    return ctx
+
+
+def test_t31e_the_stuck_path_after_lock_unavailable_refreshes_the_raise(h, monkeypatch):
+    ctx = _seeded_stuck(h)
+    before = h.record_path("agy").read_bytes()
+    _race(monkeypatch, lambda: _write_raise_file(h, "HIGH"))
+    third = osr._count_pending(ctx, "review-failed", lock_held=False)
+    assert third is not None
+    assert (third["verdict"], third["reason"], third["reused"]) == ("hold", "pending-stuck", False)
+    assert third["tier"] == "HIGH"
+    assert third["record"] == str(h.record_path("agy+codex"))
+    assert h.record_path("agy").read_bytes() == before
+
+
+def test_t31e_control_without_the_hook_the_matching_final_is_returned(h):
+    ctx = _seeded_stuck(h)
+    before = h.record_path("agy").read_bytes()
+    third = osr._count_pending(ctx, "review-failed", lock_held=False)
+    assert third is not None and (third["verdict"], third["reused"]) == ("approve", True)
+    assert h.record_path("agy").read_bytes() == before
 
 
 # -- T30 pending-stuck record matching (revision 3) ---------------------------

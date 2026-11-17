@@ -83,3 +83,23 @@ Tests: tests/automation/test_overseer_second_review.py. Update T12 (4th bullet) 
 
 Run with scripts/oversight/.venv/bin/python -m pytest tests/automation/test_overseer_second_review.py -q, plus black --check and the repo's lint on the two files. Keep coverage of overseer_second_review.py at or above 92%. Self-flag per AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS) in your final report.
 ```
+
+## Revision 3 addendum P6 (2026-11-17)
+
+The final-range second review (codex, high, CWE-367) found that R7 read the raise file outside head_lock. technical-design wrote addendum P6, the architect approved it (with an ADR-2357 AD-9 correction note), and the worker then dispatched the `coder` subagent with this brief (verbatim except for whitespace). A follow-up hand-back: the coder also guarded the refresh against a None tier_sources for the test helper context.
+
+```
+You are implementing addendum P6 of TD-2357-S1a revision 3 (slice S1a of GitHub issue #2357) in the HOS repo at <worker-clone>, on the already-checked-out branch worker-2357-overseer-own-second-review-s1a-261117060501-148083 (HEAD 15d2a5f51). Do NOT create, switch, stash, check out or reset branches. Do NOT edit .claude/agents/*.md, docs/, or prompts/. Do not file issues, post comments or change labels. Do not commit; the worker commits.
+
+Implement exactly the P6 addendum in docs/v0.7.0/TD-2357-S1a-overseer-second-review-runner.md (§0.3 row P6; §5.3 R7/R8 provisional wording and the new R9 step 0; §5.4 single reader `read_raise`; §5.7 step 1 refresh on the lock_held=False path; test T31a-e), no more and no less. It was architect-approved; ADR-2357 carries the matching AD-9 note. Read `git diff HEAD -- docs/` for the exact text.
+
+Finding being fixed (codex, high, CWE-367, verified): in scripts/automation/lib/overseer_second_review.py, R7 `compute_tier` (~line 1453) reads the raise file outside `head_lock` (taken ~1459), while `write_raise` serializes on that lock, so a raise landing between them leaves a stale lower tier/vendorset for R9a reuse or the review.
+
+Summary of the required behaviour (the TD governs):
+- Add `read_raise(...) -> (r_tier, r_invalid)`, the only reader of the raise file. `compute_tier` uses it.
+- Add `_refresh_raise_locked(ctx)`, the first action inside head_lock in R9 before R9a and any lookup, review or write. The candidate is HIGH if the file is invalid, r_tier if valid, None if absent. Only if the candidate is above ctx.tier: lift ctx.tier, recompute ctx.vendorset, set tier_sources["raise"] (for an invalid file: raise null, add "raise-invalid" once to defaulted). Never lower. No subprocess. Floor and declared are not re-read.
+- §5.7: when `_count_pending` takes the lock itself (lock_held=False) and ctx.vendorset is set, run the refresh right after acquiring the lock and before the counter read, so step 4 uses the refreshed vendorset. Do not refresh when the tier is unknown, or when lock_held=True (R9 step 0 already did it).
+- Tests in tests/automation/test_overseer_second_review.py: T31a-e exactly as the TD specifies, simulating the race by patching the module's head_lock to enter the real lock, run a hook that writes the raise with _atomic_write_json, and then yield, each with a no-hook control. Keep the existing tests passing (T4b, T11, T27 and T30 included).
+
+Run scripts/oversight/.venv/bin/python -m pytest tests/automation/test_overseer_second_review.py -q, scripts/oversight/.venv/bin/python -m mypy scripts/automation/lib/overseer_second_review.py (it must be clean, with no casts or type: ignore), and black --check on both files. Keep coverage of overseer_second_review.py at or above 92%. Self-flag per AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS) in your final report.
+```

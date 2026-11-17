@@ -461,6 +461,17 @@ def write_raise(repo_root: Path, *, repo: str, pr: int, head_sha: str, tier: str
 # --------------------------------------------------------------------------- #
 # Tier                                                                        #
 # --------------------------------------------------------------------------- #
+def read_raise(repo_root: Path, *, slug: str, pr: int, head: str) -> tuple[Optional[str], bool]:
+    """The only reader of the raise file: (tier, False) valid, (None, True) invalid, (None, False) absent."""
+    raw = _read_json_dict(_raise_path(repo_root, pr, head), RECORD_MAX_BYTES)
+    if raw is _ABSENT:
+        return None, False
+    if _raise_valid(raw, slug, pr, head):
+        assert isinstance(raw, dict)
+        return raw["tier"], False
+    return None, True
+
+
 def compute_tier(
     repo_root: Path,
     tools_root: Path,
@@ -508,17 +519,13 @@ def compute_tier(
         else:
             defaulted.append("declared-absent")
 
-    raised: Optional[str] = None
+    raised, raise_invalid = read_raise(repo_root, slug=slug, pr=pr, head=head)
     effective = [floor or "HIGH", declared or "HIGH"]
-    raw = _read_json_dict(_raise_path(repo_root, pr, head), RECORD_MAX_BYTES)
-    if raw is not _ABSENT:
-        if _raise_valid(raw, slug, pr, head):
-            assert isinstance(raw, dict)
-            raised = raw["tier"]
-            effective.append(raised)
-        else:
-            defaulted.append("raise-invalid")
-            effective.append("HIGH")
+    if raise_invalid:
+        defaulted.append("raise-invalid")
+        effective.append("HIGH")
+    elif raised is not None:
+        effective.append(raised)
     tier = max(effective, key=TIERS.index)
     return tier, {"floor": floor, "declared": declared, "raise": raised, "defaulted": defaulted}
 
@@ -1128,6 +1135,21 @@ def _read_counter(ctx: _Ctx) -> int:
     return 0
 
 
+def _refresh_raise_locked(ctx: _Ctx) -> None:
+    """Re-read the raise under head_lock and lift the provisional tier; never lowers (TD 5.3 R9 step 0)."""
+    assert ctx.head and ctx.tier is not None
+    r_tier, r_invalid = read_raise(ctx.root, slug=ctx.slug, pr=ctx.pr, head=ctx.head)
+    candidate = "HIGH" if r_invalid else r_tier
+    if candidate is None or TIERS.index(candidate) <= TIERS.index(ctx.tier):
+        return
+    ctx.tier = candidate
+    ctx.vendorset = required_vendorset(candidate)
+    if ctx.tier_sources is not None:
+        ctx.tier_sources["raise"] = r_tier
+        if r_invalid and "raise-invalid" not in ctx.tier_sources["defaulted"]:
+            ctx.tier_sources["defaulted"].append("raise-invalid")
+
+
 def _count_pending_locked(ctx: _Ctx, reason: str) -> Optional[dict]:
     assert ctx.head
     count = _read_counter(ctx) + 1
@@ -1190,6 +1212,8 @@ def _count_pending(ctx: _Ctx, reason: str, *, lock_held: bool) -> Optional[dict]
     assert ctx.head
     try:
         with head_lock(ctx.root, ctx.slug, ctx.pr, ctx.head, COUNTER_LOCK_TIMEOUT_SECONDS):
+            if ctx.vendorset is not None:
+                _refresh_raise_locked(ctx)
             return _count_pending_locked(ctx, reason)
     except (KeyedLockTimeout, KeyedLockUnavailable, OSError) as exc:
         _log(f"WARN pending counter skipped ({type(exc).__name__})")
@@ -1457,6 +1481,7 @@ def _run(ctx: _Ctx, cache_only: bool) -> dict:
 
     try:
         with head_lock(ctx.root, ctx.slug, ctx.pr, head, config.lock_timeout):
+            _refresh_raise_locked(ctx)
             return _review_and_record(ctx, cache_only)
     except KeyedLockTimeout:
         return _result(ctx, verdict="pending", reason="lock-busy")
