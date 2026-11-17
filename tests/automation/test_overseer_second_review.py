@@ -2251,3 +2251,11 @@ def test_s1_authority_codex_gets_a_read_only_sandbox_and_worker_mode_does_not(sh
     )
     assert control.returncode == 0, control.stderr
     assert (sh.tmp_path / "argv-codex").read_text().split() == ["exec"]
+
+
+def test_t30e_a_known_vendor_set_with_no_base_holds_at_that_vendor_set(h):
+    """base unresolved but vendorset known: hold at the known target, no collision probe."""
+    third = _stuck(_stuck_ctx(h, base=None, vendorset="agy", tier="MEDIUM"))
+    assert (third["verdict"], third["reason"], third["reused"]) == ("hold", "pending-stuck", False)
+    assert third["record"] == str(h.record_path("agy"))
+    assert not h.record_path("agy+codex").exists()
