@@ -195,6 +195,7 @@ class Harness:
         self.worktree_rc = 0
         self.worktree_stdout = None
         self.merge_base = MB
+        self.merge_base_rc = 0
         self.floor_rc = 0
         self.floor_out = json.dumps({"tier_floor": "MEDIUM", "evidence": []})
         self.trailers = "AI-Risk: MEDIUM\n"
@@ -292,7 +293,7 @@ class Harness:
             ok = self.objects == "present" or (self.objects == "after-fetch" and self.fetched)
             return osr.CmdResult(0 if ok else 1, "", "")
         if cmd == "merge-base":
-            return osr.CmdResult(0, self.merge_base + "\n", "")
+            return osr.CmdResult(self.merge_base_rc, self.merge_base + "\n", "")
         if cmd == "log":
             return osr.CmdResult(0, self.trailers, "")
         if cmd == "diff":
@@ -906,16 +907,28 @@ def test_t12_a_final_record_resets_the_counter(h):
     assert _counter(h) is None
 
 
-def test_t12_a_stuck_pending_never_overwrites_a_valid_final(h):
+def _stuck_ctx(h, *, base=MB, vendorset="agy+codex", tier="HIGH"):
+    ctx = osr._Ctx(config=h.cfg, deps=h.deps(), pr=PR, slug=SLUG, head=HEAD)
+    ctx.base, ctx.vendorset, ctx.tier = base, vendorset, tier
+    return ctx
+
+
+def _stuck(ctx, reason="review-failed"):
+    """Drive the counter to the threshold; the first two calls must stay silent."""
+    for _ in range(osr.PENDING_STUCK_AT - 1):
+        assert osr._count_pending_locked(ctx, reason) is None
+    return osr._count_pending_locked(ctx, reason)
+
+
+def test_t12_a_stuck_pending_returns_a_final_valid_for_the_current_requirement(h):
     assert h.run()["verdict"] == "approve"
     before = h.record_path().read_bytes()
-    h.objects, h.worktree_rc = "missing", 3
-    h.run()
-    h.run()
-    third = h.run()
+    audits = len(h.audits)
+    third = _stuck(_stuck_ctx(h, vendorset="agy", tier="MEDIUM"))
     assert (third["verdict"], third["reused"]) == ("approve", True)
     assert h.record_path().read_bytes() == before
     assert not h.record_path("agy+codex").exists()
+    assert _counter(h) is None and len(h.audits) == audits
 
 
 # -- T13 - T16 -----------------------------------------------------------------
@@ -1207,6 +1220,159 @@ def test_t27_a_review_failed_pending_counts_without_blocking_on_its_own_lock(tmp
     assert time.monotonic() - started < 2
     assert (result["verdict"], result["reason"]) == ("pending", "review-failed")
     assert _counter(h) == 1
+
+
+def test_t27_a_stuck_pending_under_the_lock_returns_only_a_matching_final(h):
+    assert h.run()["verdict"] == "approve"
+    before = h.record_path().read_bytes()
+    with osr.head_lock(h.root, SLUG, PR, HEAD, 1):
+        third = _stuck(_stuck_ctx(h, vendorset="agy", tier="MEDIUM"))
+    assert (third["verdict"], third["reused"]) == ("approve", True)
+    assert h.record_path().read_bytes() == before
+    with osr.head_lock(h.root, SLUG, PR, HEAD, 1):
+        other = _stuck(_stuck_ctx(h, vendorset="agy+codex"))
+    assert (other["verdict"], other["reason"], other["reused"]) == ("hold", "pending-stuck", False)
+    assert h.record_path().read_bytes() == before
+
+
+# -- T30 pending-stuck record matching (revision 3) ---------------------------
+
+
+def _three_pendings(h, reason):
+    results = [h.run() for _ in range(osr.PENDING_STUCK_AT)]
+    assert [r["reason"] for r in results[:-1]] == [reason] * (osr.PENDING_STUCK_AT - 1)
+    assert all(r["verdict"] == "pending" for r in results[:-1])
+    return results[-1]
+
+
+def test_t30a_a_stale_lower_vendor_set_final_is_never_returned(h):
+    h.set_tier("MEDIUM")
+    assert h.run()["verdict"] == "approve"
+    before = h.record_path("agy").read_bytes()
+    audits = len(h.audits)
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="HIGH")
+    h.review_rc = 127
+    third = _three_pendings(h, "review-failed")
+    assert (third["verdict"], third["reason"], third["reused"]) == ("hold", "pending-stuck", False)
+    assert third["record"] == str(h.record_path("agy+codex"))
+    rec = h.record("agy+codex")
+    assert (rec["status"], rec["tier"], rec["base_sha"]) == ("hold", "HIGH", MB)
+    assert rec["vendors_required"] == ["agy", "codex"]
+    assert h.record_path("agy").read_bytes() == before
+    assert _counter(h) is None and len(h.audits) == audits + 1
+
+
+@pytest.mark.parametrize("tier, vendorset", [("HIGH", "agy+codex"), ("MEDIUM", "agy")])
+def test_t30b_a_stale_base_final_is_replaced_by_the_hold(h, tier, vendorset):
+    h.set_tier(tier)
+    assert h.run()["verdict"] == "approve"
+    assert h.record(vendorset)["base_sha"] == MB
+    h.merge_base = "4" * 40
+    h.review_rc = 127
+    third = _three_pendings(h, "review-failed")
+    assert (third["verdict"], third["reason"]) == ("hold", "pending-stuck")
+    assert third["record"] == str(h.record_path(vendorset))
+    rec = h.record(vendorset)
+    assert (rec["status"], rec["reason"], rec["base_sha"]) == ("hold", "pending-stuck", "4" * 40)
+
+
+def _seed_final(h, kind):
+    h.set_tier("HIGH")
+    if kind == "request_changes":
+        h.reports(
+            "request_changes",
+            over={"unresolved_findings": 1, "blocking_count": 1, "new_blocking_count": 1},
+            sections=lambda vs: [section("agy", _rc()), section("codex", CODEX_APPROVE)],
+        )
+    elif kind == "binary-unreviewed":
+        osr._write_record(
+            _stuck_ctx(h),
+            status="hold",
+            verdict="hold",
+            reason="binary-unreviewed",
+            vendorset="agy+codex",
+        )
+        return
+    assert h.run()["verdict"] == kind
+
+
+@pytest.mark.parametrize("kind", ["approve", "request_changes", "binary-unreviewed"])
+def test_t30c_a_matching_record_is_returned_unchanged(h, kind):
+    _seed_final(h, kind)
+    before = h.record_path("agy+codex").read_bytes()
+    audits = len(h.audits)
+    third = _stuck(_stuck_ctx(h))
+    assert third["reused"] is True and third["base_sha"] == MB
+    assert third["verdict"] == ("hold" if kind == "binary-unreviewed" else kind)
+    assert third["record"] == str(h.record_path("agy+codex"))
+    assert h.record_path("agy+codex").read_bytes() == before
+    assert _counter(h) is None and len(h.audits) == audits
+
+
+def test_t30c_a_base_or_vendor_set_mismatch_holds(h):
+    _seed_final(h, "approve")
+    before = h.record_path("agy+codex").read_bytes()
+    third = _stuck(_stuck_ctx(h, base="5" * 40))
+    assert (third["verdict"], third["reused"]) == ("hold", False)
+    assert h.record("agy+codex")["status"] == "hold"
+    h.record_path("agy+codex").write_bytes(before)
+    third = _stuck(_stuck_ctx(h, vendorset="agy", tier="MEDIUM"))
+    assert (third["verdict"], third["reused"]) == ("hold", False)
+    assert third["record"] == str(h.record_path("agy"))
+    assert h.record_path("agy+codex").read_bytes() == before
+
+
+@pytest.mark.parametrize("path", ["base-unresolved", "fetch-failed"])
+def test_t30d_an_unknown_tier_collision_does_not_overwrite_a_final(h, path, monkeypatch):
+    h.set_tier("HIGH")
+    assert h.run()["verdict"] == "approve"
+    before = h.record_path("agy+codex").read_bytes()
+    audits = len(h.audits)
+    if path == "base-unresolved":
+        h.merge_base_rc = 1
+    else:
+        h.objects, h.worktree_rc = "missing", 3
+    third = _three_pendings(h, path)
+    assert set(third) == set(h.run()) and third["reason"] == "pending-stuck"
+    assert (third["verdict"], third["status"], third["reused"]) == ("hold", "hold", False)
+    for key in ("record", "findings_file", "hold_label_applied", "tier", "vendors"):
+        assert third[key] is None
+    if path == "base-unresolved":
+        assert third["base_sha"] is None
+    assert h.record_path("agy+codex").read_bytes() == before
+    assert _counter(h) == osr.PENDING_STUCK_AT + 1 and len(h.audits) == audits
+    monkeypatch.setattr(osr, "default_config", lambda: h.cfg)
+    argv = ["mark-hold-label", "--pr", str(PR), "--head", HEAD, "--applied", "true"]
+    assert osr.main(argv) == 3
+    assert h.record_path("agy+codex").read_bytes() == before
+
+
+def test_t30e_an_unknown_tier_with_no_collision_reuses_no_final(h):
+    h.set_tier("MEDIUM")
+    assert h.run()["verdict"] == "approve"
+    before = h.record_path("agy").read_bytes()
+    h.merge_base_rc = 1
+    third = _three_pendings(h, "base-unresolved")
+    assert (third["verdict"], third["reason"]) == ("hold", "pending-stuck")
+    assert third["record"] == str(h.record_path("agy+codex"))
+    rec = h.record("agy+codex")
+    assert (rec["tier"], rec["base_sha"]) == (None, None)
+    assert rec["vendors_required"] == ["agy", "codex"]
+    assert h.record_path("agy").read_bytes() == before
+
+
+def test_t30e_a_hold_at_the_target_is_overwritten(h):
+    osr._write_record(
+        _stuck_ctx(h),
+        status="hold",
+        verdict="hold",
+        reason="vendor-timeout:codex",
+        vendorset="agy+codex",
+    )
+    h.merge_base_rc = 1
+    third = _three_pendings(h, "base-unresolved")
+    assert third["reason"] == "pending-stuck"
+    assert h.record("agy+codex")["reason"] == "pending-stuck"
 
 
 # -- T28 header tightening -----------------------------------------------------

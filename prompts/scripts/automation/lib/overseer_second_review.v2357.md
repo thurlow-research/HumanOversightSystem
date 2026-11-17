@@ -62,3 +62,24 @@ When done:
 - Report: files changed, test results (counts), gate results, and self-flag per
   AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS).
 ```
+
+## Revision 3 (2026-11-17, re-adoption cycle)
+
+The cross-vendor second review (agy, high, logic-error) found that TD §5.7 step 4 let the pending-stuck path return a stale under-tier or stale-base final record. technical-design wrote TD revision 3, the architect approved it (with ADR-2357 correction note C1), and the worker then dispatched the `coder` subagent with this brief (verbatim except for whitespace):
+
+```
+You are implementing a revision of slice S1a of GitHub issue #2357 in the HOS repo at <worker-clone>, on the already-checked-out branch worker-2357-overseer-own-second-review-s1a-261117060501-148083. Do NOT create, switch, stash, check out or reset branches. Do NOT edit .claude/agents/*.md, docs/, or prompts/. Do not file issues, post comments or change labels. Do not commit; the worker commits.
+
+Implement exactly TD-2357-S1a revision 3 (docs/v0.7.0/TD-2357-S1a-overseer-second-review-runner.md, §0.3 rev-3 rows P1-P5, §5.7 step 4 branches a-d, §5.8 record-null rule, §5.10 no audit for the non-persisted hold, §7.2 find_records note), no more and no less. The architect approved rev 3; ADR-2357 carries the matching C1 note.
+
+Code: scripts/automation/lib/overseer_second_review.py `_count_pending_locked` (currently ~1131-1160) and whatever it needs (e.g. `_result_from_record` / a result builder for the non-persisted hold with record, findings_file, hold_label_applied, tier and vendors null). Summary of the required behaviour:
+- (a) requirement known (ctx.base and ctx.vendorset both set): `load_record(ctx.root, repo=ctx.slug, pr=ctx.pr, head_sha=ctx.head, base_sha=ctx.base, vendorset=ctx.vendorset)`; if it returns a record R9a would reuse (a final, or a binary-unreviewed hold), delete the counter and return it with reused=True, without rewriting it or writing an audit event. Requirement unknown: never return an existing record. Stop using find_records here.
+- (b) target filename: ctx.vendorset if known, else agy+codex with tier null.
+- (c) requirement unknown and a valid final exists at the agy+codex filename (any base): do not write; return a non-persisted `hold pending-stuck` result; keep the counter; no audit.
+- (d) otherwise write the hold record (overwriting a stale-base final when the requirement is known), delete the counter, audit, return it.
+- Invariant: the stuck path returns approve or not-required only through (a).
+
+Tests: tests/automation/test_overseer_second_review.py. Update T12 (4th bullet) and T27 (4th bullet) and add T30a-e exactly as the TD specifies (stale lower vendorset after write_raise holds with the agy file byte-identical; stale base holds and replaces, incl. MEDIUM -agy variant; matching final returned unchanged with reused=true, counter deleted, no audit, plus request_changes / binary-unreviewed variants and base/vendorset mismatch controls; unknown-tier collision gives the unsaved hold with file byte-identical, count 3 then 4, mark-hold-label exits 3, plus R5 fetch-failed variant; unknown tier no collision writes -agy+codex with tier null, plus overwrite-existing-hold variant).
+
+Run with scripts/oversight/.venv/bin/python -m pytest tests/automation/test_overseer_second_review.py -q, plus black --check and the repo's lint on the two files. Keep coverage of overseer_second_review.py at or above 92%. Self-flag per AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS) in your final report.
+```

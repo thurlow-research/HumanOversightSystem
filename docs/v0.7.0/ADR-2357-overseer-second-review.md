@@ -119,6 +119,8 @@ Every field comes from code and is a closed enum, a 40-hex SHA, or a path under 
 
 **Mechanical `needs-human` on hold.** After the loop, `hos-cron` runs `bash bootstrap/edit_issue.sh --number <N> --add-label needs-human --app overseer` for each new `hold` and writes `hold_label_applied` into the record. If that call fails, it logs a WARN and writes `cycle-osr-hold-label-failed`. The model then applies the label (table above). This makes item 6 mechanical for the pre-model path. The runner itself still has no GitHub side effects (item 7).
 
+> *Correction note (TD-2357-S1a rev 3, architect 2026-11-17).* A `hold` result can carry `record: null`: this is the non-persisted `pending-stuck` hold of TD-2357-S1a §5.7 step 4c. `hos-cron` applies `needs-human` to it as to any new hold. There is no record to write `hold_label_applied` into, so `mark-hold-label` exiting 3 is expected for that line. The model's fallback ("applies `needs-human` itself") is triggered by the `edit_issue.sh` call failing (the `cycle-osr-hold-label-failed` WARN), not by a record field. S1b must carry that outcome to the model in the context block, because the `OSR` line has no `hold_label_applied` field.
+
 **Bounded pending.** The runner counts consecutive `pending` results per `(pr, head)` in `records/pr<N>-<head40>-pending.json`. On the third, it returns `hold reason=pending-stuck`, which is then labelled as above. A PR therefore cannot sit silently unapproved forever.
 
 **Findings file**, written by the runner, never by the model:

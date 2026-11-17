@@ -1146,16 +1146,39 @@ def _count_pending_locked(ctx: _Ctx, reason: str) -> Optional[dict]:
     )
     if count < PENDING_STUCK_AT:
         return None
-    finals = [
-        r
-        for r in find_records(ctx.root, repo=ctx.slug, pr=ctx.pr, head_sha=ctx.head)
-        if r["status"] == "final"
-    ]
-    if finals:
-        return _result_from_record(ctx, finals[0], reused=True)
-    vendorset = ctx.vendorset or "agy+codex"
+    vendorset = ctx.vendorset
+    if ctx.base is not None and vendorset is not None:
+        existing = load_record(
+            ctx.root,
+            repo=ctx.slug,
+            pr=ctx.pr,
+            head_sha=ctx.head,
+            base_sha=ctx.base,
+            vendorset=vendorset,
+        )
+        if existing is not None and (
+            existing["status"] == "final" or existing["reason"] in DETERMINISTIC_HOLDS
+        ):
+            _clear_counter(ctx)
+            return _result_from_record(ctx, existing, reused=True)
+        target = vendorset
+    else:
+        target = vendorset or "agy+codex"
+        if vendorset is None:
+            collision = load_record(
+                ctx.root, repo=ctx.slug, pr=ctx.pr, head_sha=ctx.head, vendorset=target
+            )
+            if collision is not None and collision["status"] == "final":
+                return _result(
+                    ctx,
+                    verdict="hold",
+                    status="hold",
+                    reason="pending-stuck",
+                    tier=None,
+                    vendors=None,
+                )
     rec = _write_record(
-        ctx, status="hold", verdict="hold", reason="pending-stuck", vendorset=vendorset
+        ctx, status="hold", verdict="hold", reason="pending-stuck", vendorset=target
     )
     return _result_from_record(ctx, rec, reused=False)
 
