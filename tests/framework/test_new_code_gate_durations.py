@@ -94,6 +94,25 @@ def test_conftest_writes_durations_only_when_env_set(tmp_path):
     assert list(quiet.glob("*.json")) == [] and not (tmp_path / "durations.json").exists()
 
 
+def test_a_leftover_durations_file_is_removed_before_the_run(tmp_path):
+    out = tmp_path / "durations.json"
+    out.write_text('{"old.py::t": 1}', encoding="utf-8")
+    config = SimpleNamespace(pluginmanager=SimpleNamespace(register=lambda *a: None))
+    os.environ[dw.DURATIONS_ENV] = str(out)
+    try:
+        dw.register_if_requested(config)
+    finally:
+        del os.environ[dw.DURATIONS_ENV]
+    assert not out.exists()
+
+
+def test_run_tests_removes_a_leftover_durations_file_first():
+    lines = RUN_TESTS.read_text(encoding="utf-8").splitlines()
+    rm = next(i for i, ln in enumerate(lines) if ln.strip() == "rm -f test-durations.json")
+    run = next(i for i, ln in enumerate(lines) if " -m pytest tests/" in ln)
+    assert rm < run
+
+
 def test_durations_sum_setup_call_teardown_and_reruns():
     writer = dw.DurationsWriter(Path("unused"))
     for phase_seconds in (0.0004, 0.0012, 0.0004, 1.5):

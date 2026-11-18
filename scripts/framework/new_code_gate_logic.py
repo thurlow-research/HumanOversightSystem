@@ -39,9 +39,12 @@ SCHEMA_PLAN = "new-code-gate-plan/1"
 SCHEMA_FRAGMENT = "new-code-gate-fragment/1"
 
 THRESHOLDS = {"coverage": 80, "mutant_score": 75}
-# Per shard (S-4), measured from the start of the `shard` process; the plan has a shorter one.
+# Per shard (S-4), measured from the job's first step when its start file is usable, else from
+# process start; the plan has a shorter one. Job timeouts are 30 min (shard) and 15 min (plan).
 BUDGET_SECONDS = 1500
 PLAN_BUDGET_SECONDS = 600
+# `meta` refuses a durations file this much older than the coverage data it pairs with (TD 5.20.4).
+DURATIONS_SKEW_SECONDS = 5
 
 PINNED = {
     "mutmut": "3.8.1",

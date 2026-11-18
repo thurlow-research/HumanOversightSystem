@@ -421,7 +421,17 @@ def valid_durations(value: Any) -> bool:
     )
 
 
-def read_durations(path: Path | None) -> tuple[dict[str, int] | None, str | None]:
+def durations_are_stale(durations: Path, coverage_file: Path) -> bool:
+    """True when the durations file predates the coverage data it pairs with, or cannot be dated."""
+    try:
+        return durations.stat().st_mtime < coverage_file.stat().st_mtime - ncg.DURATIONS_SKEW_SECONDS
+    except OSError:
+        return True
+
+
+def read_durations(
+    path: Path | None, coverage_file: Path | None = None
+) -> tuple[dict[str, int] | None, str | None]:
     """The `tests` job's per-test milliseconds, clamped, or None and the reason they are unusable.
 
     A missing or unparseable file is not an error of `meta`: `tests` keeps its meaning, and
@@ -435,6 +445,8 @@ def read_durations(path: Path | None) -> tuple[dict[str, int] | None, str | None
         return None, "durations file missing or unreadable"
     except ValueError:
         return None, "durations file is not valid JSON"
+    if coverage_file is not None and durations_are_stale(path, coverage_file):
+        return None, "durations file is older than the coverage data"
     if not valid_durations(raw):
         return None, "durations file is not a JSON object of node ID to non-negative integer"
     return {k: ncs.clamp_ms(v) for k, v in raw.items()}, None
@@ -447,7 +459,7 @@ def build_meta(
     if not coverage_file.is_file():
         raise GateError(f"coverage file missing: {coverage_file.name}")
     dirty = tree_dirty_paths(repo)
-    seconds, reason = read_durations(durations)
+    seconds, reason = read_durations(durations, coverage_file)
     sidecar = {
         "schema": ncg.SCHEMA_META,
         "head_sha": rev_parse(repo, "HEAD"),
@@ -927,6 +939,7 @@ def require_regular_inputs(opts: PlanOptions) -> None:
 
 def build_context(opts: PlanOptions, runner: Runner, clock: Clock) -> Context:
     ctx = Context(opts, runner, clock, ncg.PLAN_BUDGET_SECONDS)
+    ctx.deadline -= setup_seconds(opts.job_start_file, clock)
     message = ncg.check_pins(opts.installed)
     if message is None:
         require_regular_inputs(opts)
@@ -1549,6 +1562,17 @@ def job_start_seconds(path: Path | None) -> int | None:
     return int(text) if text.isascii() and text.isdigit() else None
 
 
+def setup_seconds(path: Path | None, clock: Clock) -> int:
+    """Seconds the job spent before this process started, for the budget deadline (SH-11).
+
+    A missing or garbled file, or a start in the future, counts as zero: the budget then runs
+    from process start and is never extended. A start so old the budget is gone fails closed
+    as a timeout.
+    """
+    start = job_start_seconds(path)
+    return 0 if start is None else max(0, clock.epoch() - start)
+
+
 def job_seconds(path: Path | None, clock: Clock) -> int | None:
     """This process's finish time minus the job's start time: display data, never an error (SH-11)."""
     start = job_start_seconds(path)
@@ -1931,7 +1955,7 @@ def run_shard(opts: ShardOptions, runner: Runner, clock: Clock) -> tuple[dict[st
     try:
         plan_doc = load_shard_plan(opts)
         ctx = Context(opts, runner, clock, ncg.BUDGET_SECONDS)
-        ctx.deadline = t0 + ncg.BUDGET_SECONDS
+        ctx.deadline = t0 + ncg.BUDGET_SECONDS - setup_seconds(opts.job_start_file, clock)
         ctx.label = f"shard {opts.index} of {plan_doc['N']}"
         ctx.modes = tracked_modes(opts.repo, opts.gated_sha)
         ctx.tracked = list(ctx.modes)

@@ -4423,6 +4423,54 @@ def test_shard_deadline_runs_from_process_start_not_from_plan_load(rig, monkeypa
     assert runner.calls_for("mutmut_run") == []
 
 
+def test_budget_deadline_is_measured_from_job_start(rig, tmp_path):
+    """SH-DEADLINE-JOB: setup time before the process starts is charged to the budget."""
+    runner, plan, plan_dir = staged_plan(rig)
+    start = tmp_path / "job-start"
+    ctxs = []
+    real = gate.Context
+
+    class Spy(real):
+        def __init__(self, *args):
+            super().__init__(*args)
+            ctxs.append(self)
+
+    old = gate.Context
+    gate.Context = Spy
+    try:
+        for content, setup in (("4700", 300), ("4999999999", 0), ("junk", 0), (None, 0)):
+            if content is not None:
+                start.write_text(content, encoding="utf-8")
+            else:
+                start.unlink(missing_ok=True)
+            ctxs.clear()
+            shard_in(rig, runner, plan_dir, job_start_file=start)
+            assert ctxs[0].deadline == 1000.0 + ncg.BUDGET_SECONDS - setup
+    finally:
+        gate.Context = old
+
+
+def test_shard_times_out_when_setup_already_spent_the_budget(rig, tmp_path):
+    """A start file older than the budget fails closed as a timeout before any mutmut run."""
+    runner, plan, plan_dir = staged_plan(rig)
+    start = tmp_path / "job-start"
+    start.write_text(str(5000 - ncg.BUDGET_SECONDS - 1), encoding="utf-8")
+    fragment, code = shard_in(rig, runner, plan_dir, job_start_file=start)
+    assert fragment["status"] == "timeout" and code == 0
+    assert runner.calls_for("mutmut_run") == []
+
+
+def test_plan_deadline_is_measured_from_job_start(rig, tmp_path):
+    runner = sized_rig(rig, tests=1)
+    start = tmp_path / "job-start"
+    start.write_text("4800", encoding="utf-8")
+    ctx = gate.build_context(
+        rig.options(job_start_file=start), runner, FakeClock()
+    )
+    assert ctx.deadline == 1000.0 + ncg.PLAN_BUDGET_SECONDS - 200
+    assert ncg.PLAN_BUDGET_SECONDS + 300 <= 15 * 60 and ncg.BUDGET_SECONDS + 300 <= 30 * 60
+
+
 def test_job_seconds_null_on_missing_or_garbage_start_file(rig, tmp_path):
     """SH-JOBTIME: a bad start file changes nothing but `job_seconds`."""
     runner, plan, plan_dir = staged_plan(rig)
@@ -4490,3 +4538,24 @@ def test_meta_records_null_when_durations_missing_then_plan_fails(rig, monkeypat
             rig.options(meta_path=meta, coverage_file=rig.tmp / ".coverage"), runner, FakeClock()
         )
         assert code == 3 and plan_doc["internal_errors"][0]["message"] == gate.MSG_NO_DURATIONS
+
+
+def test_meta_rejects_durations_older_than_the_coverage_data(rig, monkeypatch):
+    """SH-DUR-STALE: a leftover durations file is never paired with newer coverage data."""
+    sized_rig(rig, tests=1)
+    monkeypatch.chdir(rig.root)
+    monkeypatch.setenv("COVERAGE_CORE", "ctrace")
+    meta = rig.root / "coverage-meta.json"
+    cov = rig.tmp / ".coverage"
+    durations = rig.tmp / "durations.json"
+    durations.write_text('{"t.py::a": 5}', encoding="utf-8")
+    argv = ["meta", "--coverage-file", str(cov), "--out", str(meta), "--durations", str(durations)]
+    now = cov.stat().st_mtime
+    os.utime(durations, (now - 3600, now - 3600))
+    assert gate.main(argv) == 0
+    sidecar = json.loads(meta.read_text(encoding="utf-8"))
+    assert sidecar["test_seconds_ms"] is None
+    assert sidecar["test_seconds_reason"] == "durations file is older than the coverage data"
+    os.utime(durations, (now, now))
+    assert gate.main(argv) == 0
+    assert json.loads(meta.read_text(encoding="utf-8"))["test_seconds_ms"] == {"t.py::a": 5}

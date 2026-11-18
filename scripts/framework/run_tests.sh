@@ -83,6 +83,9 @@ if ! $MUTATION_ONLY; then
 
     # #2304 (AD-14): tests/conftest.py writes each test's wall time here, in milliseconds,
     # for the shard planner. A plain assignment on this one command, nothing conditional.
+    # A leftover file from an earlier run is removed first, so a run that dies before the
+    # writer runs cannot pair its coverage data with old timings.
+    rm -f test-durations.json
     HOS_TEST_DURATIONS_OUT=test-durations.json "$VENV_PYTHON" -m pytest tests/ \
         --reruns 1 \
         --cov=scripts/oversight \

@@ -37,6 +37,18 @@ def write_durations(path: Path, seconds: dict[str, float]) -> None:
         raise
 
 
+def discard_stale(path: Path) -> None:
+    """Remove a durations file an earlier run left, so a file at `path` always comes from this run.
+
+    A run that dies before `pytest_sessionfinish` then leaves no file, and `meta` records the
+    durations as missing (fail closed) instead of pairing the new coverage data with old timings.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"stale test durations not removed from {path}: {exc}", file=sys.stderr)
+
+
 class DurationsWriter:
     def __init__(self, out: Path) -> None:
         self.out = out
@@ -55,6 +67,6 @@ class DurationsWriter:
 def register_if_requested(config: pytest.Config) -> None:
     out = os.environ.get(DURATIONS_ENV)
     if out:
-        config.pluginmanager.register(
-            DurationsWriter(Path(os.path.abspath(out))), "hos-test-durations"
-        )
+        path = Path(os.path.abspath(out))
+        discard_stale(path)
+        config.pluginmanager.register(DurationsWriter(path), "hos-test-durations")
