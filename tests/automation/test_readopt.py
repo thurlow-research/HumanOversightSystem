@@ -3824,3 +3824,120 @@ def test_reap_orphans_shallow_dry_run_warns_and_previews(repo, capsys):
     assert rc == 0
     assert any(ln.startswith("WARN: shallow clone") and "dry run" in ln for ln in out)
     assert any(ln.startswith("WOULD-REAP branch=worker-30-x") for ln in out)
+
+
+# --- #2314 mutation hardening: exact WARN texts and carried causes ---------------------------
+
+
+def test_prune_archive_exception_warn_carries_sanitized_cause(attempts, capsys):
+    run = _raising_git(
+        attempts, _archive_update_ref("worker-20-mid"), OSError("disk exploded\nKEEP forged")
+    )
+    readopt.prune_attempts(attempts, 20, git=run)
+    out = capsys.readouterr().out
+    warns = [ln for ln in out.splitlines() if ln.startswith("WARN: archive of 'worker-20-mid'")]
+    assert warns == ["WARN: archive of 'worker-20-mid' raised: disk exploded KEEP forged"]
+
+
+def test_prune_archive_failure_with_runner_lacking_first_error_prints_no_cause(attempts, capsys):
+    real = _failing_archive_git(attempts, "worker-20-old")
+
+    def run(args):  # a plain callable: no ``first_error`` attribute at all
+        return real(args)
+
+    failed: list = []
+    readopt.prune_attempts(attempts, 20, git=run, archive_failed=failed)
+    out = capsys.readouterr().out
+    assert failed == ["worker-20-old"]
+    assert "reason=archive-failed" in out
+    assert "WARN: archive of" not in out
+
+
+def test_prune_shallow_warn_text_depends_on_dry_run(attempts, capsys):
+    readopt.prune_attempts(attempts, 20, git=_shallow_git(attempts), dry_run=True)
+    dry = capsys.readouterr().out.splitlines()
+    assert "WARN: shallow clone — ancestry checks are unreliable; dry run continues" in dry
+    assert not any("refuses to delete" in ln for ln in dry)
+    readopt.prune_attempts(attempts, 20, git=_shallow_git(attempts))
+    real = capsys.readouterr().out.splitlines()
+    assert not any("ancestry checks are unreliable" in ln for ln in real)
+
+
+def test_reap_orphans_shallow_warn_text_is_exact_per_mode(repo, capsys):
+    d2_branch(repo)
+    reap(repo, issues={30: "closed"}, git=_shallow_git(repo), dry_run=True)
+    dry = lines_of(capsys)
+    assert "WARN: shallow clone — reap-orphans refuses to delete; dry run continues" in dry
+    reap(repo, issues={30: "closed"}, git=_shallow_git(repo))
+    real = lines_of(capsys)
+    assert "WARN: shallow clone — reap-orphans refuses to delete; nothing deleted" in real
+
+
+def test_reap_local_archive_exception_warn_carries_cause_and_keeps(repo, capsys):
+    d2_branch(repo)
+    rc = reap(
+        repo,
+        issues={30: "closed"},
+        git=_raising_git(repo, _archive_update_ref("worker-30-x"), OSError("disk exploded")),
+    )
+    out = lines_of(capsys)
+    assert rc == 0
+    assert "WARN: archive of worker-30-x raised: disk exploded" in out
+    assert "worker-30-x" in branches(repo)
+
+
+def _remote_d2_reap(repo, **kwargs):
+    deleted: list = []
+
+    def rdelete(items):
+        deleted.extend(items)
+        return {b: True for b, _ in items}
+
+    rc = reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=rdelete,
+        remote_archive=lambda items: {b: True for b, _ in items},
+        **kwargs,
+    )
+    return rc, deleted
+
+
+def _remote_only_d2_branch(repo):
+    tip = make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    push_branch(repo, "worker-30-x")
+    git(repo, "branch", "-D", "worker-30-x")
+    return tip
+
+
+def test_reap_remote_local_copy_exception_warn_carries_cause(repo, capsys):
+    tip = _remote_only_d2_branch(repo)
+    rc, deleted = _remote_d2_reap(
+        repo, git=_raising_git(repo, _archive_update_ref("worker-30-x"), OSError("disk exploded"))
+    )
+    out = lines_of(capsys)
+    assert rc == 0
+    assert deleted == [("worker-30-x", tip)]
+    assert "WARN: local archive ref not written for worker-30-x: disk exploded" in out
+
+
+def test_reap_remote_local_copy_false_warns_without_cause(repo, capsys, monkeypatch):
+    tip = _remote_only_d2_branch(repo)
+    monkeypatch.setattr(readopt, "_write_local_archive", lambda g, b, t: False)
+    rc, deleted = _remote_d2_reap(repo)
+    out = lines_of(capsys)
+    assert rc == 0
+    assert deleted == [("worker-30-x", tip)]
+    assert "WARN: local archive ref not written for worker-30-x" in out
+
+
+def test_reap_remote_local_copy_written_prints_no_warn(repo, capsys):
+    tip = _remote_only_d2_branch(repo)
+    rc, deleted = _remote_d2_reap(repo)
+    out = lines_of(capsys)
+    assert rc == 0
+    assert deleted == [("worker-30-x", tip)]
+    assert git(repo, "rev-parse", f"refs/archive/reap/worker-30-x@{tip[:12]}") == tip
+    assert not any(ln.startswith("WARN: local archive ref not written") for ln in out)
