@@ -3001,3 +3001,183 @@ def test_k4_unloadable_guard_module_fails_closed(monkeypatch, tmp_path):
     msg = "cannot be checked for closing references: closing_keywords.py could not be loaded"
     assert f"disclosure {msg}" in disc(make_handoff())["errors"]
     assert f"V9: {CALLERS_H}: {msg}" in validate(make_trace(STEP, BASE, HEAD, FILES))["errors"]
+
+
+# ---------------------------------------------------------------------------
+# Mutation-survivor pins for _stderr_line and _table_block_errors (#2214).
+# Each test names the behaviour it pins; the mutants it kills are the mutmut
+# ones in these two helpers (see the unit-test sign-off for the measured scores).
+# ---------------------------------------------------------------------------
+
+_C = "## Callers / readers checked"
+_I = "## Items dep-mapper left untraced"
+_START_END = 'table row must start and end with "|"'
+_TB_NO_DELIM = "callers table has no delimiter row matching its header"
+_BEFORE_AFTER = (
+    "table must have a blank line or section heading before it and a blank line after it"
+)
+_NOT_UNDER_CALLERS = f'the table must be the copied callers table, under "{_C}"'
+
+
+def tbe(lines, kind_d, mode="disclosure", s=0, e=None):
+    return sm._table_block_errors(lines, s, len(lines) if e is None else e, kind_d, mode)
+
+
+def _stderr(raw: bytes) -> str:
+    return sm._stderr_line(SimpleNamespace(stderr=raw))
+
+
+def test_stderr_line_empty_stderr_gives_empty_string():
+    assert _stderr(b"") == ""
+    assert _stderr(b" \n\t\n  \n") == ""
+
+
+def test_stderr_line_returns_first_non_blank_line_stripped():
+    assert _stderr(b"\n   \n  fatal: bad thing  \nsecond line\n") == "fatal: bad thing"
+
+
+def test_stderr_line_is_capped_at_exactly_200_chars():
+    assert _stderr(b"x" * 250) == "x" * 200
+    assert len(_stderr(b"y" * 201)) == 200
+    assert _stderr(b"z" * 200) == "z" * 200
+
+
+def test_stderr_line_replaces_undecodable_bytes_instead_of_raising():
+    assert _stderr(b"bad \xff byte") == "bad � byte"
+
+
+GOOD = [_C, "", "| A | B |", "|---|---|", "| x | y |", "", _I, "", "- item"]
+
+
+def test_table_block_well_formed_disclosure_table_has_no_errors():
+    assert tbe(GOOD, [2, 3, 4]) == []
+
+
+def test_table_block_two_char_row_is_valid_but_one_char_row_is_not():
+    two = [_C, "", "| A |", "|---|", "||", ""]
+    assert tbe(two, [2, 3, 4]) == []
+    one = [_C, "", "| A |", "|---|", "|", ""]
+    assert tbe(one, [2, 3, 4]) == [(5, _START_END)]
+
+
+def test_table_block_header_and_delimiter_only_table_is_valid():
+    assert tbe([_C, "", "| A |", "|---|", ""], [2, 3]) == []
+
+
+def test_table_block_trailing_spaces_are_ignored_on_every_line():
+    lines = [_C + "  ", "| A | B |  ", "|---|---|  ", "| x | y |  ", "  "]
+    assert tbe(lines, [1, 2, 3]) == []
+    lines2 = [_C + "  ", "", "| A | B |  ", "|---|---|  ", "| x | y |  ", "   "]
+    assert tbe(lines2, [2, 3, 4]) == []
+
+
+def test_table_block_trailing_tab_is_not_stripped_from_a_data_row():
+    lines = [_C, "", "| A |", "|---|", "| x |\t", ""]
+    assert tbe(lines, [2, 3, 4]) == [
+        (5, _START_END),
+        (5, "table row has 2 cells, header has 1"),
+    ]
+
+
+def test_table_block_trailing_tab_is_not_stripped_from_the_header():
+    lines = [_C, "", "| A |\t", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [
+        (3, _START_END),
+        (None, _TB_NO_DELIM),
+        (5, "table row has 1 cells, header has 2"),
+    ]
+
+
+def test_table_block_trailing_tab_is_not_stripped_from_the_delimiter():
+    lines = [_C, "", "| A |", "|---|\t", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [(4, _START_END), (None, _TB_NO_DELIM)]
+
+
+def test_table_block_tab_only_line_after_the_table_is_not_blank():
+    lines = [_C, "", "| A |", "|---|", "| x |", "\t"]
+    assert tbe(lines, [2, 3, 4]) == [(6, _BEFORE_AFTER)]
+
+
+def test_table_block_tab_only_line_before_the_table_is_not_blank():
+    lines = [_C, "\t", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [(3, _BEFORE_AFTER)]
+
+
+def test_table_block_callers_heading_with_trailing_tab_is_not_the_heading():
+    lines = [_C + "\t", "", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [(3, _NOT_UNDER_CALLERS)]
+
+
+def test_table_block_trailing_x_is_not_stripped_from_a_data_row():
+    lines = [_C, "", "| A |", "|---|", "| x |X", ""]
+    assert tbe(lines, [2, 3, 4]) == [
+        (5, _START_END),
+        (5, "table row has 2 cells, header has 1"),
+    ]
+
+
+def test_table_block_trailing_x_is_not_stripped_from_the_header():
+    lines = [_C, "", "| A |X", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [
+        (3, _START_END),
+        (None, _TB_NO_DELIM),
+        (5, "table row has 1 cells, header has 2"),
+    ]
+
+
+def test_table_block_trailing_x_is_not_stripped_from_the_delimiter():
+    lines = [_C, "", "| A |", "|---|X", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [(4, _START_END), (None, _TB_NO_DELIM)]
+
+
+def test_table_block_line_after_the_table_that_ends_in_x_is_not_blank():
+    lines = [_C, "", "| A |", "|---|", "| x |", "X"]
+    assert tbe(lines, [2, 3, 4]) == [(6, _BEFORE_AFTER)]
+
+
+def test_table_block_line_before_the_table_that_ends_in_x_is_not_a_heading():
+    lines = [_C + "X", "| A |", "|---|", "| x |", ""]
+    out = tbe(lines, [1, 2, 3])
+    assert (2, _BEFORE_AFTER) in out
+
+
+def test_table_block_callers_heading_ending_in_x_is_not_the_heading():
+    lines = [_C + "X", "", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4]) == [(3, _NOT_UNDER_CALLERS)]
+
+
+def test_table_block_callers_heading_before_the_section_start_is_not_found():
+    lines = [_C, "", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [2, 3, 4], s=2, e=6) == [(3, _NOT_UNDER_CALLERS)]
+
+
+def test_table_block_table_at_end_of_input_needs_no_trailing_blank_line():
+    assert tbe([_C, "", "| A |", "|---|", "| x |"], [2, 3, 4]) == []
+
+
+def test_table_block_head_at_index_zero_has_no_line_before_it():
+    lines = ["| A |", "|---|", "| x |", ""]
+    out = tbe(lines, [0, 1, 2])
+    assert (1, _BEFORE_AFTER) in out
+
+
+def test_table_block_head_at_index_one_after_a_blank_line_is_valid():
+    lines = ["", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [1, 2, 3], mode="callers") == []
+
+
+def test_table_block_prose_before_a_table_in_disclosure_is_rejected_even_at_section_start():
+    lines = ["prose line", "| A |", "|---|", "| x |", ""]
+    out = tbe(lines, [1, 2, 3], s=1, e=5)
+    assert (2, _BEFORE_AFTER) in out
+
+
+def test_table_block_callers_mode_table_may_directly_follow_the_section_start_line():
+    lines = ["prose line", "| A |", "|---|", "| x |", ""]
+    assert tbe(lines, [1, 2, 3], mode="callers", s=1, e=5) == []
+
+
+def test_table_block_callers_mode_prose_before_a_later_table_is_rejected():
+    lines = ["", "prose line", "| A |", "|---|", "| x |", ""]
+    out = tbe(lines, [2, 3, 4], mode="callers", s=0, e=6)
+    assert (3, _BEFORE_AFTER) in out
