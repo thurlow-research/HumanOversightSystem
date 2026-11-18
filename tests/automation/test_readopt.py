@@ -3513,3 +3513,129 @@ def test_make_git_first_error_ignores_warning_only_stderr(repo: Path, tmp_path: 
     finally:
         os.environ["PATH"] = old
     assert run.first_error == ""  # type: ignore[attr-defined]
+
+
+# --- #2314 round 2: archive-failure paths, ancestry-error handling, escaping ---------------
+
+
+def _failing_archive_git(repo: Path, fail_branch: str, cause: str = "fatal: boom"):
+    """Real git runner whose archive-ref ``update-ref`` (create-only, 4 args) fails for
+    ``fail_branch`` and records ``cause`` as ``first_error``."""
+    real = readopt.make_git(repo)
+
+    def run(args):
+        if args[0] == "update-ref" and len(args) == 4 and f"/{fail_branch}@" in args[1]:
+            run.first_error = cause  # type: ignore[attr-defined]
+            return 128, ""
+        return real(args)
+
+    run.first_error = ""  # type: ignore[attr-defined]
+    return run
+
+
+def test_prune_archive_failure_prints_sanitized_cause_warn(attempts, capsys):
+    run = _failing_archive_git(attempts, "worker-20-old", "fatal: boom\x1b[31m\nKEEP forged")
+    readopt.prune_attempts(attempts, 20, git=run)
+    out = capsys.readouterr().out
+    warns = [ln for ln in out.splitlines() if ln.startswith("WARN: archive of 'worker-20-old'")]
+    assert len(warns) == 1
+    assert "failed: fatal: boom" in warns[0]
+    # newline injection is collapsed (_one_line); the forged text stays on the WARN line
+    assert not any(ln.startswith("KEEP forged") for ln in out.splitlines())
+    assert "boom\x1b[31m KEEP forged" in warns[0]
+
+
+def test_prune_archive_failure_without_cause_prints_no_warn(attempts, capsys):
+    run = _failing_archive_git(attempts, "worker-20-old", cause="")
+    readopt.prune_attempts(attempts, 20, git=run)
+    out = capsys.readouterr().out
+    assert "reason=archive-failed" in out
+    assert "WARN: archive of" not in out
+
+
+def test_prune_archive_failure_does_not_touch_remote_but_others_proceed(attempts, capsys):
+    tips = {b: git(attempts, "rev-parse", b) for b in ("worker-20-old", "worker-20-mid")}
+    deleted_remote: list = []
+
+    def rdel(items):
+        deleted_remote.extend(items)
+        return {b: True for b, _ in items}
+
+    failed: list = []
+    deleted = readopt.prune_attempts(
+        attempts,
+        20,
+        git=_failing_archive_git(attempts, "worker-20-old"),
+        remote_heads=lambda pat: list(tips.items()),
+        remote_delete=rdel,
+        open_pr=_no_open_pr,
+        slug=SLUG,
+        archive_failed=failed,
+    )
+    out = capsys.readouterr().out
+    assert deleted == ["worker-20-mid"]
+    assert failed == ["worker-20-old"]
+    assert deleted_remote == [("worker-20-mid", tips["worker-20-mid"])]
+    assert "worker-20-old" in branches(attempts)
+    assert "worker-20-mid" not in branches(attempts)
+    assert (
+        "worker-20-old where=remote" not in out and "branch=worker-20-old where=remote" not in out
+    )
+    assert git(attempts, "for-each-ref", "refs/archive/reap/worker-20-old*") == ""
+
+
+def test_prune_cli_exits_3_yet_deletes_the_archivable_branch(attempts, monkeypatch):
+    real = readopt._write_local_archive
+    monkeypatch.setattr(
+        readopt,
+        "_write_local_archive",
+        lambda g, b, t: False if b == "worker-20-old" else real(g, b, t),
+    )
+    rc = readopt.main(["--repo", str(attempts), "prune-attempts", "--issue", "20"])
+    assert rc == 3
+    assert "worker-20-old" in branches(attempts)
+    assert "worker-20-mid" not in branches(attempts)
+
+
+def test_tip_on_base_only_rc_zero_means_landed():
+    for rc, expected in ((0, True), (1, False), (128, False)):
+        assert readopt._tip_on_base(lambda a, rc=rc: (rc, ""), "a" * 40, "origin/main") is expected
+
+
+def test_prune_unreadable_ancestry_is_treated_as_not_landed_and_archived(attempts, capsys):
+    real = readopt.make_git(attempts)
+
+    def run(args):
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return 128, ""
+        return real(args)
+
+    run.first_error = ""  # type: ignore[attr-defined]
+    tip = git(attempts, "rev-parse", "worker-20-old")
+    readopt.prune_attempts(attempts, 20, git=run)
+    assert git(attempts, "rev-parse", f"refs/archive/reap/worker-20-old@{tip[:12]}") == tip
+    assert "worker-20-old" not in branches(attempts)
+
+
+def test_prune_archive_failure_without_collector_does_not_crash(attempts, capsys):
+    deleted = readopt.prune_attempts(
+        attempts, 20, git=_failing_archive_git(attempts, "worker-20-old")
+    )
+    assert "worker-20-old" not in deleted
+    assert "worker-20-old" in branches(attempts)
+
+
+def test_prune_dry_run_archive_field_is_escaped(repo, capsys):
+    make_dated_branch(repo, "worker-40-é", "2026-01-01T00:00:00Z")
+    make_dated_branch(repo, "worker-40-new", "2026-03-01T00:00:00Z")
+    tip = git(repo, "rev-parse", "worker-40-é")
+    readopt.prune_attempts(repo, 40, dry_run=True)
+    assert (
+        f"archive=refs%2Farchive%2Freap%2Fworker-40-%C3%A9%40{tip[:12]}" in capsys.readouterr().out
+    )
+
+
+def test_fmt_archive_field_exact_escaped_output():
+    d = readopt._Decision(readopt._Ref("b", "local", "a" * 40), True, "issue-closed")
+    line = readopt._fmt("WOULD-REAP", d, archive="refs/archive/x\x1b[31m y")
+    assert line.endswith(" archive=refs%2Farchive%2Fx%1B%5B31m%20y")

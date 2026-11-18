@@ -4342,6 +4342,21 @@ class TestOverseerBranchHygiene:
         (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
         assert (fail["branch"], fail["where"], fail["tip"]) == ("worker-6-y", "local", SHA7)
 
+    def test_h6_archive_failed_with_pr_remote_and_malformed_archived(self, cron):
+        self._stubs(
+            cron,
+            out=(
+                f"KEEP branch=worker-8-r reason=archive-failed where=remote pr=#8 tip={SHA7}\n"
+                f"ARCHIVED branch=worker-9-b where=local ref=refs/archive/reap/x@abc tip=short\n"
+                f"KEEP branch=worker-9-c reason=archive-failed where=local tip={SHA7}0\n"
+            ),
+        )
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "could not archive worker-8-r" in r.stdout
+        (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
+        assert (fail["branch"], fail["where"], fail["tip"]) == ("worker-8-r", "remote", SHA7)
+        assert cron.audit_records("cycle-branch-reap-archived") == []
+
     def test_h7_dry_run_writes_one_summary_audit_event(self, cron):
         out = (
             f"WOULD-REAP branch=pr-7-review reason=review-pr-done where=local pr=#7 tip={SHA7}\n"
