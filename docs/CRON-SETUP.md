@@ -303,6 +303,8 @@ branches; audit-record branches are never touched, and remote heads are never re
 | `on` | Deletes, with one `cycle-branch-reap` (or `cycle-branch-reap-failed`) event per branch. |
 
 Any other value is treated as `off` with a WARN and a `cycle-branch-reap-config-invalid` event.
+In a shallow clone (ancestry is unreliable) a real run refuses to delete: `reap-orphans` prints a
+WARN and exits 2 (`aborted=1`); a dry run only WARNs (#2314).
 
 **Enable procedure.** (1) Leave the default `dry-run` and review the first dry run in the
 cycle log and the `cycle-branch-reap-dry-run` event (`would_reap`, `items=<branch>:<reason>,...`).

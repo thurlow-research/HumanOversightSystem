@@ -3639,3 +3639,188 @@ def test_fmt_archive_field_exact_escaped_output():
     d = readopt._Decision(readopt._Ref("b", "local", "a" * 40), True, "issue-closed")
     line = readopt._fmt("WOULD-REAP", d, archive="refs/archive/x\x1b[31m y")
     assert line.endswith(" archive=refs%2Farchive%2Fx%1B%5B31m%20y")
+
+
+# --- #2314 round 3: exception-safe archive writes, shallow-clone refusal ---------------------
+
+
+def _raising_git(repo: Path, matches, exc=None):
+    """Real git runner that raises ``exc`` for every call ``matches(args)`` accepts."""
+    real = readopt.make_git(repo)
+    exc = exc or subprocess.TimeoutExpired("git", 1)
+
+    def run(args):
+        if matches(args):
+            raise exc
+        return real(args)
+
+    run.first_error = ""  # type: ignore[attr-defined]
+    return run
+
+
+def _archive_update_ref(branch):
+    return lambda a: a[0] == "update-ref" and len(a) == 4 and f"/{branch}@" in a[1]
+
+
+def _shallow_git(repo: Path, answer=(0, "true")):
+    real = readopt.make_git(repo)
+
+    def run(args):
+        if list(args) == ["rev-parse", "--is-shallow-repository"]:
+            return answer
+        return real(args)
+
+    run.first_error = ""  # type: ignore[attr-defined]
+    return run
+
+
+def test_prune_archive_write_exception_keeps_branch_and_continues(attempts, capsys):
+    run = _raising_git(attempts, _archive_update_ref("worker-20-mid"))
+    failed: list = []
+    deleted = readopt.prune_attempts(attempts, 20, git=run, archive_failed=failed)
+    out = capsys.readouterr().out
+    tip = git(attempts, "rev-parse", "worker-20-mid")
+    assert deleted == ["worker-20-old"]
+    assert failed == ["worker-20-mid"]
+    assert "worker-20-mid" in branches(attempts)
+    assert f"KEEP branch=worker-20-mid reason=archive-failed where=local tip={tip}" in out
+    assert "WARN: archive of 'worker-20-mid' raised:" in out
+    assert "DELETED branch=worker-20-old" in out
+
+
+def test_prune_ancestry_exception_keeps_every_branch(attempts, capsys):
+    run = _raising_git(attempts, lambda a: a[:2] == ["merge-base", "--is-ancestor"], OSError("x"))
+    failed: list = []
+    deleted = readopt.prune_attempts(attempts, 20, git=run, archive_failed=failed)
+    out = capsys.readouterr().out
+    assert deleted == []
+    assert sorted(failed) == ["worker-20-mid", "worker-20-old"]
+    assert {"worker-20-old", "worker-20-mid"} <= branches(attempts)
+    assert out.count("reason=archive-failed where=local") == 2
+    assert out.count("WARN: archive of") == 2
+
+
+def test_prune_cli_exits_3_on_archive_exception(attempts, monkeypatch):
+    run = _raising_git(attempts, _archive_update_ref("worker-20-old"))
+    monkeypatch.setattr(readopt, "make_git", lambda repo: run)
+    assert readopt.main(["--repo", str(attempts), "prune-attempts", "--issue", "20"]) == 3
+    assert "worker-20-old" in branches(attempts)
+    assert "worker-20-mid" not in branches(attempts)
+
+
+def test_reap_remote_archive_ok_but_local_copy_raises_still_deletes_remote(repo, capsys):
+    tip = make_branch(repo, "worker-30-x", "a.txt", "unlanded\n")
+    push_branch(repo, "worker-30-x")
+    git(repo, "branch", "-D", "worker-30-x")
+    deleted: list = []
+
+    def rdelete(items):
+        deleted.extend(items)
+        return {b: True for b, _ in items}
+
+    rc = reap(
+        repo,
+        issues={30: "closed"},
+        do_local=False,
+        remote_heads=recording_heads(repo, []),
+        remote_delete=rdelete,
+        remote_archive=lambda items: {b: True for b, _ in items},
+        git=_raising_git(repo, _archive_update_ref("worker-30-x")),
+    )
+    out = lines_of(capsys)
+    assert rc == 0
+    assert deleted == [("worker-30-x", tip)]
+    assert any(ln.startswith("WARN: local archive ref not written for worker-30-x:") for ln in out)
+    assert any(ln.startswith("REAPED branch=worker-30-x") for ln in out)
+
+
+def test_reap_local_archive_exception_keeps_branch(repo, capsys):
+    d2_branch(repo)
+    rc = reap(
+        repo,
+        issues={30: "closed"},
+        git=_raising_git(repo, _archive_update_ref("worker-30-x")),
+    )
+    out = lines_of(capsys)
+    assert rc == 0
+    assert "worker-30-x" in branches(repo)
+    assert any("KEEP branch=worker-30-x reason=archive-failed" in ln for ln in out)
+    assert any(ln.startswith("WARN: archive of worker-30-x raised:") for ln in out)
+    assert not any(ln.startswith("REAPED") for ln in out)
+
+
+def test_is_shallow_only_false_output_with_rc_0_is_full_clone():
+    cases = [((0, "false"), False), ((0, "true"), True), ((128, "false"), True), ((0, ""), True)]
+    for answer, expected in cases:
+        assert readopt._is_shallow(lambda a, answer=answer: answer) is expected
+
+
+def test_is_shallow_exception_fails_closed():
+    def boom(args):
+        raise OSError("no git")
+
+    assert readopt._is_shallow(boom) is True
+
+
+def test_is_shallow_false_on_real_full_clone(repo):
+    assert readopt._is_shallow(readopt.make_git(repo)) is False
+
+
+@pytest.mark.parametrize("answer", [(0, "true"), (128, "")])
+def test_prune_shallow_or_unknown_deletes_nothing(attempts, capsys, answer):
+    failed: list = []
+    deleted = readopt.prune_attempts(
+        attempts, 20, git=_shallow_git(attempts, answer), archive_failed=failed
+    )
+    out = capsys.readouterr().out
+    assert deleted == []
+    assert sorted(failed) == ["worker-20-mid", "worker-20-old"]
+    assert {"worker-20-old", "worker-20-mid", "worker-20-new"} <= branches(attempts)
+    assert "WARN: shallow clone — prune-attempts refuses to delete; keeping all 2 attempt(s)" in out
+    tip = git(attempts, "rev-parse", "worker-20-old")
+    assert f"KEEP branch=worker-20-old reason=shallow-clone where=local tip={tip}" in out
+    assert git(attempts, "for-each-ref", "refs/archive/") == ""
+    assert "DELETED" not in out
+
+
+def test_prune_shallow_cli_exits_3(attempts, monkeypatch):
+    run = _shallow_git(attempts)
+    monkeypatch.setattr(readopt, "make_git", lambda repo: run)
+    assert readopt.main(["--repo", str(attempts), "prune-attempts", "--issue", "20"]) == 3
+    assert {"worker-20-old", "worker-20-mid"} <= branches(attempts)
+
+
+def test_prune_shallow_dry_run_warns_and_previews(attempts, capsys):
+    deleted = readopt.prune_attempts(attempts, 20, git=_shallow_git(attempts), dry_run=True)
+    out = capsys.readouterr().out
+    assert "WARN: shallow clone" in out
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-old"]
+    assert "WOULD-DELETE branch=worker-20-old" in out
+    assert "reason=shallow-clone" not in out
+
+
+def test_prune_full_clone_unchanged_by_shallow_check(attempts, capsys):
+    deleted = readopt.prune_attempts(attempts, 20, git=_shallow_git(attempts, (0, "false")))
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-old"]
+    assert "shallow" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", [(0, "true"), (128, "")])
+def test_reap_orphans_shallow_refuses_with_exit_2_and_deletes_nothing(repo, capsys, answer):
+    d2_branch(repo)
+    rc = reap(repo, issues={30: "closed"}, git=_shallow_git(repo, answer))
+    out = lines_of(capsys)
+    assert rc == 2
+    assert "worker-30-x" in branches(repo)
+    assert any(ln.startswith("WARN: shallow clone — reap-orphans refuses") for ln in out)
+    assert out[-1].startswith("SUMMARY") and "aborted=1" in out[-1]
+    assert git(repo, "for-each-ref", "refs/archive/") == ""
+
+
+def test_reap_orphans_shallow_dry_run_warns_and_previews(repo, capsys):
+    d2_branch(repo)
+    rc = reap(repo, issues={30: "closed"}, git=_shallow_git(repo), dry_run=True)
+    out = lines_of(capsys)
+    assert rc == 0
+    assert any(ln.startswith("WARN: shallow clone") and "dry run" in ln for ln in out)
+    assert any(ln.startswith("WOULD-REAP branch=worker-30-x") for ln in out)
