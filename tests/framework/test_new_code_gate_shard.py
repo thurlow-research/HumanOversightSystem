@@ -1346,3 +1346,24 @@ def test_a_timeout_keeps_the_shard_time_reasons_of_the_files_other_complete_shar
     rec = file_of(records, "scripts/framework/b.py")
     assert rec["mutation_reason"] == "timeout"
     assert {"mutation_timeout", "path_loaded_module"} <= {r["code"] for r in rec["fail_reasons"]}
+
+
+def test_a_timed_out_holders_own_reason_is_in_the_union_once_with_the_merges_timeout():
+    """SH-UNION (ADR-2304 2i D-3): a timeout fragment's recorded reason is kept, not dropped."""
+    heavy, _ = heavy_and_light()
+    path = "scripts/framework/b.py"
+    holders = [
+        i
+        for i, shard in enumerate(heavy["assignment"], 1)
+        if any(m["path"] == path for m in shard["members"])
+    ]
+    frags = fragment_set(heavy)
+    late = fragment(heavy, holders[0], status="timeout")
+    late["timeout"] = {"phase": "mutmut_run", "file": path, "message": "x"}
+    entry = next(e for e in late["files"] if e["path"] == path)
+    entry["fail_reasons"] = [{"code": "path_loaded_module", "message": "loaded"}]
+    frags[f"new-code-fragment-{holders[0]}-of-{heavy['N']}"] = rehash(late)
+    records, _ = do_merge(heavy, frags)
+    reasons = [r["code"] for r in file_of(records, path)["fail_reasons"]]
+    assert reasons.count("mutation_timeout") == 1
+    assert reasons.count("path_loaded_module") == 1

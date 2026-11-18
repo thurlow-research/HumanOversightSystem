@@ -836,7 +836,7 @@ def _shard_reasons(fm: FileMerge) -> list[dict[str, str]]:
     found = []
     for index in fm.holders:
         entry = fm.entries.get(index)
-        if entry is not None and fm.docs[index]["status"] == "complete":
+        if entry is not None and fm.docs[index]["status"] in ("complete", "timeout"):
             found.extend(
                 {"code": r["code"], "message": ncg.bound_text(r["message"], ncg.MAX_MESSAGE_CHARS)}
                 for r in entry["fail_reasons"]

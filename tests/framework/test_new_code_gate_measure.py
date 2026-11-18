@@ -4423,7 +4423,7 @@ def test_shard_deadline_runs_from_process_start_not_from_plan_load(rig, monkeypa
     assert runner.calls_for("mutmut_run") == []
 
 
-def test_budget_deadline_is_measured_from_job_start(rig, tmp_path):
+def test_budget_deadline_is_measured_from_job_start(rig, tmp_path, monkeypatch):
     """SH-DEADLINE-JOB: setup time before the process starts is charged to the budget."""
     runner, plan, plan_dir = staged_plan(rig)
     start = tmp_path / "job-start"
@@ -4435,19 +4435,25 @@ def test_budget_deadline_is_measured_from_job_start(rig, tmp_path):
             super().__init__(*args)
             ctxs.append(self)
 
-    old = gate.Context
-    gate.Context = Spy
-    try:
-        for content, setup in (("4700", 300), ("4999999999", 0), ("junk", 0), (None, 0)):
-            if content is not None:
-                start.write_text(content, encoding="utf-8")
-            else:
-                start.unlink(missing_ok=True)
-            ctxs.clear()
-            shard_in(rig, runner, plan_dir, job_start_file=start)
-            assert ctxs[0].deadline == 1000.0 + ncg.BUDGET_SECONDS - setup
-    finally:
-        gate.Context = old
+    monkeypatch.setattr(gate, "Context", Spy)
+    for content, setup in (("4700", 300), ("4999999999", 0), ("junk", 0), (None, 0)):
+        if content is not None:
+            start.write_text(content, encoding="utf-8")
+        else:
+            start.unlink(missing_ok=True)
+        ctxs.clear()
+        shard_in(rig, runner, plan_dir, job_start_file=start)
+        assert ctxs[0].deadline == 1000.0 + ncg.BUDGET_SECONDS - setup
+
+
+def test_setup_seconds_is_zero_for_unreadable_or_oversized_start_files(tmp_path):
+    start = tmp_path / "job-start"
+    clock = FakeClock()
+    for raw in (b"\xff\xfe\x80", b"9" * 5000, b"9" * 13):
+        start.write_bytes(raw)
+        assert gate.setup_seconds(start, clock) == 0
+    start.write_bytes(b"4990\n")
+    assert gate.setup_seconds(start, clock) == 10
 
 
 def test_shard_times_out_when_setup_already_spent_the_budget(rig, tmp_path):
@@ -4460,15 +4466,39 @@ def test_shard_times_out_when_setup_already_spent_the_budget(rig, tmp_path):
     assert runner.calls_for("mutmut_run") == []
 
 
-def test_plan_deadline_is_measured_from_job_start(rig, tmp_path):
+def test_plan_deadline_is_measured_from_job_start(rig, tmp_path, monkeypatch):
     runner = sized_rig(rig, tests=1)
     start = tmp_path / "job-start"
     start.write_text("4800", encoding="utf-8")
-    ctx = gate.build_context(
-        rig.options(job_start_file=start), runner, FakeClock()
-    )
-    assert ctx.deadline == 1000.0 + ncg.PLAN_BUDGET_SECONDS - 200
+    ctxs = []
+    real = gate.Context
+
+    class Spy(real):
+        def __init__(self, *args):
+            super().__init__(*args)
+            ctxs.append(self)
+
+    monkeypatch.setattr(gate, "Context", Spy)
+    gate.plan(rig.options(job_start_file=start), runner, FakeClock())
+    assert ctxs[0].deadline == 1000.0 + ncg.PLAN_BUDGET_SECONDS - 200
     assert ncg.PLAN_BUDGET_SECONDS + 300 <= 15 * 60 and ncg.BUDGET_SECONDS + 300 <= 30 * 60
+
+
+def test_timeout_messages_state_the_setup_charged_only_when_there_was_setup(rig, tmp_path):
+    """ADR-2304 2i D-1(b): a slow setup is named; with no setup the wording is unchanged."""
+    runner, plan, plan_dir = staged_plan(rig)
+    start = tmp_path / "job-start"
+    start.write_text(str(5000 - ncg.BUDGET_SECONDS - 1), encoding="utf-8")
+    fragment, _ = shard_in(rig, runner, plan_dir, job_start_file=start)
+    message = fragment["timeout"]["message"]
+    assert f"{ncg.BUDGET_SECONDS + 1}s of job setup was charged to the budget" in message
+    fragment, _ = shard_in(rig, runner, plan_dir, job_start_file=tmp_path / "absent")
+    assert fragment["status"] == "complete" and fragment["timeout"] is None
+    ctx = gate.Context(rig.options(), runner, FakeClock(), 10)
+    assert ctx.lead("plan budget exhausted; split the PR") == "plan budget exhausted; split the PR"
+    ctx.charge_setup(42)
+    assert ctx.lead("lead") == "lead (42s of job setup was charged to the budget)"
+    assert ctx.deadline == 1000.0 + 10 - 42
 
 
 def test_job_seconds_null_on_missing_or_garbage_start_file(rig, tmp_path):

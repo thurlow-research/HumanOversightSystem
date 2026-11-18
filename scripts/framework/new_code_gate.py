@@ -321,6 +321,7 @@ class Context:
         self.runner = runner
         self.clock = clock
         self.deadline = clock.monotonic() + budget_seconds
+        self.setup_seconds = 0
         self.label = ""
         self.durations: dict[str, int] = {}
         self.gated_sha = opts.gated_sha
@@ -335,6 +336,17 @@ class Context:
         self.phase_seconds: dict[str, float] = {}
         self.expired_phase = ""
         self.expired_file = ""
+
+    def charge_setup(self, seconds: int) -> None:
+        """Charge the job's pre-process setup time to this phase's budget (ADR-2304 2i D-1)."""
+        self.setup_seconds = seconds
+        self.deadline -= seconds
+
+    def lead(self, text: str) -> str:
+        """`text`, plus the setup seconds charged to the budget when there were any (D-1(b))."""
+        if self.setup_seconds <= 0:
+            return text
+        return f"{text} ({self.setup_seconds}s of job setup was charged to the budget)"
 
     def spend_phase(self, phase: str, since: float) -> None:
         elapsed = self.clock.monotonic() - since
@@ -937,9 +949,9 @@ def require_regular_inputs(opts: PlanOptions) -> None:
             raise GateError("coverage data missing contexts")
 
 
-def build_context(opts: PlanOptions, runner: Runner, clock: Clock) -> Context:
+def build_context(opts: PlanOptions, runner: Runner, clock: Clock, setup: int = 0) -> Context:
     ctx = Context(opts, runner, clock, ncg.PLAN_BUDGET_SECONDS)
-    ctx.deadline -= setup_seconds(opts.job_start_file, clock)
+    ctx.charge_setup(setup)
     message = ncg.check_pins(opts.installed)
     if message is None:
         require_regular_inputs(opts)
@@ -1551,15 +1563,20 @@ def guarded(ctx: Context, work: FileRun, step: Any) -> None:
     release_if_done(ctx, work)
 
 
+# An epoch second has 10 digits; the cap keeps int() clear of its digit-count limit.
+JOB_START_MAX_DIGITS = 12
+
+
 def job_start_seconds(path: Path | None) -> int | None:
     """The epoch second a job's first step wrote, or None when the file is missing or not a number (SH-11)."""
     if path is None:
         return None
     try:
         text = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, ValueError):
         return None
-    return int(text) if text.isascii() and text.isdigit() else None
+    ok = text.isascii() and text.isdigit() and len(text) <= JOB_START_MAX_DIGITS
+    return int(text) if ok else None
 
 
 def setup_seconds(path: Path | None, clock: Clock) -> int:
@@ -1648,7 +1665,7 @@ def plan_timeout_message(ctx: Context, works: Sequence[FileRun]) -> str:
     if ctx.expired_file:
         where += f" of {ctx.expired_file}"
     seconds = {w.path: (w.record["seconds"], w.workspace_seconds) for w in works}
-    return ncg.timeout_message(ctx.phase_seconds, seconds, where, ncg.MSG_PLAN_TIMEOUT)
+    return ncg.timeout_message(ctx.phase_seconds, seconds, where, ctx.lead(ncg.MSG_PLAN_TIMEOUT))
 
 
 def plan_files(ctx: Context) -> list[FileRun]:
@@ -1758,6 +1775,7 @@ def plan(opts: PlanOptions, runner: Runner, clock: Clock) -> tuple[dict[str, Any
     """The cheap phase once, then the cost, N and the assignment. Exit 0 when the plan is complete, else 3."""
     started_at = clock.utc_iso()
     t0 = clock.monotonic()
+    setup = setup_seconds(opts.job_start_file, clock)
     ctx: Context | None = None
     works: list[FileRun] = []
     errors: list[dict[str, Any]] = []
@@ -1766,7 +1784,7 @@ def plan(opts: PlanOptions, runner: Runner, clock: Clock) -> tuple[dict[str, Any
     else:
         try:
             # The plan's workspaces are throwaway; --keep-workspace keeps the shards' only.
-            ctx = build_context(opts._replace(keep_workspace=False), runner, clock)
+            ctx = build_context(opts._replace(keep_workspace=False), runner, clock, setup)
             works = plan_files(ctx)
             cost_files(ctx, works)
             errors = list(ctx.internal_errors)
@@ -1906,7 +1924,7 @@ def fragment_entry(work: FileRun, errored: set[str]) -> dict[str, Any]:
 def shard_timeout(ctx: Context, works: Sequence[FileRun]) -> dict[str, str]:
     where = ctx.expired_phase or "an unrecorded phase"
     seconds = {w.path: (w.record["seconds"], w.workspace_seconds) for w in works}
-    text = ncg.timeout_message(ctx.phase_seconds, seconds, where, f"{ctx.label} overran its budget")
+    text = ncg.timeout_message(ctx.phase_seconds, seconds, where, ctx.lead(f"{ctx.label} overran its budget"))
     return {
         "phase": ctx.expired_phase,
         "file": ctx.expired_file,
@@ -1947,6 +1965,7 @@ def run_shard(opts: ShardOptions, runner: Runner, clock: Clock) -> tuple[dict[st
     """Mutate this shard's assigned mutants. Exit 0 for a complete or timed-out fragment, 3 on an internal error."""
     started_at = clock.utc_iso()
     t0 = clock.monotonic()
+    setup = setup_seconds(opts.job_start_file, clock)
     plan_doc: dict[str, Any] | None = None
     ctx: Context | None = None
     works: list[FileRun] = []
@@ -1955,7 +1974,8 @@ def run_shard(opts: ShardOptions, runner: Runner, clock: Clock) -> tuple[dict[st
     try:
         plan_doc = load_shard_plan(opts)
         ctx = Context(opts, runner, clock, ncg.BUDGET_SECONDS)
-        ctx.deadline = t0 + ncg.BUDGET_SECONDS - setup_seconds(opts.job_start_file, clock)
+        ctx.deadline = t0 + ncg.BUDGET_SECONDS
+        ctx.charge_setup(setup)
         ctx.label = f"shard {opts.index} of {plan_doc['N']}"
         ctx.modes = tracked_modes(opts.repo, opts.gated_sha)
         ctx.tracked = list(ctx.modes)
