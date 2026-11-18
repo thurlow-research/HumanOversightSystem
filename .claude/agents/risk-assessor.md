@@ -128,8 +128,11 @@ For steps at HIGH or CRITICAL, also invoke:
 
 2. **dep-mapper** subagent — blast radius and fan-in for changed files.
    **Check its `Data confidence` field.** If `LOW` (the generic dep-mapper detected framework wiring it could not trace):
-   - If `SUSPENDED: dep-mapper` is in `contract/gate-suspension.md` → treat the blast-radius report as limited-coverage: note in the inspection brief "blast-radius analysis used generic patterns (dep-mapper suspended) — reviewer should manually assess framework-wiring impact." Do not block.
-   - If NOT suspended → this is a **blocking finding**: the blast-radius input is known unreliable at HIGH+. **Record it in the `blocking_findings:` section of your output (#204)** so it has a consumer — the oversight-evaluator fails compliance on any unresolved blocking finding, which is what actually stops the PR. Escalate to human: either install a stack-specific dep-mapper override, or suspend dep-mapper to proceed with acknowledged limited coverage. Do not silently use the incomplete report. (Before #204 this finding had no consumer — the evaluator had no rule that a blocking finding must stop the PR, so it could be under-reported and still pass Phase-1 compliance.)
+   - It is **always** a blocking finding: the blast-radius input is known unreliable at HIGH+. **Record it in the `blocking_findings:` section of your output (#204)** so it has a consumer — the oversight-evaluator fails compliance on any unresolved blocking finding, which is what actually stops the PR. (Before #204 this finding had no consumer — the evaluator had no rule that a blocking finding must stop the PR, so it could be under-reported and still pass Phase-1 compliance.) A suspension changes the finding's **resolution**, never whether it is recorded.
+   - Run `python3 scripts/oversight/suspension_manager.py --suspension-status dep-mapper`. Only exit 0 (`STATUS=active`) counts as suspended; every other exit (absent, expired, malformed, unknown) means **not** suspended. Do not read `contract/gate-suspension.md` by eye — a time-boxed line can be present yet expired.
+   - **Active, and the effective human gate does not fire** (validated tier is not CRITICAL and the step's `human_gate_required` is not true) → record `resolution: suspended: dep-mapper (trace: .claudetmp/oversight/step{N}-dep-mapper-trace.md)`. Ask the session to run **dep-mapper in manual-trace mode** (see `dep-mapper.md`) and write its output to exactly that path. Note in the inspection brief: "blast-radius analysis used generic patterns (dep-mapper LOW, suspended with manual trace) — reviewer should check the trace's callers table." The evaluator and pre-PR readiness re-check the suspension, the trace, and the PR-body disclosure; a missing or invalid trace keeps the step blocked.
+   - **Any other status, or the effective human gate fires** → `resolution: unresolved`, naming the status in the description. Escalate to human: either install a stack-specific dep-mapper override, or authorize a suspension. Do not silently use the incomplete report.
+   - Never write `resolution: resolved: …` for a `source: dep-mapper` finding — the evaluator fails it (only `unresolved`, `escalated: <artifact>`, or `suspended: …` are valid for dep-mapper).
 3. **risk-historian** subagent — historical bug density and git churn
 
 At CRITICAL, also read:
@@ -232,7 +235,13 @@ blocking_findings:
   - id: {short-kebab-id}
     source: {dep-mapper | risk-assessor | validator-name}
     description: {one sentence: what is unreliable/blocking and why}
-    resolution: unresolved        # unresolved | resolved: {how} | escalated: {artifact path}
+    resolution: unresolved        # unresolved | resolved: {how} | escalated: {artifact path} | suspended: {gate} (trace: {path})
+  # Example — dep-mapper LOW under an active suspension (#2214). Valid only for
+  # source: dep-mapper, and never on a CRITICAL / human_gate_required step:
+  #   - id: dep-mapper-low
+  #     source: dep-mapper
+  #     description: generic dep-mapper could not trace framework wiring (Data confidence: LOW)
+  #     resolution: suspended: dep-mapper (trace: .claudetmp/oversight/step{N}-dep-mapper-trace.md)
 ```
 
 - `base_sha`/`head_sha` MUST equal the range you assessed (the evaluator cross-checks

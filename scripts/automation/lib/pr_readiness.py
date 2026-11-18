@@ -56,6 +56,7 @@ Exit 0 = PASS, 1 = FAIL, 2 = operational error (bad arguments/environment).
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -124,6 +125,12 @@ def _evaluation_glob(step: Union[str, int]) -> str:
 
 def _panel_context_path(step: Union[str, int]) -> str:
     return f".claudetmp/oversight/step{step}-panel-context.md"
+
+
+_SUSPENSION_MANAGER_PATH = (
+    Path(__file__).resolve().parents[2] / "oversight" / "suspension_manager.py"
+)
+_suspension_manager_module = None
 
 
 def _handoff_path(step: Union[str, int]) -> str:
@@ -679,6 +686,88 @@ def _check_handoff_artifacts(repo_root: Path, step: Union[str, int]) -> CheckRes
     return CheckResult("REQ-W-14", True, "panel-context.md and handoff.md present")
 
 
+def _load_suspension_manager():
+    """Load scripts/oversight/suspension_manager.py by file path (cached)."""
+    global _suspension_manager_module
+    if _suspension_manager_module is None:
+        spec = importlib.util.spec_from_file_location(
+            "hos_suspension_manager", _SUSPENSION_MANAGER_PATH
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _suspension_manager_module = mod
+    return _suspension_manager_module
+
+
+def _check_dep_mapper_suspension(
+    repo_root: Path,
+    manifest_path: Path,
+    step: Union[str, int],
+    base_sha: str,
+    head_sha: str,
+    risk_tier: str,
+) -> CheckResult:
+    """REQ-W-18 (#2214): a `suspended:` dep-mapper LOW resolution must be fully valid.
+
+    Calls check_suspended_resolutions with NO today / issue_state / read_text
+    override, so the production clock and live GitHub read are the only path.
+    """
+    try:
+        sm = _load_suspension_manager()
+    except Exception as exc:  # fail closed
+        return CheckResult("REQ-W-18", False, f"cannot load suspension_manager: {exc}")
+    risk_text = _read_text(repo_root / _RISK_ASSESSMENT_PATH)
+    if risk_text is None:
+        return CheckResult(
+            "REQ-W-18", True, "not applicable; REQ-W-04 owns risk-assessment absence"
+        )
+    if not sm.suspension_applies(risk_text):
+        return CheckResult("REQ-W-18", True, "no suspended dep-mapper resolution")
+    if not (sm.is_full_sha(base_sha) and sm.is_full_sha(head_sha)):
+        return CheckResult(
+            "REQ-W-18",
+            False,
+            f"base/head must be full 40-hex SHAs, got {base_sha!r}..{head_sha!r}",
+        )
+    changed = sm.changed_files_in_range(base_sha, head_sha, repo_root)
+    if changed is None:
+        return CheckResult("REQ-W-18", False, f"git diff --name-only {base_sha}..{head_sha} failed")
+    main = sm.read_default_branch_suspension(repo_root)
+    res = sm.check_suspended_resolutions(
+        risk_text,
+        str(step),
+        base_sha,
+        head_sha,
+        risk_tier,
+        sm.manifest_human_gate_required(manifest_path, step),
+        changed,
+        main["text"],
+        sm.read_exact_text(repo_root / sm.SUSPENSION_FILE),
+        handoff_text=_read_text(repo_root / _handoff_path(step)),
+        require_disclosure=True,
+        repo_root=repo_root,
+        main_suspension_error=main["error"],
+    )
+    if res["ok"]:
+        if not any(
+            f.get("resolution", "").lower().startswith("suspended:")
+            for f in sm.parse_blocking_findings(risk_text)
+        ):
+            return CheckResult(
+                "REQ-W-18",
+                True,
+                "no suspended dep-mapper resolution "
+                "(dep-mapper finding left to REQ-W-04/evaluator 7b(ii))",
+            )
+        return CheckResult(
+            "REQ-W-18",
+            True,
+            "dep-mapper LOW resolved by active suspension; trace and disclosure valid",
+        )
+    errors = list(res["errors"]) + [f"{f['id']}: {e}" for f in res["findings"] for e in f["errors"]]
+    return CheckResult("REQ-W-18", False, "; ".join(errors))
+
+
 # ---------------------------------------------------------------------------
 # session-state.md recording (REQ-W-17)
 # ---------------------------------------------------------------------------
@@ -719,7 +808,7 @@ def assess_pr_readiness(
     write_state: bool = True,
     step_manifest_path: Optional[Union[str, Path]] = None,
 ) -> ReadinessResult:
-    """Run REQ-W-01..W-14, then (if write_state) record to session-state.md.
+    """Run REQ-W-01..W-14 and W-18, then (if write_state) record to session-state.md.
 
     Every check runs regardless of earlier failures — the caller always gets
     a full picture of every gap, not just the first one hit.
@@ -747,6 +836,7 @@ def assess_pr_readiness(
         _check_system_tests(entries, register_present, system_test_applicable),
         _check_evaluator_verdict(root, step),
         _check_handoff_artifacts(root, step),
+        _check_dep_mapper_suspension(root, manifest_path, step, base_sha, head_sha, risk_tier),
     ]
 
     result = ReadinessResult(cid=cid, step=step, checks=checks)
