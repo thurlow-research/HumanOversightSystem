@@ -4501,6 +4501,32 @@ def test_timeout_messages_state_the_setup_charged_only_when_there_was_setup(rig,
     assert ctx.deadline == 1000.0 + 10 - 42
 
 
+def test_plan_with_setup_past_the_budget_times_out_every_file_and_names_the_setup(rig, tmp_path):
+    runner = sized_rig(rig, tests=1)
+    start = tmp_path / "job-start"
+    start.write_text(str(5000 - ncg.PLAN_BUDGET_SECONDS - 1), encoding="utf-8")
+    doc, code = gate.plan(rig.options(job_start_file=start), runner, FakeClock())
+    assert code == 0 and doc["files"]
+    for rec in doc["files"]:
+        assert rec["mutation_reason"] == "timeout"
+        reason = next(r for r in rec["fail_reasons"] if r["code"] == "mutation_timeout")
+        assert f"{ncg.PLAN_BUDGET_SECONDS + 1}s of job setup was charged to the budget" in reason["message"]
+        assert "split the PR" in reason["message"]
+    assert runner.calls_for("mutmut_run") == []
+
+
+def test_plan_timeout_without_a_start_file_has_no_setup_text(rig, tmp_path):
+    runner = sized_rig(rig, tests=1)
+    clock = FakeClock()
+    runner.clock = clock
+    runner.hook = lambda phase, spec: setattr(clock, "t", clock.t + ncg.PLAN_BUDGET_SECONDS + 1)
+    runner.timeout_on = {"enumerate"}
+    doc, _ = gate.plan(rig.options(job_start_file=tmp_path / "absent"), runner, clock)
+    messages = [r["message"] for f in doc["files"] for r in f["fail_reasons"]]
+    assert any("split the PR" in m for m in messages)
+    assert not any("job setup" in m for m in messages)
+
+
 def test_job_seconds_null_on_missing_or_garbage_start_file(rig, tmp_path):
     """SH-JOBTIME: a bad start file changes nothing but `job_seconds`."""
     runner, plan, plan_dir = staged_plan(rig)

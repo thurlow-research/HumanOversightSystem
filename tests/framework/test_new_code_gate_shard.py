@@ -1367,3 +1367,35 @@ def test_a_timed_out_holders_own_reason_is_in_the_union_once_with_the_merges_tim
     reasons = [r["code"] for r in file_of(records, path)["fail_reasons"]]
     assert reasons.count("mutation_timeout") == 1
     assert reasons.count("path_loaded_module") == 1
+
+
+def test_the_merges_own_timeout_wins_over_a_fragment_carried_one_and_reasons_are_deduped():
+    """SH-UNION: one `mutation_timeout`, the merge's wording; other codes once."""
+    heavy, _ = heavy_and_light()
+    path = "scripts/framework/b.py"
+    holders = [
+        i
+        for i, shard in enumerate(heavy["assignment"], 1)
+        if any(m["path"] == path for m in shard["members"])
+    ]
+    frags = fragment_set(heavy)
+    late = fragment(heavy, holders[0], status="timeout")
+    late["timeout"] = {"phase": "mutmut_run", "file": path, "message": "x"}
+    carried = [
+        {"code": "mutation_timeout", "message": "FRAGMENT-CARRIED"},
+        {"code": "path_loaded_module", "message": "loaded"},
+    ]
+    next(e for e in late["files"] if e["path"] == path)["fail_reasons"] = carried
+    frags[f"new-code-fragment-{holders[0]}-of-{heavy['N']}"] = rehash(late)
+    if len(holders) > 1:
+        other = frags[f"new-code-fragment-{holders[1]}-of-{heavy['N']}"]
+        next(e for e in other["files"] if e["path"] == path)["fail_reasons"] = carried[:1]
+        rehash(other)
+    records, _ = do_merge(heavy, frags)
+    reasons = file_of(records, path)["fail_reasons"]
+    timeouts = [r for r in reasons if r["code"] == "mutation_timeout"]
+    assert len(timeouts) == 1
+    assert "FRAGMENT-CARRIED" not in timeouts[0]["message"]
+    assert f"shard {holders[0]} of {heavy['N']}" in timeouts[0]["message"]
+    assert "split the PR" in timeouts[0]["message"]
+    assert [r["code"] for r in reasons].count("path_loaded_module") == 1

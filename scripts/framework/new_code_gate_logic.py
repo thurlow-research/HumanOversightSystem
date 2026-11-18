@@ -43,8 +43,9 @@ THRESHOLDS = {"coverage": 80, "mutant_score": 75}
 # process start; the plan has a shorter one. Job timeouts are 30 min (shard) and 15 min (plan).
 BUDGET_SECONDS = 1500
 PLAN_BUDGET_SECONDS = 600
-# The writer runs just before coverage saves, so a fresh file can be slightly older than .coverage.
 # `meta` refuses a durations file this much older than the coverage data it pairs with (TD 5.20.4).
+# The skew is slack only: pytest-cov saves .coverage before the writer runs, so a fresh file is
+# newer than .coverage (ADR-2304 2i D-2).
 DURATIONS_SKEW_SECONDS = 5
 
 PINNED = {
