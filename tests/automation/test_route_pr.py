@@ -647,15 +647,74 @@ CO_FILES = [
 ]
 
 
-@pytest.mark.parametrize("lines", CO_CASES)
-def test_t_co_1_humans_set_matches_requester_trust(lines, tmp_path):
-    from scripts.framework import requester_trust
+# Expected strict (R-A7) humans set per CO_CASES entry, pinned as literals so the
+# test cannot pass by computing both sides through the function under test.
+CO_HUMANS = [
+    {"carol"},
+    set(),
+    set(),
+    set(),
+    {"carol"},
+    {"carol", "dave"},
+    {"dave", "erin"},
+    {"dave"},
+    {"dave", "erin"},
+    {"frank"},
+    set(),
+    {"dave"},
+    {"dave", "erin"},
+    set(),
+]
 
+# Owner tokens the old merge-path parser accepted but the strict R-A7 parser
+# rejects. The resolver still resolves them, so the drift guard fires:
+# CodeownersDriftError is the DELIBERATE fail-closed outcome (escalate).
+CO_DIVERGENCE_CASES = [
+    (["/a/** alice"], "alice"),
+    (["/a/** @a#x"], "a"),
+    (["/a/** @-bad"], "-bad"),
+    (["/a/** @" + "b" * 40], "b" * 40),
+]
+
+
+def test_t_co_1_pins_cover_every_case():
+    assert len(CO_HUMANS) == len(CO_CASES)
+
+
+@pytest.mark.parametrize("lines,expected", list(zip(CO_CASES, CO_HUMANS)))
+def test_t_co_1_humans_set_is_strict_r_a7_literal(lines, expected):
     text = "\n".join(lines) + "\n"
-    (tmp_path / ".github").mkdir()
-    (tmp_path / ".github" / "CODEOWNERS").write_text(text)
-    assert ma._codeowners_humans_from_text(text) == requester_trust.codeowners_humans(str(tmp_path))
+    assert ma._codeowners_humans_from_text(text) == expected
     assert ma._codeowners_humans_from_text(None) == set()
+
+
+@pytest.mark.parametrize("lines,resolved", CO_DIVERGENCE_CASES)
+def test_t_co_1b_strict_divergence_fails_closed_with_drift_error(lines, resolved):
+    text = "\n".join(lines) + "\n"
+    assert ma._codeowners_humans_from_text(text) == set()
+    got = ma.resolve_reviewer_from_text(
+        text, ["a/f.py"], bot_accounts=BOT_ACCOUNTS, human_reviewer="default-human"
+    )
+    assert (got.login, got.source) == (resolved, "codeowners")
+    with pytest.raises(ma.CodeownersDriftError):
+        ma.check_resolution_consistent(got, text)
+
+
+@pytest.mark.parametrize(
+    "line,login",
+    [("docs/a#b.md @alice", "alice"), (r"\#notes.md @bob", "bob")],
+)
+def test_t_co_1c_mid_token_hash_owner_is_strict_but_never_resolved(line, login):
+    # The strict parser keeps the owner; the resolver cuts at the first '#', so it
+    # can never pick that login and the drift guard stays silent (TD-2101 10.3).
+    text = line + "\n"
+    assert login in ma._codeowners_humans_from_text(text)
+    got = ma.resolve_reviewer_from_text(
+        text, ["docs/a#b.md"], bot_accounts=BOT_ACCOUNTS, human_reviewer="default-human"
+    )
+    assert got.login != login
+    assert got.source == "machine-accounts.env"
+    ma.check_resolution_consistent(got, text)
 
 
 @pytest.mark.parametrize("lines", CO_CASES)

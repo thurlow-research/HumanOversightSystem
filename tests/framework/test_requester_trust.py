@@ -10,6 +10,7 @@ docs/v0.7.0/TECHNICAL-DESIGN-1540-S1-S2-intake-trust-gate.md).
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from scripts.framework.requester_trust import (
     RequesterVerdict,
     RosterPolicy,
     TrustedSet,
+    bot_baseline_from_env_text,
     codeowners_humans,
     fetch_collaborators,
     is_trusted_requester,
@@ -34,6 +36,8 @@ from scripts.framework.requester_trust import (
     load_trusted_set,
     machine_accounts_file_absent,
     machine_filing_marker,
+    parse_codeowners_humans,
+    parse_env_text,
     requester_verdict,
     verify_codeowner_actor,
 )
@@ -53,6 +57,14 @@ def _iter_source_files(base: Path, suffixes: tuple[str, ...]):
         if any(part in _EXCLUDED_DIR_PARTS for part in path.parts):
             continue
         yield path
+
+
+def _in_docstring(text: str, line: str) -> bool:
+    """True iff `line` sits inside the module docstring (the first triple-quoted block)."""
+    start = text.find('"""')
+    end = text.find('"""', start + 3)
+    pos = text.find(line)
+    return start != -1 and end != -1 and start < pos < end
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +154,112 @@ class TestCodeownersHumans(_TmpRepo):
                 codeowners_humans(self.repo_root)
         finally:
             path.chmod(0o644)
+
+
+class TestParseCodeownersHumans:
+    """parse_codeowners_humans(text) is the pure core of codeowners_humans
+    (#2101 S1 extraction): the same cases as TestCodeownersHumans, run on text."""
+
+    def test_parses_individual_owners(self):
+        text = "# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n"
+        assert parse_codeowners_humans(text) == {"scottthurlow"}
+
+    def test_skips_team_patterns(self):
+        assert parse_codeowners_humans("/foo/ @org/team @ScottThurlow\n") == {"scottthurlow"}
+
+    def test_empty_text_is_empty(self):
+        assert parse_codeowners_humans("") == set()
+
+    def test_ignores_the_path_field(self):
+        assert parse_codeowners_humans("/scripts/framework/ @ScottThurlow\n") == {"scottthurlow"}
+
+    def test_lowercases_and_dedupes(self):
+        assert parse_codeowners_humans("/a @ScottThurlow\n/b @scottthurlow\n") == {"scottthurlow"}
+
+    def test_blank_and_comment_lines_skipped(self):
+        assert parse_codeowners_humans("\n   \n# x @nobody\n") == set()
+
+    def test_agrees_with_the_file_reader(self, tmp_path):
+        text = "/a @Alice @org/team\n# c\n/b @bob @ALICE\n"
+        (tmp_path / ".github").mkdir()
+        (tmp_path / ".github" / "CODEOWNERS").write_text(text)
+        assert codeowners_humans(str(tmp_path)) == parse_codeowners_humans(text)
+
+
+class TestParseCodeownersHumansStrict:
+    """R-A7: only `@login` owner tokens count; an unescaped `#` ends the owners."""
+
+    def test_inline_comment_words_are_not_owners(self):
+        assert parse_codeowners_humans("* @maintainer # alice handles triage\n") == {"maintainer"}
+
+    def test_owner_after_a_spaced_comment_marker_is_cut(self):
+        assert parse_codeowners_humans("* @a #comment @b\n") == {"a"}
+
+    def test_hash_inside_a_token_fails_the_login_grammar(self):
+        assert parse_codeowners_humans("* @a#x\n") == set()
+
+    def test_escaped_space_stays_in_the_path(self):
+        assert parse_codeowners_humans("docs/My\\ File.md @alice\n") == {"alice"}
+
+    def test_escaped_hash_path_is_not_a_comment(self):
+        assert parse_codeowners_humans("\\#notes.md @bob\n") == {"bob"}
+
+    def test_emails_and_bare_words_are_skipped(self):
+        assert parse_codeowners_humans("* alice@example.com bob @carol\n") == {"carol"}
+
+    def test_team_handles_are_skipped(self):
+        assert parse_codeowners_humans("* @org/team @dave\n") == {"dave"}
+
+    def test_invalid_logins_and_the_length_limit(self):
+        assert parse_codeowners_humans("* @-bad @ @" + "a" * 40 + "\n") == set()
+        assert parse_codeowners_humans("* @" + "A" * 39 + "\n") == {"a" * 39}
+
+    def test_path_only_line_has_no_owners(self):
+        assert parse_codeowners_humans("/docs/\n") == set()
+
+    def test_real_repo_codeowners_is_unchanged(self):
+        text = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+        assert parse_codeowners_humans(text) == {"scottthurlow"}
+
+
+class TestParseEnvText:
+    def test_parses_quotes_comments_and_skips_junk(self):
+        text = "A=\"x\"\n# c\nnoequals\nB=y # trailing\n\nC='z'\n"
+        assert parse_env_text(text) == {"A": "x", "B": "y", "C": "z"}
+
+    def test_never_executes(self):
+        assert parse_env_text("EVIL=$(touch sentinel)\n") == {"EVIL": "$(touch sentinel)"}
+
+
+class TestBotBaselineFromEnvText:
+    def test_the_four_keys_lowercased(self):
+        text = (
+            'BOT_WORKER_USERNAME="Hos-Worker[bot]"\nBOT_OVERSEER_USERNAME=o[bot]\n'
+            "BOT_HUMAN_USERNAME=h[bot]\nCOPILOT_BOT_LOGIN=copilot[bot]\nOTHER=x\n"
+        )
+        assert bot_baseline_from_env_text(text) == {
+            "hos-worker[bot]",
+            "o[bot]",
+            "h[bot]",
+            "copilot[bot]",
+        }
+
+    def test_bot_accounts_line_is_ignored(self):
+        assert bot_baseline_from_env_text("BOT_ACCOUNTS=extra[bot]\n") == set()
+
+    def test_empty_values_skipped(self):
+        assert bot_baseline_from_env_text('BOT_WORKER_USERNAME=""\n') == set()
+
+    def test_does_not_read_the_environment(self, monkeypatch):
+        monkeypatch.setenv("BOT_ACCOUNTS", "env-bot[bot]")
+        assert bot_baseline_from_env_text("") == set()
+
+    def test_load_bot_accounts_equals_baseline_union_env(self, tmp_path, monkeypatch):
+        body = 'BOT_WORKER_USERNAME="w[bot]"\nCOPILOT_BOT_LOGIN="c[bot]"\n'
+        (tmp_path / "scripts" / "framework").mkdir(parents=True)
+        (tmp_path / "scripts" / "framework" / "machine-accounts.env").write_text(body)
+        monkeypatch.setenv("BOT_ACCOUNTS", "Extra[bot]")
+        assert load_bot_accounts(str(tmp_path)) == bot_baseline_from_env_text(body) | {"extra[bot]"}
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +777,7 @@ class TestConformance:
         surface = [
             ROOT / "scripts" / "framework" / "requester_trust.py",
             ROOT / "scripts" / "automation" / "lib" / "probe.py",
+            ROOT / "scripts" / "framework" / "human_authorization.py",
         ]
         for path in surface:
             assert "not is_bot_reviewer" not in path.read_text(encoding="utf-8"), path
@@ -689,11 +808,29 @@ class TestConformance:
         assert set(hits) == {
             ROOT / "scripts" / "framework" / "requester_trust.py",
             ROOT / "scripts" / "framework" / "select_work_candidates.py",
+            ROOT / "scripts" / "framework" / "human_authorization.py",
         }
         probe_text = (ROOT / "scripts" / "automation" / "lib" / "probe.py").read_text()
         assert "CODEOWNERS" not in probe_text
         gate_text = (ROOT / "scripts" / "framework" / "select_work_candidates.py").read_text()
         assert "codeowners_humans(" in gate_text, "the gate must call the shared parser"
+
+        # #2101 S1: human_authorization.py is a delegating reader. It parses via the
+        # shared pure function and never reads CODEOWNERS from disk (AF-2).
+        ha_text = (ROOT / "scripts" / "framework" / "human_authorization.py").read_text()
+        assert "parse_codeowners_humans(" in ha_text
+        assert re.search(r"(?<![A-Za-z0-9_])codeowners_humans\(", ha_text) is None
+        assert "_codeowners_path" not in ha_text
+        for line in ha_text.splitlines():
+            if "CODEOWNERS" not in line:
+                continue
+            stripped = line.strip()
+            assert (
+                stripped.startswith('CODEOWNERS_PATH = ".github/CODEOWNERS"')
+                or stripped.startswith("#")
+                or "contents/" in line
+                or _in_docstring(ha_text, line)
+            ), f"unexpected CODEOWNERS reference: {line!r}"
 
     def test_requester_trust_imports_nothing_from_automation_or_oversight(self):
         text = (ROOT / "scripts" / "framework" / "requester_trust.py").read_text()

@@ -282,7 +282,12 @@ class Harness:
 
         framework_dir = scripts_dir / "framework"
         framework_dir.mkdir()
-        for fname in ("require_tier_ceiling.py", "require_overseer_approval.py"):
+        for fname in (
+            "require_tier_ceiling.py",
+            "require_overseer_approval.py",
+            "require_human_approval.py",
+            "requester_trust.py",  # imported at module top by merge_authority
+        ):
             shutil.copy(REPO_ROOT / "scripts" / "framework" / fname, framework_dir / fname)
         (framework_dir / "machine-accounts.env").write_text(DEFAULT_ENV)
         (framework_dir / "protected_surfaces.txt").write_text(DEFAULT_PROTECTED_SURFACES)
