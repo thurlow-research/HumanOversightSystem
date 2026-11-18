@@ -144,6 +144,33 @@ stripped from the child git env; every exit-2 path (store dir, base tree, for-ea
 prints a final `SUMMARY ... aborted=1` line; the remote-head grace uses the tip commit date
 (accepted and documented, TD section 10 post-review note, behaviour unchanged).
 
+## #2314 archive-before-delete for prune-attempts, exception safety, shallow-clone refusal
+
+Risk HIGH. Intent, as built (PR #2400):
+
+- `prune-attempts` archives before it deletes. A local attempt whose tip is not reachable from
+  `origin/main` first gets the create-only recovery ref `refs/archive/reap/<branch>@<tip12>`
+  (an existing ref at the same tip is success) and an `ARCHIVED branch=<b> where=local ref=<ref>
+  tip=<sha>` line; only then is the branch (and its remote head) deleted. If the archive cannot
+  be written the branch is kept: `KEEP branch=<b> reason=archive-failed where=local tip=<sha>`,
+  with a one-line WARN naming the cause, and the CLI exits 3 (others may still have been
+  deleted). A tip already on base needs no archive. A dry run prints `archive=<ref>` and writes
+  nothing. `delete-head` needs no archive: `refs/pull/N/head` retains a closed PR's head, and it
+  uses no ancestry, so it has no shallow check.
+- An exception from a git call during the archive step (timeout, OSError) is an archive failure,
+  never an aborted run: prune-attempts prints a WARN with the one-line cause, the same KEEP line,
+  keeps the branch and continues with the rest. In reap-orphans a raising local archive write is
+  the same KEEP `archive-failed`; a raising best-effort local copy after a successful remote
+  archive prints `WARN: local archive ref not written for <name>: <cause>` and the remote delete
+  proceeds (the remote archive is what gates it).
+- Shallow clones: ancestry checks are unreliable, so deleting modes fail closed on
+  `git rev-parse --is-shallow-repository` (anything other than rc 0 with output `false`,
+  including a failed call, counts as shallow). prune-attempts prints `WARN: shallow clone —
+  prune-attempts refuses to delete; keeping all <n> attempt(s)` and a `KEEP ...
+  reason=shallow-clone` line per attempt, deletes nothing and exits 3. reap-orphans prints one
+  WARN, deletes nothing, prints SUMMARY with `aborted=1` and exits 2 (its existing
+  nothing-deleted abort code). Dry runs only WARN and preview as usual.
+
 ## Human Review Notes
 
 <!-- pending -->

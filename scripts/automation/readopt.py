@@ -44,6 +44,11 @@ Exit codes
       ``delete-head``: 0 = head is gone (DELETED or ALREADY-GONE), 2 = error or
       uncertainty (nothing deleted, or outcome unknown after a push timeout),
       3 = refused by a safety rule (KEPT; a valid outcome, not a failure).
+      ``prune-attempts``: 3 = at least one branch was kept for ``archive-failed`` (others
+      may still have been deleted) or, in a shallow clone, for ``shallow-clone`` (nothing
+      is deleted). ``reap-orphans`` in a shallow clone also exits 2 (nothing deleted,
+      SUMMARY ``aborted=1``); a dry run only WARNs. An exception raised while writing an
+      archive ref counts as archive failure everywhere (KEEP, no delete).
 
 Safety
 ------
@@ -56,7 +61,10 @@ its own line, ``ARCHIVED branch=<b> where=<local|remote> ref=<ref> tip=<sha>``, 
 before the delete; REAPED/REAP-FAILED lines are unchanged (bin/hos-cron audits them with an
 end-anchored regex). WOULD-REAP lines in a dry run carry ``archive=<ref>``. The ref lives
 outside ``refs/heads``
-so no branch selector sees it. ``--list-archives`` lists them with age and NEVER prunes;
+so no branch selector sees it. ``prune-attempts`` archives the same way (a tip not on
+base). ``delete-head`` needs none: ``refs/pull/N/head`` retains a closed PR's head.
+``--list-archives`` lists them with ``age_days`` = the TIP COMMIT's age, not the archive's
+(git records no ref creation time), and NEVER prunes;
 pruning archives is a separate human-authorized step. RESTORE:
 ``git fetch origin refs/archive/reap/<name>@<tip12>:refs/archive/reap/<name>@<tip12>``
 (if only on origin), then ``git branch <name> refs/archive/reap/<name>@<tip12>``.
@@ -518,6 +526,7 @@ def prune_attempts(
     open_pr: Optional[Callable[[str], Optional[bool]]] = None,
     base: str = "origin/main",
     issue_states: Optional[IssueStatesLookup] = None,
+    archive_failed: "Optional[list[str]]" = None,
 ) -> "list[str]":
     """Delete local ``worker-<issue>-*`` attempts. Closed issue: delete all,
     but only after the issue's state is verified ``closed`` server-side (an
@@ -532,7 +541,20 @@ def prune_attempts(
 
     After each successful local delete of attempt B at tip T, B's remote head is
     deleted too (#2286) iff it is still at T and has no open PR; any remote
-    problem is a WARN that never fails or undoes the local delete."""
+    problem is a WARN that never fails or undoes the local delete.
+
+    Archive-before-delete (#2314): a tip not reachable from ``base`` is first written to
+    ``refs/archive/reap/<branch>@<tip12>`` (``ARCHIVED`` line); on failure the branch is
+    kept (``KEEP ... reason=archive-failed``). The remote delete follows the local one only,
+    so it is covered by the same archive. Branches kept for a failed archive are appended
+    to ``archive_failed`` (the CLI then exits 3). A dry run prints ``archive=<ref>`` only
+    for a tip not on ``base``. An exception from the archive step (``_tip_on_base`` or
+    ``_write_local_archive``) is treated as the same failure, with a one-line WARN.
+
+    Shallow clone (``_is_shallow``; an unknown answer counts as shallow): ancestry is
+    unreliable, so a real run deletes nothing, prints a WARN and a
+    ``KEEP ... reason=shallow-clone`` line per doomed branch, and appends each to
+    ``archive_failed`` (exit 3). A dry run prints the WARN and previews as usual."""
     git = git or make_git(repo)
     if issue_closed:
         try:
@@ -578,15 +600,45 @@ def prune_attempts(
     records = read_records(store)
     deleted: "list[str]" = []
     remote = _PruneRemote(git, repo, issue, remote_heads, remote_delete, slug, open_pr)
+    shallow = bool(doomed) and _is_shallow(git)
+    if shallow:
+        print(
+            "WARN: shallow clone — prune-attempts refuses to delete; "
+            f"keeping all {len(doomed)} attempt(s)"
+            if not dry_run
+            else "WARN: shallow clone — ancestry checks are unreliable; dry run continues"
+        )
     for branch in sorted(doomed):
         if branch == current:
             print(f"WARN: '{branch}' is checked out — not deleting")
             continue
         recs = [rec for b, rec in records if b == branch]
+        if shallow and not dry_run:
+            print(
+                f"KEEP branch={_printable_name(branch)} reason=shallow-clone"
+                f" where=local tip={tips[branch]}"
+            )
+            if archive_failed is not None:
+                archive_failed.append(branch)
+            continue
         if dry_run:
-            print(f"WOULD-DELETE branch={branch}")
+            line = f"WOULD-DELETE branch={branch}"
+            if not _tip_on_base(git, tips[branch], base):
+                line += f" archive={_printable_name(_archive_ref(branch, tips[branch]))}"
+            print(line)
             deleted.append(branch)
             remote.step(branch, tips[branch], dry_run=True)
+        elif not (archived := _archive_guarded(git, branch, tips[branch], base)):
+            print(
+                f"KEEP branch={_printable_name(branch)} reason=archive-failed"
+                f" where=local tip={tips[branch]}"
+            )
+            if archived is False:  # None = raised: its WARN already names the cause
+                cause = _one_line(getattr(git, "first_error", "") or "")
+                if cause:
+                    print(f"WARN: archive of '{_printable_name(branch)}' failed: {cause}")
+            if archive_failed is not None:
+                archive_failed.append(branch)
         elif _delete_branch(git, branch, recs, tips[branch]):
             print(f"DELETED branch={branch}")
             deleted.append(branch)
@@ -594,6 +646,45 @@ def prune_attempts(
         else:
             print(f"WARN: could not delete '{branch}'")
     return deleted
+
+
+def _is_shallow(git: GitRunner) -> bool:
+    """True unless git positively reports a full clone. Ancestry checks are unreliable in
+    a shallow clone, so an unknown answer (failure, exception, odd output) fails closed."""
+    try:
+        rc, out = git(["rev-parse", "--is-shallow-repository"])
+    except Exception:
+        return True
+    return not (rc == 0 and out.strip() == "false")
+
+
+def _tip_on_base(git: GitRunner, tip: str, base: str) -> bool:
+    rc, _ = git(["merge-base", "--is-ancestor", tip, base])
+    return rc == 0
+
+
+def _archive_unlanded(git: GitRunner, branch: str, tip: str, base: str) -> bool:
+    """Archive-before-delete for a local branch about to be deleted (#2314). A tip
+    already reachable from ``base`` needs no archive. Otherwise write the recovery ref
+    and print the ARCHIVED line; False (caller keeps the branch) when the write fails.
+    An unreadable ancestry check is treated as not landed: archiving is always safe."""
+    if _tip_on_base(git, tip, base):
+        return True
+    if not _write_local_archive(git, branch, tip):
+        return False
+    print(_archived_text(branch, "local", tip))
+    return True
+
+
+def _archive_guarded(git: GitRunner, branch: str, tip: str, base: str) -> Optional[bool]:
+    """``_archive_unlanded`` with exceptions (e.g. a git timeout) treated as archive
+    failure: prints a one-line WARN and returns None. True = archived or not needed;
+    False = the write failed without raising."""
+    try:
+        return _archive_unlanded(git, branch, tip, base)
+    except Exception as exc:
+        print(f"WARN: archive of '{_printable_name(branch)}' raised: {_one_line(exc)}")
+        return None
 
 
 def _closed_issue_deletable(git, names, tips, issue, base, issue_states, slug) -> "list[str]":
@@ -1010,7 +1101,7 @@ def _fmt(
         line += f" pr={d.pr}"
     line += f" tip={d.ref.tip}"
     if archive:
-        line += f" archive={archive}"
+        line += f" archive={_printable_name(archive)}"
     return line
 
 
@@ -1018,10 +1109,14 @@ def _archived_line(d: _Decision) -> str:
     """Printed after a successful archive write, before the delete. REAPED/REAP-FAILED
     lines must stay byte-identical to the pre-#2293 shape: bin/hos-cron audits them with an
     end-anchored regex, so the archive is reported on its own line instead."""
-    ref = _archive_ref(d.ref.name, d.ref.tip)
+    return _archived_text(d.ref.name, d.ref.where, d.ref.tip)
+
+
+def _archived_text(name: str, where: str, tip: str) -> str:
+    ref = _archive_ref(name, tip)
     return (
-        f"ARCHIVED branch={_printable_name(d.ref.name)} where={d.ref.where}"
-        f" ref={_printable_name(ref)} tip={d.ref.tip}"
+        f"ARCHIVED branch={_printable_name(name)} where={where}"
+        f" ref={_printable_name(ref)} tip={tip}"
     )
 
 
@@ -1136,7 +1231,12 @@ def reap_orphans(
 
     Archive-before-delete (#2293): a decision whose reason is in ``ARCHIVE_REASONS``
     writes ``refs/archive/reap/<branch>@<tip12>`` first (``remote_archive`` pushes it to
-    origin for remote heads) and is KEPT as ``archive-failed`` when that fails."""
+    origin for remote heads) and is KEPT as ``archive-failed`` when that fails. A raised
+    exception from the archive write counts as that failure.
+
+    A shallow clone (``_is_shallow``, fail closed) makes ancestry unreliable: a real run
+    prints a WARN, deletes nothing and returns 2 (SUMMARY ``aborted=1``), like a failed
+    listing; a dry run prints the WARN and previews as usual."""
     if remote_scope not in ("worker", "all"):
         raise ValueError(f"remote_scope must be 'worker' or 'all', got {remote_scope!r}")
     git = git or make_git(repo)
@@ -1172,6 +1272,15 @@ def reap_orphans(
         print(f"readopt: {_one_line(exc)}", file=sys.stderr)
         summary(1)
         return 2
+    if _is_shallow(git):
+        # Every reap rule leans on ancestry/coverage, which a shallow clone cannot answer.
+        print(
+            "WARN: shallow clone — reap-orphans refuses to delete; "
+            + ("dry run continues" if dry_run else "nothing deleted")
+        )
+        if not dry_run:
+            summary(1)
+            return 2
     recs_by_branch: "dict[str, list[Path]]" = {}
     for branch, rec in read_records(store):
         recs_by_branch.setdefault(branch, []).append(rec)
@@ -1407,7 +1516,12 @@ def reap_orphans(
         if needs_archive:
             # An archive-failed decision is never attempted as a delete, so it does not
             # consume the --max-deletions budget.
-            if _write_local_archive(git, d.ref.name, d.ref.tip):
+            try:
+                wrote = _write_local_archive(git, d.ref.name, d.ref.tip)
+            except Exception as exc:  # an unwritable archive is an archive failure
+                print(f"WARN: archive of {_printable_name(d.ref.name)} raised: {_one_line(exc)}")
+                wrote = False
+            if wrote:
                 print(_archived_line(d))
                 counts["archived"] += 1
             else:
@@ -1437,8 +1551,14 @@ def reap_orphans(
                 print(_archived_line(d))
                 counts["archived"] += 1
                 # Best effort only: the remote copy is what gates the delete.
-                if not _write_local_archive(git, d.ref.name, d.ref.tip):
-                    print(f"WARN: local archive ref not written for {_printable_name(d.ref.name)}")
+                name = _printable_name(d.ref.name)
+                try:
+                    local_ok = _write_local_archive(git, d.ref.name, d.ref.tip)
+                except Exception as exc:  # must not abort the pending remote deletes
+                    print(f"WARN: local archive ref not written for {name}: {_one_line(exc)}")
+                else:
+                    if not local_ok:
+                        print(f"WARN: local archive ref not written for {name}")
             else:
                 print(_fmt("KEEP", d, reason="archive-failed"))
                 counts["kept"] += 1
@@ -1588,7 +1708,11 @@ def delete_head(
     result line last on stdout and returns 0 (gone), 2 (error) or 3 (KEPT).
     Fails closed: every exception becomes ERROR with nothing deleted, and an open-PR
     lookup that is not a genuine list (404, empty body, dict) is KEPT
-    reason=pr-lookup-indeterminate [#2298]."""
+    reason=pr-lookup-indeterminate [#2298].
+
+    No archive ref is written (#2314): the head of a closed same-repo PR is retained by
+    GitHub's ``refs/pull/N/head`` (forks are KEPT), and the sha deleted is the PR head sha
+    (a moved branch is KEPT reason=moved), so the deleted tip stays recoverable."""
 
     def result(code: int, line: str) -> int:
         print(line)
@@ -1699,8 +1823,9 @@ def list_archives(
     age_days: int = DEFAULT_ARCHIVE_AGE_DAYS,
 ) -> int:
     """#2293: list local ``refs/archive/reap/*``. Read-only: no deletion, no GitHub or
-    network call. Git records no ref creation time, so the age is the tip COMMIT's age
-    (the same accepted limitation as the remote-head grace)."""
+    network call. Git records no ref creation time, so ``age_days`` is the tip COMMIT's
+    age, NOT the archive's age (#2314): a fresh archive of an old branch is flagged
+    ``older-than`` at once, so the flag alone must never authorise pruning."""
     git = git or make_git(repo)
     now = time.time() if now is None else now
     rc, out = git(
@@ -1781,8 +1906,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ro.add_argument(
         "--list-archives",
         action="store_true",
-        help="#2293: list refs/archive/reap/* with age and exit; deletes nothing. Pruning"
-        " archives is a separate human-authorized step",
+        help="#2293: list refs/archive/reap/* and exit; deletes nothing. age_days is the"
+        " TIP COMMIT's age, not the archive's age. Pruning archives is a separate"
+        " human-authorized step",
     )
     ro.add_argument("--archive-age-days", type=_positive_int, default=DEFAULT_ARCHIVE_AGE_DAYS)
     ro.add_argument(
@@ -1842,6 +1968,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 remote_scope=args.remote_scope or "worker",
                 issue_closed=not args.no_issue_closed,
             )
+        kept_unarchived: "list[str]" = []
         prune_attempts(
             repo,
             args.issue,
@@ -1849,8 +1976,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             keep=args.keep,
             issue_closed=args.issue_closed,
             dry_run=args.dry_run,
+            archive_failed=kept_unarchived,
         )
-        return 0
+        return 3 if kept_unarchived else 0
     except GitError as exc:
         print(f"readopt: {_one_line(exc)}", file=sys.stderr)
         return 2
