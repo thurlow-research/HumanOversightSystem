@@ -292,16 +292,17 @@ def parse_codeowners_humans(text: str) -> set[str]:
     `text` (R-A7). Pure: the text arrives from the caller.
 
     Strict: only `@login` tokens that fullmatch OWNER_LOGIN_RE count; team
-    handles (org/team), emails and bare words are skipped, an unescaped `#`
-    token starts an inline comment that ends the owner list, and an escaped
-    space or `#` stays inside the path token."""
+    handles (org/team), emails and bare words are skipped, an owner token
+    containing `#` starts an inline comment that ends the owner list (that
+    token is not accepted), and an escaped space or `#` stays inside the path
+    token."""
     humans: set[str] = set()
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         for token in _codeowners_rest(line).split():
-            if token.startswith("#"):
+            if "#" in token:
                 break
             if "/" in token or not OWNER_LOGIN_RE.fullmatch(token):
                 continue

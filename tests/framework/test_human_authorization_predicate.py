@@ -349,6 +349,18 @@ def test_inline_comment_owner_cannot_authorize():
     assert _decide([_c(1, "maintainer", body=_form())], co=owners).authorized
 
 
+def test_attached_hash_comment_owner_cannot_authorize():
+    from scripts.framework.requester_trust import parse_codeowners_humans
+
+    owners = frozenset(parse_codeowners_humans("* @maintainer @carol# see @alice\n"))
+    assert owners == {"maintainer"}
+    for login in ("alice", "carol"):
+        v = _decide([_c(1, login, body=_form())], co=owners)
+        assert not v.authorized and v.covered == ()
+        assert _reasons(v) == ["not-codeowner"]
+    assert _decide([_c(1, "maintainer", body=_form())], co=owners).authorized
+
+
 # ---------------------------------------------------------------------------
 # S1b (#2151, TD-2101 §10.4.5): the deleted-later refusal. A is a valid, current,
 # overlapping authorize by scottthurlow created at T1.

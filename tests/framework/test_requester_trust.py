@@ -198,6 +198,11 @@ class TestParseCodeownersHumansStrict:
     def test_hash_inside_a_token_fails_the_login_grammar(self):
         assert parse_codeowners_humans("* @a#x\n") == set()
 
+    def test_attached_hash_token_ends_the_owner_list(self):
+        assert parse_codeowners_humans("* @alice# see @bob\n") == set()
+        assert parse_codeowners_humans("* @org/team# ask @bob\n") == set()
+        assert parse_codeowners_humans("* @alice @bob#x @carol\n") == {"alice"}
+
     def test_escaped_space_stays_in_the_path(self):
         assert parse_codeowners_humans("docs/My\\ File.md @alice\n") == {"alice"}
 
