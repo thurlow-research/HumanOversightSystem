@@ -1,0 +1,1 @@
+{"agent":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"afb984d3b7984c0e45c6bbc061945ff08893fdfd","pr":2395,"reason":"1215: overseer verdict 5949947496 already posted on this head; needs-human applied, human assigned; no new commits/comments/reviews since"}
