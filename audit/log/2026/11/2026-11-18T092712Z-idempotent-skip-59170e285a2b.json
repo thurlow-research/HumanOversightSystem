@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"e952e2b0677ec44a5acfe4b4ce967dafec7cb3d1","pr":2400,"reason":"same head already reviewed (human-required 08:59Z); human-proxy bounced to worker at 09:21Z (needs-human->needs-ai); awaiting worker push, no re-escalation","tier":"HIGH","timestamp":"2026-11-18T09:27:12Z"}
