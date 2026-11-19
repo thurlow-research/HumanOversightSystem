@@ -4303,7 +4303,9 @@ class TestOverseerBranchHygiene:
         self._stubs(cron, out=line + "\nnot a REAPED line\n", rc=124)
         r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
         assert "failed (rc=124 timeout)" in r.stdout
-        (rec,) = cron.audit_records("cycle-branch-reap")
+        (rec,) = [
+            e for e in cron.audit_records("cycle-branch-reap") if e["event"] == "cycle-branch-reap"
+        ]
         assert rec["role"] == "overseer" and rec["branch"] == "pr-7-review"
         assert (rec["reason"], rec["where"], rec["pr"], rec["tip"]) == (
             "review-pr-done",
@@ -4412,6 +4414,152 @@ class TestOverseerBranchHygiene:
         self._run(cron)
         (rec,) = cron.audit_records("cycle-review-worktree-kept")
         assert (rec["pr"], rec["path"], rec["reason"]) == (8, "/x/my dir/wt", "head-moved")
+
+    # ---- #2405: on-mode aborts and shallow clones must be visible ----------------------------
+
+    _SUMMARY_ABORT = (
+        "SUMMARY reaped_local=0 reaped_remote=0 kept=0 failed=0 deferred=0 api_calls=0"
+        " aborted=1 remote_skipped=0 recheck=none archived=0 shallow=1 abort_reason=shallow-clone\n"
+    )
+    _SUMMARY_OK = (
+        "SUMMARY reaped_local=2 reaped_remote=0 kept=4 failed=1 deferred=0 api_calls=3"
+        " aborted=0 remote_skipped=1 recheck=done archived=0 shallow=0 abort_reason=none\n"
+    )
+
+    def shallow_state(self, cron):
+        return cron.state / "branch-reap" / "overseer-hos.shallow-escalated"
+
+    def issues_created(self, cron):
+        marker = cron.aa_issue_marker
+        return len(marker.read_text().splitlines()) if marker.exists() else 0
+
+    def age_stamp(self, cron):
+        old = time.time() - 25 * 3600
+        os.utime(self.stamp(cron), (old, old))
+
+    def test_i1_on_mode_abort_audits_summary_and_aborted(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["role"], summ["mode"], summ["aborted"], summ["shallow"], summ["rc"]) == (
+            "overseer",
+            "on",
+            1,
+            1,
+            2,
+        )
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["role"], ab["mode"], ab["rc"], ab["reason"]) == (
+            "overseer",
+            "on",
+            2,
+            "shallow-clone",
+        )
+        assert "WARN: overseer branch reap (mode=on) aborted or failed: reason=shallow-clone" in (
+            r.stdout
+        )
+
+    def test_i2_on_mode_success_audits_summary_only(self, cron):
+        self._stubs(cron, out=self._SUMMARY_OK)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["reaped_local"], summ["reaped_remote"], summ["kept"], summ["failed"]) == (
+            2,
+            0,
+            4,
+            1,
+        )
+        assert (summ["aborted"], summ["shallow"], summ["rc"]) == (0, 0, 0)
+        assert not cron.audit_records("cycle-branch-reap-aborted")
+
+    def test_i3_no_summary_with_timeout_rc_is_aborted_timeout(self, cron):
+        self._stubs(cron, out="", rc=124)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["reaped_local"], summ["aborted"], summ["shallow"]) == ("-", "-", "-")
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["reason"], ab["rc"]) == ("timeout", 124)
+
+    @pytest.mark.parametrize(
+        "out,rc,reason",
+        [("", 0, "no-summary"), (_SUMMARY_OK, 3, "rc-3")],
+    )
+    def test_i3_no_summary_rc_zero_and_plain_rc_reasons(self, cron, out, rc, reason):
+        self._stubs(cron, out=out, rc=rc)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert ab["reason"] == reason
+
+    def test_i4_dry_run_event_carries_shallow_and_warns(self, cron):
+        out = (
+            "SUMMARY reaped_local=0 reaped_remote=0 kept=5 failed=0 deferred=0 api_calls=3"
+            " aborted=0 remote_skipped=1 recheck=skipped archived=0 shallow=1 abort_reason=none\n"
+        )
+        self._stubs(cron, out=out)
+        r = self._run(cron)
+        (rec,) = cron.audit_records("cycle-branch-reap-dry-run")
+        assert (rec["kept"], rec["shallow"]) == (5, 1)
+        assert "dry-run preview is unreliable" in r.stdout
+        assert not cron.audit_records("cycle-branch-reap-aborted")
+
+    def test_i4_dry_run_abort_is_audited(self, cron):
+        self._stubs(cron, out="", rc=2)
+        self._run(cron)
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["mode"], ab["reason"]) == ("dry-run", "no-summary")
+        assert not cron.audit_records("cycle-branch-reap-summary")
+
+    def test_i5_shallow_escalates_once_then_rearms_after_unshallow(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 1
+        assert cron.aa_issue_label() == "needs-human,priority:high"
+        assert "fetch --unshallow" in cron.aa_issue_body()
+        assert "#2405" in cron.aa_issue_body()
+        assert self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert (esc["role"], esc["result"]) == ("overseer", "filed")
+
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.issues_created(cron) == 1, "state file present: no second filing"
+        assert len(cron.audit_records("cycle-branch-reap-shallow-escalated")) == 1
+
+        self._stubs(cron, out=self._SUMMARY_OK)
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert not self.shallow_state(cron).exists(), "shallow=0 clears the marker"
+
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.issues_created(cron) == 2, "a recurrence escalates again"
+
+    def test_i6_shallow_escalation_dedup_query_failure_fails_closed(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_MAIN_DIVERGED_QUERY_FAIL="1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "query-failed"
+
+    def test_i7_existing_open_issue_is_not_duplicated_and_marks_state(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="dry-run", HOS_TEST_MAIN_DIVERGED_OPEN_NUMS="77")
+        assert self.issues_created(cron) == 0
+        assert self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "existing"
+
+    def test_i8_worker_reap_landed_failure_is_audited(self, cron):
+        self._stubs(cron, out="", rc=124)
+        r = cron.run(role="worker")
+        assert r.returncode == 0, r.stdout + r.stderr
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["role"], ab["mode"], ab["rc"], ab["reason"]) == ("worker", "on", 124, "timeout")
 
     def test_h9_each_kept_worktree_is_audited_with_pr_path_reason(self, cron):
         self._stubs(cron)

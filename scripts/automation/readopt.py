@@ -83,7 +83,9 @@ merge-base touches ``audit/log``, ``audit/oversight-log.jsonl`` or
 ``reap-orphans --dry-run`` skips the pre-delete open-PR re-check, so a
 WOULD-REAP can become ``KEEP open-pr`` in the real run (SUMMARY ``recheck=skipped``
 vs ``done``/``none``); SUMMARY also carries ``remote_skipped=1`` when the remote phase
-could not run. The remote-head grace uses the tip COMMIT date (not the push time,
+could not run. SUMMARY ends with ``shallow=<0|1|->`` (``-``: aborted before the
+shallow check) and ``abort_reason=<none|shallow-clone|git-error|listing-failed>`` (#2405).
+The remote-head grace uses the tip COMMIT date (not the push time,
 which git does not expose): a recently pushed old commit is judged old. Accepted
 and documented (TD §10 post-review note). A branch is never deleted on uncertainty (git or GitHub failure
 -> skip). The GitHub token reaches git only through the subprocess environment,
@@ -1236,7 +1238,11 @@ def reap_orphans(
 
     A shallow clone (``_is_shallow``, fail closed) makes ancestry unreliable: a real run
     prints a WARN, deletes nothing and returns 2 (SUMMARY ``aborted=1``), like a failed
-    listing; a dry run prints the WARN and previews as usual."""
+    listing; a dry run prints the WARN, an extra WARN that the preview is unreliable (a real
+    run would delete nothing) and previews as usual.
+
+    SUMMARY ends with ``shallow=<0|1|->`` and ``abort_reason=<none|shallow-clone|git-error|
+    listing-failed>`` (#2405); ``shallow=-`` means the run aborted before the shallow check."""
     if remote_scope not in ("worker", "all"):
         raise ValueError(f"remote_scope must be 'worker' or 'all', got {remote_scope!r}")
     git = git or make_git(repo)
@@ -1255,13 +1261,16 @@ def reap_orphans(
     remote_skipped = 0  # 1 when the remote phase could not run (WARN printed)
     recheck = "skipped" if dry_run else "none"  # "done" once the open-PR re-check ran
 
-    def summary(aborted: int) -> None:
+    shallow = "-"  # "0"/"1" once the shallow check has run
+
+    def summary(aborted: int, abort_reason: str = "none") -> None:
         # New fields are APPENDED: consumers match the leading fields by name.
         print(
             f"SUMMARY reaped_local={counts['reaped_local']} reaped_remote={counts['reaped_remote']}"
             f" kept={counts['kept']} failed={counts['failed']} deferred={counts['deferred']}"
             f" api_calls={github.gh_call_count() - calls_before} aborted={aborted}"
             f" remote_skipped={remote_skipped} recheck={recheck} archived={counts['archived']}"
+            f" shallow={shallow} abort_reason={abort_reason}"
         )
 
     try:
@@ -1270,16 +1279,23 @@ def reap_orphans(
         base_tree = _git_ok(git, "rev-parse", f"{base}^{{tree}}")
     except GitError as exc:
         print(f"readopt: {_one_line(exc)}", file=sys.stderr)
-        summary(1)
+        summary(1, "git-error")
         return 2
-    if _is_shallow(git):
+    is_shallow = _is_shallow(git)
+    shallow = "1" if is_shallow else "0"
+    if is_shallow:
         # Every reap rule leans on ancestry/coverage, which a shallow clone cannot answer.
         print(
             "WARN: shallow clone — reap-orphans refuses to delete; "
             + ("dry run continues" if dry_run else "nothing deleted")
         )
-        if not dry_run:
-            summary(1)
+        if dry_run:
+            print(
+                "WARN: shallow clone — dry-run preview is unreliable; "
+                "a real run will delete nothing"
+            )
+        else:
+            summary(1, "shallow-clone")
             return 2
     recs_by_branch: "dict[str, list[Path]]" = {}
     for branch, rec in read_records(store):
@@ -1323,7 +1339,7 @@ def reap_orphans(
             )
         except GitError as exc:
             print(f"WARN: listing failed — nothing deleted: {_one_line(exc)}")
-            summary(1)
+            summary(1, "listing-failed")
             return 2
         for line in _lines(out):
             refname, sha, stamp = line.split("\t")
@@ -1467,7 +1483,7 @@ def reap_orphans(
             recheck = "done"
     except (_Abort, GitError) as exc:
         print(f"WARN: listing failed — nothing deleted: {_one_line(exc)}")
-        summary(1)
+        summary(1, "listing-failed")
         return 2
 
     # ---- phase C: report / delete. Local before remote.
