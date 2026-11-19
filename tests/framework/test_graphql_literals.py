@@ -38,7 +38,7 @@ def tokenize_graphql(text: str) -> list[str]:
         elif text.startswith('"""', i):
             end = text.find('"""', i + 3)
             while end != -1 and text[end - 1] == "\\":
-                end = text.find('"""', end + 1)
+                end = text.find('"""', end + 3)
             if end == -1:
                 raise ValueError("unterminated block string")
             tokens.append('"')
@@ -48,7 +48,12 @@ def tokenize_graphql(text: str) -> list[str]:
             while i < n and text[i] != '"':
                 if text[i] in "\r\n":
                     raise ValueError("newline in string literal")
-                i += 2 if text[i] == "\\" else 1
+                if text[i] == "\\":
+                    if i + 1 >= n or text[i + 1] in "\r\n":
+                        raise ValueError("invalid escape in string literal")
+                    i += 2
+                else:
+                    i += 1
             if i >= n:
                 raise ValueError("unterminated string")
             tokens.append('"')
@@ -73,8 +78,8 @@ def tokenize_graphql(text: str) -> list[str]:
 def validate_graphql(text: str) -> None:
     """Raise ValueError unless `text` is a structurally valid single-operation
     document: balanced and correctly nested delimiters (never negative), every
-    selection set non-empty, a selection set opening only where one can
-    legally open, and nothing trailing the operation's closing brace."""
+    selection set non-empty (an empty input object `{}` inside parentheses or
+    brackets is allowed), and nothing trailing the operation's closing brace."""
     tokens = tokenize_graphql(text)
     if not tokens:
         raise ValueError("empty document")
@@ -84,9 +89,10 @@ def validate_graphql(text: str) -> None:
         if closed_top_level:
             raise ValueError(f"trailing tokens after the operation: {tokens[idx:]}")
         if tok in "({[":
-            stack.append(tok)
-            if tok == "{" and idx + 1 < len(tokens) and tokens[idx + 1] == "}":
+            is_selection_set = tok == "{" and "(" not in stack and "[" not in stack
+            if is_selection_set and idx + 1 < len(tokens) and tokens[idx + 1] == "}":
                 raise ValueError("empty selection set")
+            stack.append(tok)
         elif tok in _PAIRS:
             if not stack:
                 raise ValueError(f"unbalanced {tok!r}: nesting went negative")
@@ -192,6 +198,8 @@ class TestValidatorItself:
             "query($x:Int!){ a(n:$x){ b ... on T{ c } } }",
             '{ a(s:"}{") } # }',
             '{ a(s:"""}""") }',
+            "query { f(filter: {}) { a } }",
+            '{ a(s:"""x \\""" y""") }',
         ],
     )
     def test_accepts_valid(self, doc):
@@ -210,6 +218,11 @@ class TestValidatorItself:
             "{ a } { b }",
             "query",
             '{ a(s:"unterminated) }',
+            '{ a(s:"""unterminated) }',
+            '{ a(s:"line\nbreak") }',
+            '{ a(s:"back\\\nslash") }',
+            '{ a(s:"trailing\\',
+            "query { a % }",
         ],
     )
     def test_rejects_invalid(self, doc):

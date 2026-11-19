@@ -74,3 +74,9 @@ None → blocker_closure_satisfied returns _UNKNOWN → candidate FAILED → sel
 - (a) test_graphql_literals.py: write the invisible U+FEFF in the tokenizer whitespace set as the escape \ufeff.
 - (b) Add a guard test scanning scripts/, bootstrap/ and bin/ for graphql call sites (api graphql or "graphql" argv) and asserting the file set equals the four files covered by _literals().
 - (c) TestRealCaptureVerdicts verdict tests now assert the sent query= argv element equals "query=" + _CLOSER_QUERY and that the query passes validate_graphql.
+
+## Iteration 3 (second-review findings)
+
+- validate_graphql docstring narrowed to the checks actually performed (no claim about where a selection set may open).
+- Empty `{}` is rejected only as a selection set; an empty input object inside parentheses/brackets (`f(filter: {})`) is accepted.
+- tokenize_graphql: escaped `\"""` in block strings now consumes all three quotes; a backslash before a newline or at end of text in a single-line string raises ValueError. Reject/accept tests added.
