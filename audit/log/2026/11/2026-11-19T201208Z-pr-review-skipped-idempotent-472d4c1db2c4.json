@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"7073f9975ef06c907986bda742b704778b88d812","pr":2407,"prior_review_id":5982330282,"reason":"1215 precheck: overseer HUMAN_REQUIRED verdict already posted on this head; no new commits, reviews, or comments since; needs-human label present"}
