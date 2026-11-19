@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"b07afdea47a21419527f27563f65fdebfd718141","pr":2404,"reason":"1215: overseer verdict 5968085544 (APPROVE, human-required) already posted on this head at 01:44Z; no human activity since; needs-human applied, ScottThurlow requested","timestamp":"2026-11-19T01:56:59Z"}
