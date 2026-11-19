@@ -304,8 +304,8 @@ class CronEnv:
             # the fail-closed dedup path can be exercised.
             # #2405: shallow-clone escalation dedup — paginated, "<number> <title>" lines.
             # HOS_TEST_SHALLOW_QUERY_FAIL fails it; HOS_TEST_SHALLOW_OPEN_LINES is printed as-is.
-            '  *"--paginate"*"issues?state=open&per_page=30"*)\n'
-            '    [[ -n "${HOS_TEST_SHALLOW_QUERY_FAIL:-}" ]] && exit 1\n'
+            '  *"--paginate"*"issues?state=open&per_page=100"*)\n'
+            '    [[ -n "${HOS_TEST_SHALLOW_QUERY_FAIL:-}" ]] && exit "${HOS_TEST_SHALLOW_QUERY_FAIL}"\n'
             '    printf "%s" "${HOS_TEST_SHALLOW_OPEN_LINES:-}" ;;\n'
             '  *"issues?state=open&per_page=30"*".[].number"*)\n'
             '    [[ -n "${HOS_TEST_MAIN_DIVERGED_QUERY_FAIL:-}" ]] && exit 1\n'
@@ -371,7 +371,7 @@ class CronEnv:
             # tests can assert on escalation-note body text and issue labels.
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             # #2405: HOS_TEST_ISSUE_CREATE_FAIL makes the create fail without recording it.
-            '  [[ -n "${HOS_TEST_ISSUE_CREATE_FAIL:-}" ]] && exit 1\n'
+            '  [[ -n "${HOS_TEST_ISSUE_CREATE_FAIL:-}" ]] && { printf \'label \\"needs-human\\" not found\\nsecond line\\n\' >&2; exit 1; }\n'
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  _hy_prev=""\n'
             '  for _hy_arg in "$@"; do\n'
@@ -4554,6 +4554,16 @@ class TestOverseerBranchHygiene:
         (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
         assert esc["result"] == "query-failed"
 
+    def test_i6_shallow_escalation_dedup_query_timeout_fails_closed(self, cron):
+        """gh killed by timeout(1) exits 124: same fail-closed path, no marker, no filing."""
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_SHALLOW_QUERY_FAIL="124")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "query-failed"
+
     def test_i7_existing_open_issue_is_not_duplicated_and_marks_state(self, cron):
         self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
         title = "[BLOCKED] overseer branch reap: shallow clone on hos \u2014 needs manual recovery"
@@ -4583,7 +4593,8 @@ class TestOverseerBranchHygiene:
         assert not self.shallow_state(cron).exists()
         (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
         assert esc["result"] == "file-failed"
-        assert "escalation file-failed" in r.stdout
+        assert "escalation file-failed (gh: label" in r.stdout
+        assert "second line" not in r.stdout
         self.age_stamp(cron)
         self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
         results = [e["result"] for e in cron.audit_records("cycle-branch-reap-shallow-escalated")]

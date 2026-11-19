@@ -52,3 +52,13 @@ E. docs/CRON-SETUP.md audit-event table: document the new events/fields.
 
 Commit trailers: Prompt-Artifact: prompts/bin/hos-cron.v2405.md, AI-Risk: HIGH. "Part of #2405".
 ```
+
+## Fix round (reliability)
+1. Both shallow-escalation gh calls (paginated dedup query, `gh issue create`) are wrapped in a
+   `_RB_GH_BOUND` timeout (30 s, kill-after 5; `gtimeout` fallback); a timeout falls into the
+   query-failed / file-failed branches (fail closed, no marker). Test added for rc 124.
+2. Dedup query `per_page` raised 30 -> 100; still no label filter.
+3. `gh issue create` stderr is captured; on failure its first line (control chars stripped, 200
+   chars) is appended to the WARN only, never to the audit event.
+4. Docs/issue body: `<clone>` is the overseer clone; the reap re-runs after unshallow only when the
+   24 h stamp expires (delete it to force a re-check); the marker clears itself on a full-clone run.

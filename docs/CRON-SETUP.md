@@ -309,7 +309,11 @@ therefore unreliable: do not switch to `on` on the strength of it. The launcher 
 `needs-human` issue (`[BLOCKED] overseer branch reap: shallow clone on <project>`) the first
 time it sees a shallow clone, then stays quiet until a run reports a full clone (state file
 `branch-reap/overseer-<project>.shallow-escalated`). A human decides whether to run
-`git fetch --unshallow`; the launcher never does (#2405).
+`git fetch --unshallow` in the **overseer clone** (`<clone>` in the issue); the launcher never
+does (#2405). After an unshallow the reap re-runs only when the 24 h stamp
+`branch-reap/overseer-<project>.last` (under the HOS state dir) expires, so deleting that stamp
+forces an immediate re-check. The shallow-escalated marker clears itself on the next run that
+reports a full clone.
 
 **Enable procedure.** (1) Leave the default `dry-run` and review the first dry run in the
 cycle log and the `cycle-branch-reap-dry-run` event (`would_reap`, `items=<branch>:<reason>,...`).

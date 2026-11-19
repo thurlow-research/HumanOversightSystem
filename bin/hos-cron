@@ -1927,13 +1927,18 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     elif [[ "$_rb_shallow" == "1" && ! -e "$_rb_sh_state" ]]; then
       _rb_sh_prefix="[BLOCKED] overseer branch reap: shallow clone on "
       _rb_sh_title="${_rb_sh_prefix}${PROJECT} — needs manual recovery"
-      _rb_sh_result="" _rb_sh_num=""
+      _rb_sh_result="" _rb_sh_num="" _rb_sh_err=""
+      # Bound both gh calls: a hung gh must not stall the cycle while it holds the cron lock.
+      # A timeout lands in the query-failed / file-failed branches (fail closed, no marker).
+      _RB_GH_BOUND=()
+      if command -v timeout >/dev/null 2>&1; then _RB_GH_BOUND=(timeout --kill-after=5 30)
+      elif command -v gtimeout >/dev/null 2>&1; then _RB_GH_BOUND=(gtimeout --kill-after=5 30); fi
       if [[ -z "$_REPO_SLUG" ]]; then
         _rb_sh_result="no-slug"
       # Fail-CLOSED dedup (same shape as #1510): a query error is never "no existing issue".
       # Titles are compared in bash as whole strings (no filter interpolation, no prefix
       # collision between projects "foo" and "foobar"); --paginate sees every open issue.
-      elif _rb_sh_open=$(gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&per_page=30" \
+      elif _rb_sh_open=$(${_RB_GH_BOUND[@]+"${_RB_GH_BOUND[@]}"} gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&per_page=100" \
           --jq '.[] | "\(.number) \(.title)"' 2>/dev/null); then
         while IFS= read -r _rb_sh_line; do
           if [[ "${_rb_sh_line#* }" == "$_rb_sh_title" && "${_rb_sh_line%% *}" =~ ^[0-9]+$ ]]; then
@@ -1944,16 +1949,17 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
         if [[ -n "$_rb_sh_num" ]]; then
           _rb_sh_result="existing"
         else
-          _rb_sh_body="$(printf 'The overseer branch reap (`readopt reap-orphans`, #2287) found the `%s` overseer clone is a shallow clone. Ancestry checks are unreliable there, so reap-orphans refuses to delete anything: a real run deletes nothing and a dry run previews branches it would not actually reap (#2405).\n\nA human should decide whether to deepen the clone, e.g.:\n\n    git -C <clone> fetch --unshallow\n\nThis is not run automatically because it changes the clone. This issue is filed once; it is filed again only if the clone becomes non-shallow and later shallow again.\n' "$PROJECT")"
-          if gh issue create \
+          _rb_sh_body="$(printf 'The overseer branch reap (`readopt reap-orphans`, #2287) found the `%s` overseer clone is a shallow clone. Ancestry checks are unreliable there, so reap-orphans refuses to delete anything: a real run deletes nothing and a dry run previews branches it would not actually reap (#2405).\n\nA human should decide whether to deepen the clone, e.g.:\n\n    git -C <clone> fetch --unshallow\n\n`<clone>` is the **overseer clone** path. After the unshallow the reap re-runs only when the 24 h stamp `branch-reap/overseer-%s.last` (under the HOS state dir) expires; delete that stamp to force an immediate re-check.\n\nThis is not run automatically because it changes the clone. This issue is filed once; it is filed again only if the clone becomes non-shallow and later shallow again.\n' "$PROJECT" "$PROJECT")"
+          if _rb_sh_err=$(${_RB_GH_BOUND[@]+"${_RB_GH_BOUND[@]}"} gh issue create \
               --repo "$_REPO_SLUG" \
               --title "$_rb_sh_title" \
               --label "needs-human,priority:high" \
               --body "$_rb_sh_body" \
-              >/dev/null 2>&1; then
+              2>&1 >/dev/null); then
             _rb_sh_result="filed"
           else
             _rb_sh_result="file-failed"
+            _rb_sh_err="$(printf '%s' "${_rb_sh_err%%$'\n'*}" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)"
           fi
         fi
       else
@@ -1964,7 +1970,7 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
           if ! { mkdir -p "$_HOS_DIR/branch-reap" && touch "$_rb_sh_state"; } 2>/dev/null; then
             echo "$LOG_PREFIX WARN: could not write the shallow-escalated marker $_rb_sh_state (#2405)"
           fi ;;
-        *) echo "$LOG_PREFIX WARN: overseer shallow-clone escalation ${_rb_sh_result} — will retry next reap (#2405)" ;;
+        *) echo "$LOG_PREFIX WARN: overseer shallow-clone escalation ${_rb_sh_result}${_rb_sh_err:+ (gh: ${_rb_sh_err})} — will retry next reap (#2405)" ;;
       esac
       _audit cycle-branch-reap-shallow-escalated "role=overseer" "result=${_rb_sh_result}"
     fi
