@@ -1161,6 +1161,13 @@ class TestRealCaptureVerdicts:
     def _lookup(self):
         return lambda: swc._fetch_closer_node(REPO, 5, swc._Budget(10))
 
+    def _assert_sent_the_real_query(self, calls):
+        from tests.framework.test_graphql_literals import validate_graphql
+
+        assert len(calls) == 1
+        assert "query=" + swc._CLOSER_QUERY in calls[0]
+        validate_graphql(swc._CLOSER_QUERY)
+
     def test_closer_query_is_valid_graphql(self):
         from tests.framework.test_graphql_literals import validate_graphql
 
@@ -1170,13 +1177,14 @@ class TestRealCaptureVerdicts:
         calls = self._gh_returns(monkeypatch, _CAPTURE_PR_CLOSER)
         got = _satisfied([_closed_event(_BOT)], _always, self._lookup())
         assert got == "merge"
-        assert len(calls) == 1
+        self._assert_sent_the_real_query(calls)
 
     def test_manual_close_by_non_codeowner_bot_is_unsatisfied_not_unknown(self, monkeypatch):
-        self._gh_returns(monkeypatch, _CAPTURE_MANUAL_CLOSE)
+        calls = self._gh_returns(monkeypatch, _CAPTURE_MANUAL_CLOSE)
         got = _satisfied([_closed_event(_BOT)], _always, self._lookup())
         assert got is None
         assert got != swc._UNKNOWN
+        self._assert_sent_the_real_query(calls)
 
 
 class TestAncestry:

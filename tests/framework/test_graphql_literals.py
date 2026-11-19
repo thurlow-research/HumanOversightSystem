@@ -30,7 +30,7 @@ def tokenize_graphql(text: str) -> list[str]:
     i, n = 0, len(text)
     while i < n:
         ch = text[i]
-        if ch in " \t\r\n,﻿":
+        if ch in " \t\r\n,\ufeff":
             i += 1
         elif ch == "#":
             while i < n and text[i] not in "\r\n":
@@ -145,6 +145,43 @@ def test_closer_query_braces_are_balanced():
     counts = delimiter_counts(swc._CLOSER_QUERY)
     assert counts["{"] == counts["}"], counts
     assert counts["["] == counts["]"] and counts["("] == counts[")"], counts
+
+
+_CALL_SITE = re.compile(r"api graphql|[\"']graphql[\"']")
+_SKIP_DIRS = {".venv", "__pycache__", "node_modules", ".git"}
+_COVERED_FILES = {
+    "scripts/framework/select_work_candidates.py",
+    "scripts/automation/lib/github.py",
+    "scripts/automation/lib/merge_authority.py",
+    "bootstrap/post_review_thread.sh",
+}
+
+
+def _graphql_call_site_files() -> set[str]:
+    found: set[str] = set()
+    for top in ("scripts", "bootstrap", "bin"):
+        base = REPO_ROOT / top
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file() or _SKIP_DIRS & set(path.relative_to(REPO_ROOT).parts):
+                continue
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if _CALL_SITE.search(text):
+                found.add(path.relative_to(REPO_ROOT).as_posix())
+    return found
+
+
+def test_every_graphql_call_site_has_a_literal_check():
+    found = _graphql_call_site_files()
+    assert found == _COVERED_FILES, (
+        f"GraphQL call sites changed. New/removed: {sorted(found ^ _COVERED_FILES)}. "
+        "Add the new literal to _literals() and _COVERED_FILES in this file "
+        "so it is structurally validated."
+    )
 
 
 class TestValidatorItself:

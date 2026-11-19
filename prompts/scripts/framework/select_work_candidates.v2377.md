@@ -68,3 +68,9 @@ None → blocker_closure_satisfied returns _UNKNOWN → candidate FAILED → sel
   then Read the log. No && chaining.
 - Self-flag per AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS) in your final message.
 ```
+
+## Iteration 2 (code-review SHOULD_FIX)
+
+- (a) test_graphql_literals.py: write the invisible U+FEFF in the tokenizer whitespace set as the escape \ufeff.
+- (b) Add a guard test scanning scripts/, bootstrap/ and bin/ for graphql call sites (api graphql or "graphql" argv) and asserting the file set equals the four files covered by _literals().
+- (c) TestRealCaptureVerdicts verdict tests now assert the sent query= argv element equals "query=" + _CLOSER_QUERY and that the query passes validate_graphql.
