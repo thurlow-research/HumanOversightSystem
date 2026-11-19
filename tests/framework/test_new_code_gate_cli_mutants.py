@@ -523,3 +523,17 @@ def test_main_dispatches_the_phase_and_maps_failures_to_exit_three(monkeypatch, 
     monkeypatch.setitem(gate.HANDLERS, "_collect", crash)
     assert gate.main(["_collect", "--file", "x.py"]) == 3
     assert capsys.readouterr().err == "new_code_gate: internal error: ValueError: boom\n"
+
+
+# --------------------------------------------------------------------------
+# Clock
+# --------------------------------------------------------------------------
+
+
+def test_clock_epoch_is_whole_seconds_since_the_unix_epoch():
+    import time
+
+    before = int(time.time())
+    got = gate.Clock().epoch()
+    after = int(time.time())
+    assert isinstance(got, int) and before <= got <= after
