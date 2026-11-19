@@ -371,7 +371,8 @@ class CronEnv:
             # tests can assert on escalation-note body text and issue labels.
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             # #2405: HOS_TEST_ISSUE_CREATE_FAIL makes the create fail without recording it.
-            '  [[ -n "${HOS_TEST_ISSUE_CREATE_FAIL:-}" ]] && { printf \'label \\"needs-human\\" not found\\nsecond line\\n\' >&2; exit 1; }\n'
+            '  [[ -n "${HOS_TEST_ISSUE_CREATE_FAIL:-}" ]] && '
+            "{ printf 'label \\\"needs-human\\\" not found\\nsecond line\\n' >&2; exit 1; }\n"
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  _hy_prev=""\n'
             '  for _hy_arg in "$@"; do\n'
