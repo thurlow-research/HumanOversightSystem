@@ -1906,7 +1906,12 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
       elif [[ "$_rb_rc" -eq 124 || "$_rb_rc" -eq 137 ]]; then _rb_areason="timeout"
       elif [[ "$_rb_have_summary" -eq 0 ]]; then _rb_areason="no-summary"
       else _rb_areason="rc-${_rb_rc}"; fi
-      echo "$LOG_PREFIX WARN: overseer branch reap (mode=${_RB_MODE}) aborted or failed: reason=${_rb_areason} rc=${_rb_rc} — no branches were deleted by this run (#2405)"
+      # "Nothing deleted" is only true for a clean abort before any delete (aborted=1);
+      # a timeout/crash/no-summary may follow partial deletes (the REAPED lines are audited).
+      if [[ "$_rb_aborted" == "1" ]]; then _rb_dnote="nothing was deleted by this run"
+      elif [[ "$_RB_MODE" == "dry-run" ]]; then _rb_dnote="a dry run deletes nothing"
+      else _rb_dnote="deletions before the failure may have occurred — see the cycle-branch-reap audit events"; fi
+      echo "$LOG_PREFIX WARN: overseer branch reap (mode=${_RB_MODE}) aborted or failed: reason=${_rb_areason} rc=${_rb_rc} — ${_rb_dnote} (#2405)"
       _audit cycle-branch-reap-aborted "role=overseer" "mode=${_RB_MODE}" "rc=${_rb_rc}" "reason=${_rb_areason}"
     fi
     if [[ "$_rb_rc" -ne 0 ]]; then
@@ -1919,21 +1924,30 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     _rb_sh_state="$_HOS_DIR/branch-reap/overseer-${PROJECT}.shallow-escalated"
     if [[ "$_rb_shallow" == "0" ]]; then
       rm -f "$_rb_sh_state" 2>/dev/null || true
-    elif [[ "$_rb_shallow" == "1" && -n "$_REPO_SLUG" && ! -e "$_rb_sh_state" ]]; then
-      _rb_sh_prefix="[BLOCKED] overseer branch reap: shallow clone on ${PROJECT}"
+    elif [[ "$_rb_shallow" == "1" && ! -e "$_rb_sh_state" ]]; then
+      _rb_sh_prefix="[BLOCKED] overseer branch reap: shallow clone on "
+      _rb_sh_title="${_rb_sh_prefix}${PROJECT} — needs manual recovery"
       _rb_sh_result="" _rb_sh_num=""
+      if [[ -z "$_REPO_SLUG" ]]; then
+        _rb_sh_result="no-slug"
       # Fail-CLOSED dedup (same shape as #1510): a query error is never "no existing issue".
-      if _rb_sh_open=$(gh api "repos/${_REPO_SLUG}/issues?state=open&per_page=30" \
-          --jq "[.[] | select(.title | startswith(\"${_rb_sh_prefix}\"))] | .[].number" \
-          2>/dev/null); then
-        _rb_sh_num="$(printf '%s\n' "$_rb_sh_open" | head -1)"
+      # Titles are compared in bash as whole strings (no filter interpolation, no prefix
+      # collision between projects "foo" and "foobar"); --paginate sees every open issue.
+      elif _rb_sh_open=$(gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&per_page=30" \
+          --jq '.[] | "\(.number) \(.title)"' 2>/dev/null); then
+        while IFS= read -r _rb_sh_line; do
+          if [[ "${_rb_sh_line#* }" == "$_rb_sh_title" && "${_rb_sh_line%% *}" =~ ^[0-9]+$ ]]; then
+            _rb_sh_num="${_rb_sh_line%% *}"
+            break
+          fi
+        done <<< "$_rb_sh_open"
         if [[ -n "$_rb_sh_num" ]]; then
           _rb_sh_result="existing"
         else
           _rb_sh_body="$(printf 'The overseer branch reap (`readopt reap-orphans`, #2287) found the `%s` overseer clone is a shallow clone. Ancestry checks are unreliable there, so reap-orphans refuses to delete anything: a real run deletes nothing and a dry run previews branches it would not actually reap (#2405).\n\nA human should decide whether to deepen the clone, e.g.:\n\n    git -C <clone> fetch --unshallow\n\nThis is not run automatically because it changes the clone. This issue is filed once; it is filed again only if the clone becomes non-shallow and later shallow again.\n' "$PROJECT")"
           if gh issue create \
               --repo "$_REPO_SLUG" \
-              --title "${_rb_sh_prefix} — needs manual recovery" \
+              --title "$_rb_sh_title" \
               --label "needs-human,priority:high" \
               --body "$_rb_sh_body" \
               >/dev/null 2>&1; then

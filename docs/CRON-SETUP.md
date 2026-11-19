@@ -324,7 +324,7 @@ Related audit events (role `overseer`):
 | `cycle-branch-reap-dry-run` | Once per dry run: `would_reap`, `would_local`, `would_remote`, `kept`, `aborted`, `items` (capped at 500 chars), `shallow` (`1`: the preview is unreliable). |
 | `cycle-branch-reap-summary` | Once per `on` run: `mode`, `reaped_local`, `reaped_remote`, `kept`, `failed`, `aborted`, `shallow`, `rc` (`-` for a value that was not reported). |
 | `cycle-branch-reap-aborted` | A run aborted or failed (any mode; also role `worker` for `reap-landed`): `mode`, `rc`, `reason` (`shallow-clone`, `git-error`, `listing-failed`, `timeout`, `no-summary` or `rc-<n>`). A WARN is also logged. |
-| `cycle-branch-reap-shallow-escalated` | A shallow-clone escalation was attempted: `result` is `filed`, `existing` (an open issue was found), `file-failed` or `query-failed` (nothing is marked, so the next reap retries). |
+| `cycle-branch-reap-shallow-escalated` | A shallow-clone escalation was attempted: `result` is `filed`, `existing` (an open issue with the exact title was found), `file-failed`, `query-failed` or `no-slug` (nothing is marked, so the next reap retries). |
 | `cycle-branch-reap-git-error` | More than 3 KEEPs in one run were `git-error` (typically a read-only `.git`): `count`, `threshold`, `cause` (first git stderr line, sanitized, capped). A WARN is also logged. |
 | `cycle-branch-reap-archived` | A recovery ref was written before a delete (#2314): `branch`, `where`, `ref` (`refs/archive/reap/<branch>@<tip12>`), `tip`. |
 | `cycle-branch-reap-archive-failed` | The archive write failed, so the branch was kept (`KEEP reason=archive-failed`): `branch`, `where`, `tip`. A WARN is also logged. A run where every archive fails is inert, not silent. |
