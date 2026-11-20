@@ -695,8 +695,9 @@ _PREMISE_59951 = (
     "rather than editing this test"
 )
 _PREMISE_2194 = (
-    "the CVE-2026-116684/5/6 and CVE-2026-115563 exemptions' premise no longer holds (HOS must never "
-    "import mcp or run an MCP client or server) — remove the exemptions (upgrade "
+    "the CVE-2026-116684/5/6 and CVE-2026-115563 exemptions' premise no longer holds "
+    "(HOS must never import mcp or run an MCP client or server) — remove the "
+    "exemptions (upgrade "
     "mcp once semgrep unpins it, #2120) rather than editing this test"
 )
 _MCP_CLIENT = re.compile(
@@ -812,7 +813,8 @@ def test_pr5_no_tracked_python_file_imports_mcp():
         ("MyClientSessionFactory", False),
         ("my_sse_client_helper", False),
         ("an MCP client talks to a server", False),
-        ("from mcp.client.auth import OAuthClientProvider", True),
+        ("import mcp.client.auth", True),
+        ("auth = OAuthClientProvider(...)", True),
         ("auth = ClientCredentialsOAuthProvider(...)", True),
         ("auth = PrivateKeyJWTOAuthProvider(...)", True),
         ("auth = RFC7523OAuthClientProvider(...)", True),
