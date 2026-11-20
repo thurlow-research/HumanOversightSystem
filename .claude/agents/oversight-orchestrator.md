@@ -126,6 +126,26 @@ Validated tier: {tier}  |  Composite score: {score}
 [If CRITICAL step: record human's explicit authorization to proceed here — date + decision]
 ```
 
+**1a. dep-mapper LOW disclosure (suspended blocker).** If `.claudetmp/oversight/validators/risk-assessment.md` has any `resolution: suspended: dep-mapper …` entry, **insert** this section into `step{N}-handoff.md` (on PROCEED **and** CONDITIONAL_PROCEED) directly after the `## 🤖 AI-Submitted Pull Request` block, immediately before the `# Handoff — Step {N}` line (if the handoff has no such line, before the next column-0 heading after the AI-Submitted block) — never append it at the end. The handoff's line 1 must be `## 🤖 AI-Submitted Pull Request`, nothing above the disclosure may be another heading, and there is one blank line before the disclosure heading and one after `Result: PASS`. Fill `<…>` from `python3 scripts/oversight/suspension_manager.py --suspension-status dep-mapper` (`EXPIRES=`, `UNTIL_CLOSED=`) and the `Authorized by:` line of `contract/gate-suspension.md`; `UNTIL_CLOSED=` prints the bare number; write it as `until-closed: issue <number>` (e.g. `until-closed: issue 2162`), or `until-closed: none` when empty. Never write `#<number>` or `GH-<number>` anywhere in this section, and never pass `--closes` for the until-closed issue — anywhere in the PR's title, body or commit messages: GitHub reads "closed: #N" as a closing reference, so merging would close that issue and end the suspension. If the closing-keyword guard refuses the PR for that issue, reword; never declare it. The section may contain no closing keyword (close/fix/resolve and their forms) followed by an issue reference. Copy the two trace sections, headings included, unchanged from `.claudetmp/oversight/step{N}-dep-mapper-trace.md`. `pr_readiness` REQ-W-18 checks this section deterministically against the validated trace and the suspension, and refuses the PR without it.
+
+The section allows only plain text, so the human sees every line: letters, digits, spaces and `. , : ; ( ) / - _ ' " ! ? = + % # @ { } ^ — – → §`, with `|` only in the copied table. No other non-ASCII characters. Every line starts with a letter, digit, `(`, `.`, `/`, a quote, `- ` (followed directly by one of those) or `|`, and is indented at most 3 spaces; no backticks, `$ \ & [ ] < > * ~`, emphasis, links, emoji shortcodes or tabs. Nothing above the section may contain a code fence, `$`, raw HTML, `]:`, a link with a title, a reference link, an image, or a control or line-separator character; plain `[text](url)` links are fine there. Never reword a value to make it pass; if a value cannot be written in this character set, stop and escalate.
+
+```markdown
+## dep-mapper LOW disclosure (suspended blocker)
+
+dep-mapper reported Data confidence: LOW on this step. Per contract/gate-suspension.md
+(Authorized by: <the file's "Authorized by:" value>; expires: <EXPIRES, or "none" if empty>; until-closed: <"issue " + UNTIL_CLOSED, e.g. issue 2162, or "none" if empty>)
+it is not blocking while the suspension is active.
+Manual trace: .claudetmp/oversight/step{N}-dep-mapper-trace.md
+
+<the trace's "## Callers / readers checked" heading, blank line and table, copied unchanged>
+
+<the trace's "## Items dep-mapper left untraced" heading, blank line and list, copied unchanged>
+
+Result: PASS
+
+```
+
 **2. Open the PR using the full handoff:**
 ```bash
 gh pr create \
@@ -227,6 +247,8 @@ a resolved finding or confidence gap that automated review cannot fully clear.
 
 *These are in addition to panel findings, which will be posted as review threads.*
 ```
+
+**SPEC-82 WARN on `contract/gate-suspension.md`.** When an item comes from the evaluator's governance-artifact authorship WARN naming `contract/gate-suspension.md`, keep the item exactly as the evaluator worded it and append one indented sub-line beneath it: "To verify: `git log --diff-filter=A --format='%h %s' -- contract/gate-suspension.md` gives the adding PR (`(#<n>)`). Confirm that PR carries a CODEOWNER approval and that `git diff <default>...HEAD -- contract/gate-suspension.md` is empty on this branch." Never remove, merge, reword, or mark the WARN item resolved — the sub-line is a recipe for the human, not an assertion that the WARN is benign.
 
 **3. Title and open the PR** (the body now includes the section appended in step 2):
 ```bash

@@ -142,6 +142,19 @@ as a pending proposal; it is now current state. The per-invocation cost of `pm-a
 than a static estimate, since neither agent's call volume is fixed enough to project a
 reliable dollar figure here.
 
+**Cron cycles now honour `model:` (#2359).** Before #2359 the `model:` frontmatter applied
+only to subagent dispatch: `bin/hos-cron` launches each cycle as a top-level
+`claude --print`, so the worker and overseer cycles silently ran the account default model
+despite `model: opus`. `bin/hos-cron` now reads `model:` from the role's agent file
+(`.claude/agents/<role>.md`) via `bootstrap/lib/agent_model.py`, passes `--model`, and fails
+closed (no cycle) when it cannot be resolved. Per the human's 2026-11-16 ruling, `worker`,
+`overseer` and `oversight-evaluator` run on Opus permanently. Revisit after the v0.7.2
+deterministic-orchestration work
+([#1643](https://github.com/thurlow-research/HumanOversightSystem/issues/1643),
+[#1644](https://github.com/thurlow-research/HumanOversightSystem/issues/1644)). The agent
+files' frontmatter is the single source of truth for assignments; this doc does not restate
+them per agent.
+
 **Dynamic escalation (proposed, #63).** The split above is *static*. A separate proposal —
 [#63](https://github.com/thurlow-research/HumanOversightSystem/issues/63), designed in
 [`specs/TECHNICAL-DESIGN-63-model-escalation.md`](specs/TECHNICAL-DESIGN-63-model-escalation.md) —

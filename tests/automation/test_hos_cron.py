@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -213,6 +214,8 @@ class CronEnv:
             '  echo "tmpdir=${TMPDIR:-UNSET}"\n'
             '  echo "claude_code_tmpdir=${CLAUDE_CODE_TMPDIR:-UNSET}"\n'
             '  echo "hos_tmp_dir=${HOS_TMP_DIR:-UNSET}"\n'
+            # #2359: the launcher must pass --model from the role's agent file.
+            '  echo "argv=$*"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -299,6 +302,11 @@ class CronEnv:
             # per_page value (30 vs 20) so the two queries don't collide.
             # HOS_TEST_MAIN_DIVERGED_QUERY_FAIL simulates a gh API failure so
             # the fail-closed dedup path can be exercised.
+            # #2405: shallow-clone escalation dedup — paginated, "<number> <title>" lines.
+            # HOS_TEST_SHALLOW_QUERY_FAIL fails it; HOS_TEST_SHALLOW_OPEN_LINES is printed as-is.
+            '  *"--paginate"*"issues?state=open&per_page=100"*)\n'
+            '    [[ -n "${HOS_TEST_SHALLOW_QUERY_FAIL:-}" ]] && exit "${HOS_TEST_SHALLOW_QUERY_FAIL}"\n'
+            '    printf "%s" "${HOS_TEST_SHALLOW_OPEN_LINES:-}" ;;\n'
             '  *"issues?state=open&per_page=30"*".[].number"*)\n'
             '    [[ -n "${HOS_TEST_MAIN_DIVERGED_QUERY_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_MAIN_DIVERGED_OPEN_NUMS:-} ;;\n'
@@ -362,6 +370,9 @@ class CronEnv:
             # --body/--label token and capture it verbatim (#1415, #1496) so
             # tests can assert on escalation-note body text and issue labels.
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
+            # #2405: HOS_TEST_ISSUE_CREATE_FAIL makes the create fail without recording it.
+            '  [[ -n "${HOS_TEST_ISSUE_CREATE_FAIL:-}" ]] && '
+            "{ printf 'label \\\"needs-human\\\" not found\\nsecond line\\n' >&2; exit 1; }\n"
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  _hy_prev=""\n'
             '  for _hy_arg in "$@"; do\n'
@@ -486,6 +497,7 @@ class CronEnv:
             "scripts/framework/requester_trust.py",
             "scripts/framework/require_human_approval.py",
             "bootstrap/lib/hos_tmp_root.py",  # #2054: the launcher's temp-dir resolver
+            "bootstrap/lib/agent_model.py",  # #2359: the launcher's per-role model resolver
         ):
             _dst = self.repo / _rel
             _dst.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +537,10 @@ class CronEnv:
         for _role in ("worker", "overseer"):
             self.prompt_file(_role).parent.mkdir(parents=True, exist_ok=True)
             self.prompt_file(_role).write_text(f"## {_role} cron prompt\n")
+        # #2359: the launcher passes --model from each role's agent file and fails closed
+        # without one. Distinct values per role prove the per-role file is the source.
+        for _role, _model in (("worker", "opus"), ("overseer", "sonnet")):
+            self.write_role_agent(_role, _model)
 
     @property
     def lock_dir(self) -> Path:
@@ -679,12 +695,24 @@ class CronEnv:
             env=child_env(env),
         )
 
+    def write_role_agent(self, role: str, model: Optional[str]) -> Path:
+        """Write .claude/agents/<role>.md; frontmatter carries `model:` unless model is None (#2359)."""
+        p = self.repo / ".claude" / "agents" / f"{role}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        model_line = f"model: {model}\n" if model is not None else ""
+        p.write_text(f"---\nname: {role}\n{model_line}---\n# {role}\n")
+        return p
+
     def add_agent_files(self, *slugs: str) -> None:
-        """Create .claude/agents/<slug>.md stubs for the given agent slugs."""
+        """Create .claude/agents/<slug>.md stubs for the given agent slugs.
+
+        An existing file is kept: the role files carry the `model:` frontmatter the
+        launcher requires (#2359)."""
         for slug in slugs:
             p = self.repo / ".claude" / "agents" / f"{slug}.md"
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(f"# {slug}\n")
+            if not p.exists():
+                p.write_text(f"# {slug}\n")
 
     def set_consumer_agents(self, *slugs: str) -> None:
         """Write a consumer_agents.txt with only the given slugs (no comments)."""
@@ -4284,7 +4312,9 @@ class TestOverseerBranchHygiene:
         self._stubs(cron, out=line + "\nnot a REAPED line\n", rc=124)
         r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
         assert "failed (rc=124 timeout)" in r.stdout
-        (rec,) = cron.audit_records("cycle-branch-reap")
+        (rec,) = [
+            e for e in cron.audit_records("cycle-branch-reap") if e["event"] == "cycle-branch-reap"
+        ]
         assert rec["role"] == "overseer" and rec["branch"] == "pr-7-review"
         assert (rec["reason"], rec["where"], rec["pr"], rec["tip"]) == (
             "review-pr-done",
@@ -4300,6 +4330,43 @@ class TestOverseerBranchHygiene:
         self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
         (rec,) = cron.audit_records("cycle-branch-reap-failed")
         assert rec["pr"] == "-" and rec["reason"] == "delete-failed"
+
+    def test_h6_archived_and_archive_failed_lines_are_audited(self, cron):
+        ref = f"refs/archive/reap/worker-5-x@{SHA7[:12]}"
+        self._stubs(
+            cron,
+            out=(
+                f"ARCHIVED branch=worker-5-x where=local ref={ref} tip={SHA7}\n"
+                f"KEEP branch=worker-6-y reason=archive-failed where=local tip={SHA7}\n"
+                f"KEEP branch=worker-7-z reason=git-error where=local tip={SHA7}\n"
+            ),
+        )
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "could not archive worker-6-y" in r.stdout
+        (arch,) = cron.audit_records("cycle-branch-reap-archived")
+        assert (arch["branch"], arch["where"], arch["ref"], arch["tip"]) == (
+            "worker-5-x",
+            "local",
+            ref,
+            SHA7,
+        )
+        (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
+        assert (fail["branch"], fail["where"], fail["tip"]) == ("worker-6-y", "local", SHA7)
+
+    def test_h6_archive_failed_with_pr_remote_and_malformed_archived(self, cron):
+        self._stubs(
+            cron,
+            out=(
+                f"KEEP branch=worker-8-r reason=archive-failed where=remote pr=#8 tip={SHA7}\n"
+                f"ARCHIVED branch=worker-9-b where=local ref=refs/archive/reap/x@abc tip=short\n"
+                f"KEEP branch=worker-9-c reason=archive-failed where=local tip={SHA7}0\n"
+            ),
+        )
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "could not archive worker-8-r" in r.stdout
+        (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
+        assert (fail["branch"], fail["where"], fail["tip"]) == ("worker-8-r", "remote", SHA7)
+        assert cron.audit_records("cycle-branch-reap-archived") == []
 
     def test_h7_dry_run_writes_one_summary_audit_event(self, cron):
         out = (
@@ -4356,6 +4423,285 @@ class TestOverseerBranchHygiene:
         self._run(cron)
         (rec,) = cron.audit_records("cycle-review-worktree-kept")
         assert (rec["pr"], rec["path"], rec["reason"]) == (8, "/x/my dir/wt", "head-moved")
+
+    # ---- #2405: on-mode aborts and shallow clones must be visible ----------------------------
+
+    _SUMMARY_ABORT = (
+        "SUMMARY reaped_local=0 reaped_remote=0 kept=0 failed=0 deferred=0 api_calls=0"
+        " aborted=1 remote_skipped=0 recheck=none archived=0 shallow=1 abort_reason=shallow-clone\n"
+    )
+    _SUMMARY_OK = (
+        "SUMMARY reaped_local=2 reaped_remote=0 kept=4 failed=1 deferred=0 api_calls=3"
+        " aborted=0 remote_skipped=1 recheck=done archived=0 shallow=0 abort_reason=none\n"
+    )
+
+    def shallow_state(self, cron):
+        return cron.state / "branch-reap" / "overseer-hos.shallow-escalated"
+
+    def issues_created(self, cron):
+        marker = cron.aa_issue_marker
+        return len(marker.read_text().splitlines()) if marker.exists() else 0
+
+    def age_stamp(self, cron):
+        old = time.time() - 25 * 3600
+        os.utime(self.stamp(cron), (old, old))
+
+    def test_i1_on_mode_abort_audits_summary_and_aborted(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["role"], summ["mode"], summ["aborted"], summ["shallow"], summ["rc"]) == (
+            "overseer",
+            "on",
+            1,
+            1,
+            2,
+        )
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["role"], ab["mode"], ab["rc"], ab["reason"]) == (
+            "overseer",
+            "on",
+            2,
+            "shallow-clone",
+        )
+        assert "WARN: overseer branch reap (mode=on) aborted or failed: reason=shallow-clone" in (
+            r.stdout
+        )
+
+    def test_i2_on_mode_success_audits_summary_only(self, cron):
+        self._stubs(cron, out=self._SUMMARY_OK)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["reaped_local"], summ["reaped_remote"], summ["kept"], summ["failed"]) == (
+            2,
+            0,
+            4,
+            1,
+        )
+        assert (summ["aborted"], summ["shallow"], summ["rc"]) == (0, 0, 0)
+        assert not cron.audit_records("cycle-branch-reap-aborted")
+
+    def test_i3_no_summary_with_timeout_rc_is_aborted_timeout(self, cron):
+        self._stubs(cron, out="", rc=124)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["reaped_local"], summ["aborted"], summ["shallow"]) == ("-", "-", "-")
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["reason"], ab["rc"]) == ("timeout", 124)
+
+    @pytest.mark.parametrize(
+        "out,rc,reason",
+        [("", 0, "no-summary"), (_SUMMARY_OK, 3, "rc-3")],
+    )
+    def test_i3_no_summary_rc_zero_and_plain_rc_reasons(self, cron, out, rc, reason):
+        self._stubs(cron, out=out, rc=rc)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert ab["reason"] == reason
+
+    def test_i4_dry_run_event_carries_shallow_and_warns(self, cron):
+        out = (
+            "SUMMARY reaped_local=0 reaped_remote=0 kept=5 failed=0 deferred=0 api_calls=3"
+            " aborted=0 remote_skipped=1 recheck=skipped archived=0 shallow=1 abort_reason=none\n"
+        )
+        self._stubs(cron, out=out)
+        r = self._run(cron)
+        (rec,) = cron.audit_records("cycle-branch-reap-dry-run")
+        assert (rec["kept"], rec["shallow"]) == (5, 1)
+        assert "dry-run preview is unreliable" in r.stdout
+        assert not cron.audit_records("cycle-branch-reap-aborted")
+
+    def test_i4_dry_run_abort_is_audited(self, cron):
+        self._stubs(cron, out="", rc=2)
+        self._run(cron)
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["mode"], ab["reason"]) == ("dry-run", "no-summary")
+        assert not cron.audit_records("cycle-branch-reap-summary")
+
+    def test_i5_shallow_escalates_once_then_rearms_after_unshallow(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 1
+        assert cron.aa_issue_label() == "needs-human,priority:high"
+        assert "fetch --unshallow" in cron.aa_issue_body()
+        assert "#2405" in cron.aa_issue_body()
+        assert self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert (esc["role"], esc["result"]) == ("overseer", "filed")
+
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.issues_created(cron) == 1, "state file present: no second filing"
+        assert len(cron.audit_records("cycle-branch-reap-shallow-escalated")) == 1
+
+        self._stubs(cron, out=self._SUMMARY_OK)
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert not self.shallow_state(cron).exists(), "shallow=0 clears the marker"
+
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.issues_created(cron) == 2, "a recurrence escalates again"
+
+    def test_i6_shallow_escalation_dedup_query_failure_fails_closed(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_SHALLOW_QUERY_FAIL="1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "query-failed"
+
+    def test_i6_shallow_escalation_dedup_query_timeout_fails_closed(self, cron):
+        """gh killed by timeout(1) exits 124: same fail-closed path, no marker, no filing."""
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_SHALLOW_QUERY_FAIL="124")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "query-failed"
+
+    def test_i7_existing_open_issue_is_not_duplicated_and_marks_state(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        title = "[BLOCKED] overseer branch reap: shallow clone on hos \u2014 needs manual recovery"
+        self._run(
+            cron,
+            HOS_OVERSEER_BRANCH_REAP="dry-run",
+            HOS_TEST_SHALLOW_OPEN_LINES=f"12 unrelated\n77 {title}\n",
+        )
+        assert self.issues_created(cron) == 0
+        assert self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "existing"
+
+    def test_i7_other_project_with_same_prefix_does_not_dedup(self, cron):
+        """Project "hos" must not match the open issue of project "hos2" (#2405)."""
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        other = "[BLOCKED] overseer branch reap: shallow clone on hos2 \u2014 needs manual recovery"
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_SHALLOW_OPEN_LINES=f"78 {other}\n")
+        assert self.issues_created(cron) == 1
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "filed"
+
+    def test_i9_file_failed_writes_no_marker_and_retries(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_ISSUE_CREATE_FAIL="1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not self.shallow_state(cron).exists()
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "file-failed"
+        assert "escalation file-failed (gh: label" in r.stdout
+        assert "second line" not in r.stdout
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        results = [e["result"] for e in cron.audit_records("cycle-branch-reap-shallow-escalated")]
+        assert sorted(results) == ["file-failed", "filed"]
+        assert self.shallow_state(cron).exists()
+
+    def test_i10_unknown_shallow_neither_clears_nor_files(self, cron):
+        out = self._SUMMARY_ABORT.replace("shallow=1", "shallow=-")
+        self._stubs(cron, out=out, rc=2)
+        self.shallow_state(cron).parent.mkdir(parents=True)
+        self.shallow_state(cron).touch()
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.shallow_state(cron).exists(), "shallow=- must not clear the marker"
+        assert self.issues_created(cron) == 0
+        self.shallow_state(cron).unlink()
+        self.age_stamp(cron)
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        assert not cron.audit_records("cycle-branch-reap-shallow-escalated")
+
+    def test_i11_empty_repo_slug_never_files_and_the_branch_is_audited(self, cron):
+        """An empty slug already halts the cycle at the fail-closed halt check (before the
+        reap), so the reap block's own no-slug branch is a defensive second guard: pin both."""
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_REPO_SLUG="")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "HALT CHECK UNAVAILABLE: empty repo slug" in r.stdout
+        assert self.issues_created(cron) == 0
+        assert not self.shallow_state(cron).exists()
+        text = HOS_CRON.read_text()
+        assert '_rb_sh_result="no-slug"' in text
+
+    def test_i12_abort_warn_claims_nothing_deleted_only_for_a_clean_abort(self, cron):
+        self._stubs(cron, out=self._SUMMARY_ABORT, rc=2)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "nothing was deleted by this run" in r.stdout
+        assert "deletions before the failure may have occurred" not in r.stdout
+
+    @pytest.mark.parametrize("out,rc", [("", 124), ("", 0), ("SUMMARY_OK", 3)])
+    def test_i12_crash_or_timeout_warn_admits_partial_deletes(self, cron, out, rc):
+        out = self._SUMMARY_OK if out else out
+        self._stubs(cron, out=out, rc=rc)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert "deletions before the failure may have occurred" in r.stdout
+        assert "cycle-branch-reap audit events" in r.stdout
+        assert "nothing was deleted by this run" not in r.stdout
+
+    def test_i13_title_prefix_literal_agrees_with_the_requester_trust_marker(self):
+        from scripts.framework.requester_trust import MACHINE_FILING_MARKERS
+
+        (literal,) = re.findall(r'^\s*_rb_sh_prefix="([^"]*)"$', HOS_CRON.read_text(), re.M)
+        (marker,) = [
+            m for m in MACHINE_FILING_MARKERS if m.marker_id == "hos-cron/overseer-reap-shallow"
+        ]
+        assert literal == marker.title_prefix
+        assert literal.endswith(" on ")
+
+    def test_i14_real_readopt_shallow_summary_feeds_the_launcher_parser(self, cron, tmp_path):
+        """Contract: SUMMARY from the REAL readopt on a REAL shallow clone must satisfy the
+        launcher's regex, so producer and parser cannot drift apart."""
+        src, clone = tmp_path / "ro-src", tmp_path / "ro-clone"
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
+        for n in ("a", "b"):
+            (src / n).write_text(n)
+            subprocess.run(["git", "-C", str(src), "add", n], check=True)
+            subprocess.run(["git", "-C", str(src)] + ident + ["commit", "-q", "-m", n], check=True)
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", f"file://{src}", str(clone)], check=True
+        )
+        root = Path(__file__).parent.parent.parent
+        real = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.automation.readopt",
+                "--repo",
+                str(clone),
+                "reap-orphans",
+                "--local-only",
+                "--max-deletions",
+                "100",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert real.returncode == 2, real.stdout + real.stderr
+        assert " shallow=1 abort_reason=shallow-clone" in real.stdout
+        self._stubs(cron, out=real.stdout, rc=real.returncode)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        (summ,) = cron.audit_records("cycle-branch-reap-summary")
+        assert (summ["aborted"], summ["shallow"], summ["rc"]) == (1, 1, 2)
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert ab["reason"] == "shallow-clone"
+        (esc,) = cron.audit_records("cycle-branch-reap-shallow-escalated")
+        assert esc["result"] == "filed"
+
+    def test_i8_worker_reap_landed_failure_is_audited(self, cron):
+        self._stubs(cron, out="", rc=124)
+        r = cron.run(role="worker")
+        assert r.returncode == 0, r.stdout + r.stderr
+        (ab,) = cron.audit_records("cycle-branch-reap-aborted")
+        assert (ab["role"], ab["mode"], ab["rc"], ab["reason"]) == ("worker", "on", 124, "timeout")
 
     def test_h9_each_kept_worktree_is_audited_with_pr_path_reason(self, cron):
         self._stubs(cron)
@@ -6463,3 +6809,72 @@ class TestUsagePauseGate:
         lines = _usage_lines(r)
         assert len(lines) == 1 and "[USAGE-OK]" in lines[0], r.stdout + r.stderr
         assert cron.claude_ran()
+
+
+# ──────────────────── Cycle model from the role agent file (#2359) ────────────────────
+class TestCycleModel:
+    """The top-level cycle ignores the agent file's `model:` unless the launcher passes it."""
+
+    @pytest.mark.parametrize("role,model", [("worker", "opus"), ("overseer", "sonnet")])
+    def test_claude_argv_carries_the_role_agent_files_model(self, cron, role, model):
+        cron.install_cycle_log()
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert cron.claude_ran(), r.stdout + r.stderr
+        assert f"argv=--print --permission-mode bypassPermissions --model {model}" in (
+            cron.claude_record()
+        )
+        assert f"model={model} (from .claude/agents/{role}.md)" in r.stdout
+        recs = [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]
+        assert recs, "cycle-model audit record missing"
+        assert model in json.dumps(recs[-1])
+
+    def test_helper_stderr_noise_on_success_never_reaches_model(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "bootstrap" / "lib" / "agent_model.py").write_text(
+            "import sys\nprint('WARNING: noisy', file=sys.stderr)\nprint('opus')\n"
+        )
+        r = cron.run(role="worker", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert cron.claude_ran(), r.stdout + r.stderr
+        rec = cron.claude_record()
+        assert "--model opus" in rec
+        assert "noisy" not in rec
+
+    def test_non_model_helper_output_fails_closed(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "bootstrap" / "lib" / "agent_model.py").write_text(
+            "print('opus --dangerous-flag')\n"
+        )
+        r = cron.run(role="worker", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode == 78
+        assert not cron.claude_ran()
+        assert not cron.token_log.exists()
+        assert "not a single safe model id" in r.stdout
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and recs[-1]["reason"]
+        assert "--dangerous-flag" not in json.dumps(recs[-1])
+
+    @pytest.mark.parametrize("role", ["worker", "overseer"])
+    def test_missing_agent_file_fails_closed(self, cron, role):
+        cron.install_cycle_log()
+        (cron.repo / ".claude" / "agents" / f"{role}.md").unlink()
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode == 78
+        assert not cron.claude_ran()
+        assert not cron.token_log.exists(), "fail-closed must precede the token mint"
+        assert f".claude/agents/{role}.md" in r.stdout
+        assert "unreadable" in r.stdout  # the helper's one-line reason is surfaced
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and "unreadable" in recs[-1]["reason"]
+
+    @pytest.mark.parametrize("role", ["worker", "overseer"])
+    def test_model_less_agent_file_fails_closed(self, cron, role):
+        cron.install_cycle_log()
+        cron.write_role_agent(role, None)
+        r = cron.run(role=role, env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode == 78
+        assert not cron.claude_ran()
+        assert not cron.token_log.exists(), "fail-closed must precede the token mint"
+        assert "no top-level model: key" in r.stdout
+        recs = cron.audit_records("cycle-model-unresolved")
+        assert recs and recs[-1]["reason"]
+        assert not [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]

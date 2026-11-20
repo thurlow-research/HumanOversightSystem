@@ -1103,6 +1103,90 @@ class TestCloserTransport:
         assert swc._DEFAULT_BRANCH_REF.endswith("/" + swc._DEFAULT_BRANCH_NAME)
 
 
+# Real-capture-shaped `gh api graphql` stdout for _CLOSER_QUERY (#2377): the exact
+# envelope GitHub returns, fed through the real _run_graphql/_fetch_closer_node
+# with only `subprocess.run` (the gh boundary) mocked.
+_CAPTURE_PR_CLOSER = {
+    "data": {
+        "repository": {
+            "issue": {
+                "timelineItems": {
+                    "nodes": [
+                        {
+                            "createdAt": _T_CLOSE,
+                            "stateReason": "COMPLETED",
+                            "closer": {
+                                "__typename": "PullRequest",
+                                "number": 2395,
+                                "merged": True,
+                                "mergedAt": "2026-10-25T23:43:46Z",
+                                "baseRefName": "main",
+                                "baseRepository": {"nameWithOwner": "owner/repo"},
+                                "mergeCommit": {"oid": _MERGE_SHA},
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    }
+}
+_CAPTURE_MANUAL_CLOSE = {
+    "data": {
+        "repository": {
+            "issue": {
+                "timelineItems": {
+                    "nodes": [{"createdAt": _T_CLOSE, "stateReason": "COMPLETED", "closer": None}]
+                }
+            }
+        }
+    }
+}
+
+
+class TestRealCaptureVerdicts:
+    def _gh_returns(self, monkeypatch, payload) -> list:
+        import json
+        import subprocess
+
+        calls: list = []
+
+        def _run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+        return calls
+
+    def _lookup(self):
+        return lambda: swc._fetch_closer_node(REPO, 5, swc._Budget(10))
+
+    def _assert_sent_the_real_query(self, calls):
+        from tests.framework.test_graphql_literals import validate_graphql
+
+        assert len(calls) == 1
+        assert "query=" + swc._CLOSER_QUERY in calls[0]
+        validate_graphql(swc._CLOSER_QUERY)
+
+    def test_closer_query_is_valid_graphql(self):
+        from tests.framework.test_graphql_literals import validate_graphql
+
+        validate_graphql(swc._CLOSER_QUERY)
+
+    def test_pr_merge_closer_onto_default_branch_is_satisfied(self, monkeypatch):
+        calls = self._gh_returns(monkeypatch, _CAPTURE_PR_CLOSER)
+        got = _satisfied([_closed_event(_BOT)], _always, self._lookup())
+        assert got == "merge"
+        self._assert_sent_the_real_query(calls)
+
+    def test_manual_close_by_non_codeowner_bot_is_unsatisfied_not_unknown(self, monkeypatch):
+        calls = self._gh_returns(monkeypatch, _CAPTURE_MANUAL_CLOSE)
+        got = _satisfied([_closed_event(_BOT)], _always, self._lookup())
+        assert got is None
+        assert got != swc._UNKNOWN
+        self._assert_sent_the_real_query(calls)
+
+
 class TestAncestry:
     def test_malformed_sha_never_reaches_git(self, monkeypatch):
         monkeypatch.setattr(

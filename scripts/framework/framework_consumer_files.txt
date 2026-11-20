@@ -43,6 +43,11 @@ bootstrap/lib/sandbox_paths.sh
 # gen_sandbox_config.py. Without it the launchers fall back to /tmp with a warning.
 bootstrap/lib/hos_tmp_root.py
 
+# ── bootstrap/lib/ — per-role model resolver (#2359) ─────────────────────────────
+# bin/hos-cron calls it unconditionally to read the role agent file's `model:` and
+# pass --model to claude (fail closed). Without it every consumer cycle exits 78.
+bootstrap/lib/agent_model.py
+
 # ── bootstrap/ — machine-level temp reaper (#2054) ─────────────────────────────
 # hos_bootstrap.sh installs a machine copy at ~/.local/share/hos/tmp_reaper.py for
 # the operator's daily crontab; bin/hos-cron's low-space trigger and the inner loop

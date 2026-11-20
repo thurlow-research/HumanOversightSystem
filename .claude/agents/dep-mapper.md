@@ -132,7 +132,38 @@ Report only what is DIFFERENT from zero. An empty dependency graph ("this file h
 
 `Data confidence: LOW` from the generic dep-mapper at HIGH+ is a **blocking finding** — the blast-radius input to the risk assessment is known to be unreliable, and a known-bad state requires human involvement (`research/findings/explicit-na-audit-entries.md`, self-detecting-incompleteness section). The human resolves it one of two ways:
 1. **Proper fix:** install a stack-specific dep-mapper override (Step "Stack-specific override") that traces the framework wiring → confidence returns to HIGH.
-2. **Acknowledged gap:** suspend it via `SUSPENDED: dep-mapper` in `contract/gate-suspension.md`. While suspended, risk-assessor treats the LOW-confidence report as limited-coverage (noted in the inspection brief, not blocking) — same NYI handling as a missing prompt-fidelity check. The suspension is human-authorized and auditable (`gate-suspended` event), and follows the ratchet: only a human may suspend.
+2. **Acknowledged gap:** suspend it via `SUSPENDED: dep-mapper` in `contract/gate-suspension.md` (optionally time-boxed: `expires: YYYY-MM-DD` and/or `until-closed: #N`). A suspension does **not**, by itself, make LOW non-blocking. risk-assessor still records the finding; it resolves as `suspended: dep-mapper (trace: …)` only when `suspension_manager.py --suspension-status dep-mapper` reports `active`, the step is not behind the effective human gate (CRITICAL or `human_gate_required`), and a valid **manual trace** (below) exists for the step's exact range. The evaluator and pre-PR readiness (REQ-W-18) re-check all three, plus the PR-body disclosure. The suspension is human-authorized and auditable (`gate-suspended` event), and follows the ratchet: only a human may suspend, and an expired, malformed, or unverifiable suspension suppresses nothing.
+
+### Manual-trace mode
+
+When risk-assessor records a LOW finding as `suspended:`, the session invokes dep-mapper again in **manual-trace mode** for the same range. The trace must be produced by a dep-mapper invocation, not by the step's coder (the author does not certify its own blast radius). For every changed file outside `tests/` and `audit/` (deleted files included), find its callers/readers by hand — grep for the module/script name, `source`/`bash`/`python3 -m` invocations, imports, config and prompt references — and record the result. Write the output to exactly `.claudetmp/oversight/step{N}-dep-mapper-trace.md` in this shape (checked structurally by `suspension_manager.py --validate-dep-trace {N} --range {BASE_SHA}..{HEAD_SHA}`):
+
+```markdown
+# dep-mapper manual trace — step {N}
+
+Range: {BASE_SHA}..{HEAD_SHA}
+dep-mapper result: Data confidence: LOW (<which wiring was detected but not traced>)
+Date: YYYY-MM-DD
+
+## Callers / readers checked
+
+| Changed file | Callers / readers | Check | Result |
+|---|---|---|---|
+| path/one | <callers found> | <how you checked> | pass |
+
+## Items dep-mapper left untraced
+
+- <each wiring item the LOW report listed, and how it was checked> (or "- none")
+
+## Conclusion
+
+Result: PASS
+<free text>
+```
+
+Rules: `Range:` uses full SHAs and must equal the step's range (a trace from before a re-entry merge is stale — write a new one); one row per changed non-test file; each row's `Result` starts with `pass`, `no impact`, or `n/a`. If any caller is broken, write `fail` in that row and do **not** write `Result: PASS` — the finding then stays blocking and goes to the human.
+
+The "Callers / readers checked" and "Items dep-mapper left untraced" sections are copied into the PR body unchanged, so they must use the disclosure character set: their headings sit at column 0; ASCII only apart from `—`, `–`, `→`, `§`; no backticks, `$ \ & [ ] < > * ~`, tabs, `**bold**`, emoji shortcodes, or `|` outside table cells; every line starts with a letter, digit, `(`, `.`, `/`, a quote, `- ` (followed directly by one of those) or `|`, indented at most 3 spaces. The callers table needs its delimiter row and the header's cell count on every row; the untraced section holds a list, never table rows. Write "about line N", not `~N`. `--validate-dep-trace` rejects violations (V9).
 
 ---
 
