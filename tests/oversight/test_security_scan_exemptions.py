@@ -96,6 +96,7 @@ _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 _OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
 _OTEL_126360 = _vuln("CVE-2026-126360", ("1.45.2",))
+_MCP_115563 = _vuln("CVE-2026-115563", ("1.30.0", "2.2.0"), ("GHSA-qx49-fqc8-xw99",))
 _MCP_2194 = (
     _vuln("CVE-2026-116684", ("1.30.0", "2.2.0"), ("GHSA-w4fh-qvv9-3v23",)),
     _vuln("CVE-2026-116685", ("1.30.0", "2.2.0"), ("GHSA-5h93-6whr-6q8j",)),
@@ -117,7 +118,7 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_nine_authorized_records():
+def test_r1_roster_is_exactly_the_ten_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
@@ -129,6 +130,7 @@ def test_r1_roster_is_exactly_the_nine_authorized_records():
         ("mcp", "CVE-2026-116684", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("mcp", "CVE-2026-116685", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("mcp", "CVE-2026-116686", "1.30.0", _EXPIRES_MCP_2194, 2120),
+        ("mcp", "CVE-2026-115563", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
         ("opentelemetry-api", "CVE-2026-126360", "1.45.2", _EXPIRES, 2179),
     ]
@@ -209,6 +211,16 @@ def test_s2f_mcp_2194_is_suppressed_at_1_29_0_and_kept_once_fixed(vuln):
     out, _, status = _run(_audit(_dep("mcp", "1.30.0", vuln)))
     assert status == 1
     assert f"mcp 1.30.0 [{vuln['id']}]" in out
+
+
+def test_s2h_mcp_115563_is_suppressed_at_1_29_0_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("mcp", "1.29.0", _MCP_115563)))
+    assert status == 0, out
+    line = next(ln for ln in out.splitlines() if "mcp 1.29.0 [CVE-2026-115563]" in ln)
+    assert "exempt until 2026-12-31 (#2120)" in line
+    out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_115563)))
+    assert status == 1
+    assert "mcp 1.30.0 [CVE-2026-115563]" in out
 
 
 def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
@@ -683,11 +695,15 @@ _PREMISE_59951 = (
     "rather than editing this test"
 )
 _PREMISE_2194 = (
-    "the CVE-2026-116684/5/6 exemptions' premise no longer holds (HOS must never "
+    "the CVE-2026-116684/5/6 and CVE-2026-115563 exemptions' premise no longer holds (HOS must never "
     "import mcp or run an MCP client or server) — remove the exemptions (upgrade "
     "mcp once semgrep unpins it, #2120) rather than editing this test"
 )
-_MCP_CLIENT = re.compile(r"\b(?:ClientSession|streamablehttp_client|sse_client)\b")
+_MCP_CLIENT = re.compile(
+    r"\b(?:ClientSession|streamablehttp_client|sse_client|mcp\.client\.auth"
+    r"|OAuthClientProvider|ClientCredentialsOAuthProvider|PrivateKeyJWTOAuthProvider"
+    r"|RFC7523OAuthClientProvider)\b"
+)
 _MCP_LIST_2197 = load_module_from_path(
     "mcp_policy_logic_2197_exemptions", _REPO / "scripts" / "oversight" / "mcp_policy_logic.py"
 ).load_list(_REPO / "scripts" / "oversight" / "mcp_approved_list.json")
@@ -796,9 +812,17 @@ def test_pr5_no_tracked_python_file_imports_mcp():
         ("MyClientSessionFactory", False),
         ("my_sse_client_helper", False),
         ("an MCP client talks to a server", False),
+        ("from mcp.client.auth import OAuthClientProvider", True),
+        ("auth = ClientCredentialsOAuthProvider(...)", True),
+        ("auth = PrivateKeyJWTOAuthProvider(...)", True),
+        ("auth = RFC7523OAuthClientProvider(...)", True),
+        ("mcp.client.streamable_http", False),
+        ("MyOAuthClientProviderFactory", False),
     ],
 )
-def test_pr5c_mcp_client_pattern_matches_the_three_entry_points(text, expected):
+def test_pr5c_mcp_client_pattern_matches_the_client_entry_points_and_oauth_providers(
+    text, expected
+):
     assert bool(_MCP_CLIENT.search(text)) is expected
 
 
@@ -832,7 +856,10 @@ def test_pr5b_no_tracked_file_uses_an_mcp_client():
             bad.append(str(path.relative_to(_REPO)))
     assert scanned, f"scanned no files (path typo?): {_PREMISE_2194}"
     assert not unreadable, f"cannot scan {unreadable} for MCP client use: {_PREMISE_2194}"
-    assert not bad, f"{bad} use ClientSession/streamablehttp_client/sse_client: {_PREMISE_2194}"
+    assert not bad, (
+        f"{bad} use ClientSession/streamablehttp_client/sse_client or an MCP OAuth "
+        f"client provider (mcp.client.auth): {_PREMISE_2194}"
+    )
 
 
 _PREMISE_114603 = (
