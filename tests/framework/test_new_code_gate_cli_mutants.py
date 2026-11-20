@@ -537,3 +537,51 @@ def test_clock_epoch_is_whole_seconds_since_the_unix_epoch():
     got = gate.Clock().epoch()
     after = int(time.time())
     assert isinstance(got, int) and before <= got <= after
+
+
+# --------------------------------------------------------------------------
+# extract_archive: the tar "data" filter is a security control on the gate's input
+# --------------------------------------------------------------------------
+
+
+def test_extract_archive_applies_the_data_filter_and_neutralises_hostile_members(tmp_path, monkeypatch):
+    import io
+    import tarfile
+    from types import SimpleNamespace
+
+    def fake_git(_repo, args, _fail=None):
+        out = next(a for a in args if a.startswith("--output="))[len("--output=") :]
+        with tarfile.open(out, "w") as tar:
+            data = b"ok"
+            info = tarfile.TarInfo("good.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+            esc = tarfile.TarInfo("escape")
+            esc.type = tarfile.SYMTYPE
+            esc.linkname = "../../outside"
+            tar.addfile(esc)
+            sneaky = tarfile.TarInfo("../outside.txt")
+            sneaky.size = 1
+            tar.addfile(sneaky, io.BytesIO(b"x"))
+        return b""
+
+    seen = []
+    real = tarfile.TarFile.extractall
+
+    def spy(self, path=".", members=None, *, numeric_owner=False, filter=None):
+        seen.append(filter)
+        return real(self, path, members, numeric_owner=numeric_owner, filter=filter)
+
+    monkeypatch.setattr(gate, "run_git", fake_git)
+    monkeypatch.setattr(tarfile.TarFile, "extractall", spy)
+    root = tmp_path / "root"
+    root.mkdir()
+    tree = root / "tree"
+    ctx = SimpleNamespace(repo=tmp_path, gated_sha="deadbeef")
+
+    with pytest.raises(tarfile.FilterError):
+        gate.extract_archive(ctx, root, tree)
+
+    assert seen == ["data"]
+    assert not (root / "outside.txt").exists()
+    assert not (tmp_path / "outside.txt").exists()
