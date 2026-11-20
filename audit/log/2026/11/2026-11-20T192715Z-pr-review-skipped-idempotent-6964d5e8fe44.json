@@ -1,0 +1,1 @@
+{"agent":"overseer","event":"pr-review-skipped-idempotent","head_sha":"b5c3a919f865e075249aa6fafae397d41baa59d4","pr":2418,"reason":"1215: same head already reviewed (APPROVED verdict 5998065723 + escalation thread 19:14Z); no new human activity; needs-human already applied"}
