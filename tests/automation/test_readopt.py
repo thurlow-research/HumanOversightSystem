@@ -3052,7 +3052,7 @@ def test_a1_local_d2_writes_archive_ref_and_reaped_line_carries_it(repo, capsys)
     archived = f"ARCHIVED branch=worker-30-x where=local ref={ref} tip={tip}"
     assert archived in out
     assert out.index(archived) < next(i for i, ln in enumerate(out) if ln.startswith("REAPED"))
-    assert out[-1].endswith("archived=1")
+    assert out[-1].endswith(" archived=1 shallow=0 abort_reason=none")
 
 
 def test_a2_archive_at_different_sha_blocks_deletion(repo, capsys):
@@ -3183,7 +3183,7 @@ def test_a5_non_archive_reasons_write_no_archive_ref(repo, capsys):
     )
     assert not any("archive=" in ln for ln in out)
     assert not git(repo, "for-each-ref", "refs/archive/")
-    assert out[-1].endswith("archived=0")
+    assert out[-1].endswith(" archived=0 shallow=0 abort_reason=none")
 
 
 def test_a6_selectors_ignore_archive_refs(repo, capsys):
@@ -3871,6 +3871,56 @@ def test_reap_orphans_shallow_warn_text_is_exact_per_mode(repo, capsys):
     reap(repo, issues={30: "closed"}, git=_shallow_git(repo))
     real = lines_of(capsys)
     assert "WARN: shallow clone — reap-orphans refuses to delete; nothing deleted" in real
+
+
+# --- #2405: SUMMARY carries shallow= and abort_reason= (appended fields) ----------------------
+
+
+def _summary_line(capsys):
+    (line,) = lines_of(capsys, "SUMMARY")
+    return line
+
+
+def test_summary_shallow_real_run_reports_shallow_clone_abort(repo, capsys):
+    d2_branch(repo)
+    assert reap(repo, issues={30: "closed"}, git=_shallow_git(repo)) == 2
+    assert _summary_line(capsys).endswith(" shallow=1 abort_reason=shallow-clone")
+
+
+def test_summary_shallow_dry_run_warns_preview_unreliable(repo, capsys):
+    d2_branch(repo)
+    assert reap(repo, issues={30: "closed"}, git=_shallow_git(repo), dry_run=True) == 0
+    out = lines_of(capsys)
+    assert (
+        "WARN: shallow clone — dry-run preview is unreliable; a real run will delete nothing" in out
+    )
+    assert out[-1].endswith(" shallow=1 abort_reason=none")
+    assert " aborted=0 " in out[-1]
+
+
+def test_summary_full_clone_reports_shallow_0_and_no_abort(repo, capsys):
+    d2_branch(repo)
+    assert reap(repo, issues={30: "closed"}, git=_shallow_git(repo, (0, "false"))) == 0
+    out = lines_of(capsys)
+    assert out[-1].endswith(" shallow=0 abort_reason=none")
+    assert not any("unreliable" in ln for ln in out)
+
+
+def test_summary_setup_git_error_reports_unknown_shallow(repo, capsys):
+    run = _failing_git(repo, fail_prefix=("rev-parse", "origin/main^{tree}"))
+    assert reap(repo, git=run) == 2
+    assert _summary_line(capsys).endswith(
+        " aborted=1 remote_skipped=0 recheck=none archived=0 shallow=- abort_reason=git-error"
+    )
+
+
+def test_summary_listing_failure_reports_listing_failed(repo, capsys):
+    def pulls(state):
+        raise RuntimeError("api down")
+
+    git(repo, "branch", "worker-6-y", "main")
+    assert readopt.reap_orphans(repo, slug=SLUG, now=FAR, pulls=pulls) == 2
+    assert _summary_line(capsys).endswith(" shallow=0 abort_reason=listing-failed")
 
 
 def test_reap_local_archive_exception_warn_carries_cause_and_keeps(repo, capsys):

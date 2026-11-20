@@ -144,6 +144,13 @@ MACHINE_FILING_MARKERS: tuple[MachineFilingMarker, ...] = (
         "active",
     ),
     MachineFilingMarker(
+        "hos-cron/overseer-reap-shallow",
+        "[BLOCKED] overseer branch reap: shallow clone on ",
+        None,
+        "bin/hos-cron::_rb_sh_prefix",
+        "active",
+    ),
+    MachineFilingMarker(
         "hos-cron/baseline-red",
         "[BLOCKED] inner-loop tests failing on ",
         None,

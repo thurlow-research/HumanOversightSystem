@@ -1799,6 +1799,9 @@ if [[ "$ROLE" == "worker" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]]; t
     _ro_why="rc=$_ro_rc"
     if [[ "$_ro_rc" -eq 124 || "$_ro_rc" -eq 137 ]]; then _ro_why="$_ro_why timeout"; fi
     echo "$LOG_PREFIX WARN: readopt reap-landed failed ($_ro_why) — continuing (#2126)"
+    _ro_reason="rc-${_ro_rc}"
+    if [[ "$_ro_rc" -eq 124 || "$_ro_rc" -eq 137 ]]; then _ro_reason="timeout"; fi
+    _audit cycle-branch-reap-aborted "role=worker" "mode=on" "rc=${_ro_rc}" "reason=${_ro_reason}"
   fi
 fi
 
@@ -1838,10 +1841,14 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     # only for reason=archive-failed so a run whose archive writes all fail is visible.
     _RB_ARCHIVED_RE='^ARCHIVED branch=([A-Za-z0-9._/@+-]+) where=(local|remote) ref=([A-Za-z0-9._/@+-]+) tip=([0-9a-f]{40})$'
     _RB_ARCHFAIL_RE='^KEEP branch=([A-Za-z0-9._/@+-]+) reason=archive-failed where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
-    _RB_SUMMARY_RE='^SUMMARY reaped_local=[0-9]+ reaped_remote=[0-9]+ kept=([0-9]+) failed=[0-9]+ deferred=[0-9]+ api_calls=[0-9]+ aborted=([01])( [a-z_]+=[A-Za-z0-9_-]+)*$'
+    _RB_SUMMARY_RE='^SUMMARY reaped_local=([0-9]+) reaped_remote=([0-9]+) kept=([0-9]+) failed=([0-9]+) deferred=[0-9]+ api_calls=[0-9]+ aborted=([01])( [a-z_]+=[A-Za-z0-9_-]+)*$'
+    # #2405: trailing fields of an already-validated SUMMARY line (appended by readopt).
+    _RB_SHALLOW_RE=' shallow=([01-])( |$)'
+    _RB_REASON_RE=' abort_reason=(none|shallow-clone|git-error|listing-failed)( |$)'
     # Loud signal (#2313): many git-error KEEPs in one run, e.g. a read-only .git.
     _RB_GITERR_RE='^WARN: git-error KEEPs=([0-9]+) exceeds ([0-9]+) — first stderr: (.*)$'
     _rb_would=0; _rb_would_local=0; _rb_would_remote=0; _rb_kept=-; _rb_aborted=-; _rb_items=""
+    _rb_reaped_local=-; _rb_reaped_remote=-; _rb_failed=-; _rb_shallow=-; _rb_reason=-; _rb_have_summary=0
     _rb_rc=0
     _rb_out="$(cd "$REPO_ROOT" && ${_RB_BOUND[@]+"${_RB_BOUND[@]}"} python3 -u -m scripts.automation.readopt "${_RB_ARGS[@]}" 2>&1)" || _rb_rc=$?
     # Process the output on BOTH paths so REAPED audit events survive a kill/crash:
@@ -1866,7 +1873,11 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
         if [[ "${BASH_REMATCH[3]}" == "local" ]]; then _rb_would_local=$((_rb_would_local + 1)); else _rb_would_remote=$((_rb_would_remote + 1)); fi
         _rb_items="${_rb_items:+${_rb_items},}${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
       elif [[ "$_rb_line" =~ $_RB_SUMMARY_RE ]]; then
-        _rb_kept="${BASH_REMATCH[1]}"; _rb_aborted="${BASH_REMATCH[2]}"
+        _rb_reaped_local="${BASH_REMATCH[1]}"; _rb_reaped_remote="${BASH_REMATCH[2]}"
+        _rb_kept="${BASH_REMATCH[3]}"; _rb_failed="${BASH_REMATCH[4]}"; _rb_aborted="${BASH_REMATCH[5]}"
+        _rb_have_summary=1
+        if [[ "$_rb_line" =~ $_RB_SHALLOW_RE ]]; then _rb_shallow="${BASH_REMATCH[1]}"; fi
+        if [[ "$_rb_line" =~ $_RB_REASON_RE ]]; then _rb_reason="${BASH_REMATCH[1]}"; fi
       elif [[ "$_rb_line" =~ $_RB_GITERR_RE ]]; then
         _rb_cause="$(printf '%s' "${BASH_REMATCH[3]}" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)"
         echo "$LOG_PREFIX WARN: readopt (overseer) hit ${BASH_REMATCH[1]} git-error KEEPs (threshold ${BASH_REMATCH[2]}) — is .git read-only? first stderr: ${_rb_cause} (#2313)"
@@ -1877,12 +1888,91 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     if [[ "$_RB_MODE" == "dry-run" && ( "$_rb_would" -gt 0 || "$_rb_kept" != "-" ) ]]; then
       _audit cycle-branch-reap-dry-run "role=overseer" "would_reap=${_rb_would}" \
         "would_local=${_rb_would_local}" "would_remote=${_rb_would_remote}" \
-        "kept=${_rb_kept}" "aborted=${_rb_aborted}" "items=$(printf '%s' "$_rb_items" | cut -c1-500)"
+        "kept=${_rb_kept}" "aborted=${_rb_aborted}" "items=$(printf '%s' "$_rb_items" | cut -c1-500)" \
+        "shallow=${_rb_shallow}"
+    fi
+    if [[ "$_rb_shallow" == "1" && "$_RB_MODE" == "dry-run" ]]; then
+      echo "$LOG_PREFIX WARN: overseer clone is shallow — the dry-run preview is unreliable and a real run deletes nothing; do not switch overseer_branch_reap to on on the strength of it (#2405)"
+    fi
+    # #2405: an aborted run was invisible in "on" mode (only echoed to the cron log).
+    # One summary event per real run, plus a distinct aborted event for any abort.
+    if [[ "$_RB_MODE" == "on" ]]; then
+      _audit cycle-branch-reap-summary "role=overseer" "mode=on" "reaped_local=${_rb_reaped_local}" \
+        "reaped_remote=${_rb_reaped_remote}" "kept=${_rb_kept}" "failed=${_rb_failed}" \
+        "aborted=${_rb_aborted}" "shallow=${_rb_shallow}" "rc=${_rb_rc}"
+    fi
+    if [[ "$_rb_aborted" == "1" || "$_rb_rc" -ne 0 || "$_rb_have_summary" -eq 0 ]]; then
+      if [[ "$_rb_aborted" == "1" && "$_rb_reason" != "-" && "$_rb_reason" != "none" ]]; then _rb_areason="$_rb_reason"
+      elif [[ "$_rb_rc" -eq 124 || "$_rb_rc" -eq 137 ]]; then _rb_areason="timeout"
+      elif [[ "$_rb_have_summary" -eq 0 ]]; then _rb_areason="no-summary"
+      else _rb_areason="rc-${_rb_rc}"; fi
+      # "Nothing deleted" is only true for a clean abort before any delete (aborted=1);
+      # a timeout/crash/no-summary may follow partial deletes (the REAPED lines are audited).
+      if [[ "$_rb_aborted" == "1" ]]; then _rb_dnote="nothing was deleted by this run"
+      elif [[ "$_RB_MODE" == "dry-run" ]]; then _rb_dnote="a dry run deletes nothing"
+      else _rb_dnote="deletions before the failure may have occurred — see the cycle-branch-reap audit events"; fi
+      echo "$LOG_PREFIX WARN: overseer branch reap (mode=${_RB_MODE}) aborted or failed: reason=${_rb_areason} rc=${_rb_rc} — ${_rb_dnote} (#2405)"
+      _audit cycle-branch-reap-aborted "role=overseer" "mode=${_RB_MODE}" "rc=${_rb_rc}" "reason=${_rb_areason}"
     fi
     if [[ "$_rb_rc" -ne 0 ]]; then
       _rb_why="rc=$_rb_rc"
       if [[ "$_rb_rc" -eq 124 || "$_rb_rc" -eq 137 ]]; then _rb_why="$_rb_why timeout"; fi
       echo "$LOG_PREFIX WARN: readopt reap-orphans (overseer) failed ($_rb_why) — continuing (#2287)"
+    fi
+    # #2405: a shallow clone can never reap. Escalate once per state change (not per cycle):
+    # the state file marks "escalated" and is cleared when a run reports shallow=0.
+    _rb_sh_state="$_HOS_DIR/branch-reap/overseer-${PROJECT}.shallow-escalated"
+    if [[ "$_rb_shallow" == "0" ]]; then
+      rm -f "$_rb_sh_state" 2>/dev/null || true
+    elif [[ "$_rb_shallow" == "1" && ! -e "$_rb_sh_state" ]]; then
+      _rb_sh_prefix="[BLOCKED] overseer branch reap: shallow clone on "
+      _rb_sh_title="${_rb_sh_prefix}${PROJECT} — needs manual recovery"
+      _rb_sh_result="" _rb_sh_num="" _rb_sh_err=""
+      # Bound both gh calls: a hung gh must not stall the cycle while it holds the cron lock.
+      # A timeout lands in the query-failed / file-failed branches (fail closed, no marker).
+      _RB_GH_BOUND=()
+      if command -v timeout >/dev/null 2>&1; then _RB_GH_BOUND=(timeout --kill-after=5 30)
+      elif command -v gtimeout >/dev/null 2>&1; then _RB_GH_BOUND=(gtimeout --kill-after=5 30); fi
+      if [[ -z "$_REPO_SLUG" ]]; then
+        _rb_sh_result="no-slug"
+      # Fail-CLOSED dedup (same shape as #1510): a query error is never "no existing issue".
+      # Titles are compared in bash as whole strings (no filter interpolation, no prefix
+      # collision between projects "foo" and "foobar"); --paginate sees every open issue.
+      elif _rb_sh_open=$(${_RB_GH_BOUND[@]+"${_RB_GH_BOUND[@]}"} gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&per_page=100" \
+          --jq '.[] | "\(.number) \(.title)"' 2>/dev/null); then
+        while IFS= read -r _rb_sh_line; do
+          if [[ "${_rb_sh_line#* }" == "$_rb_sh_title" && "${_rb_sh_line%% *}" =~ ^[0-9]+$ ]]; then
+            _rb_sh_num="${_rb_sh_line%% *}"
+            break
+          fi
+        done <<< "$_rb_sh_open"
+        if [[ -n "$_rb_sh_num" ]]; then
+          _rb_sh_result="existing"
+        else
+          _rb_sh_body="$(printf 'The overseer branch reap (`readopt reap-orphans`, #2287) found the `%s` overseer clone is a shallow clone. Ancestry checks are unreliable there, so reap-orphans refuses to delete anything: a real run deletes nothing and a dry run previews branches it would not actually reap (#2405).\n\nA human should decide whether to deepen the clone, e.g.:\n\n    git -C <clone> fetch --unshallow\n\n`<clone>` is the **overseer clone** path. After the unshallow the reap re-runs only when the 24 h stamp `branch-reap/overseer-%s.last` (under the HOS state dir) expires; delete that stamp to force an immediate re-check.\n\nThis is not run automatically because it changes the clone. This issue is filed once; it is filed again only if the clone becomes non-shallow and later shallow again.\n' "$PROJECT" "$PROJECT")"
+          if _rb_sh_err=$(${_RB_GH_BOUND[@]+"${_RB_GH_BOUND[@]}"} gh issue create \
+              --repo "$_REPO_SLUG" \
+              --title "$_rb_sh_title" \
+              --label "needs-human,priority:high" \
+              --body "$_rb_sh_body" \
+              2>&1 >/dev/null); then
+            _rb_sh_result="filed"
+          else
+            _rb_sh_result="file-failed"
+            _rb_sh_err="$(printf '%s' "${_rb_sh_err%%$'\n'*}" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)"
+          fi
+        fi
+      else
+        _rb_sh_result="query-failed"
+      fi
+      case "$_rb_sh_result" in
+        filed|existing)
+          if ! { mkdir -p "$_HOS_DIR/branch-reap" && touch "$_rb_sh_state"; } 2>/dev/null; then
+            echo "$LOG_PREFIX WARN: could not write the shallow-escalated marker $_rb_sh_state (#2405)"
+          fi ;;
+        *) echo "$LOG_PREFIX WARN: overseer shallow-clone escalation ${_rb_sh_result}${_rb_sh_err:+ (gh: ${_rb_sh_err})} — will retry next reap (#2405)" ;;
+      esac
+      _audit cycle-branch-reap-shallow-escalated "role=overseer" "result=${_rb_sh_result}"
     fi
     # Stamped after EVERY attempt (failures too) so a failing API cannot cost ~35 calls per cycle.
     if ! { mkdir -p "$_HOS_DIR/branch-reap" && touch "$_RB_STAMP"; } 2>/dev/null; then
