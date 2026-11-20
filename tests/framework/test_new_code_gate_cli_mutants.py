@@ -36,7 +36,7 @@ def _in_tmp(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 # phase -> (required string flags, required int flags, optional string flags, optional int flags)
-SPEC = {
+SPEC: dict[str, tuple[list[str], list[str], list[str], list[str]]] = {
     "meta": (["--coverage-file", "--out"], [], ["--durations"], []),
     "plan": (
         [

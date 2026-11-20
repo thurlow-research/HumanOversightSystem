@@ -42,7 +42,7 @@ import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, cast
 
 from scripts.framework import new_code_gate_logic as ncg
 from scripts.framework import new_code_gate_shard as ncs
@@ -242,7 +242,7 @@ class ShardOptions(NamedTuple):
     run_id: str | None
     run_attempt: int | None
     mode: str
-    index: int
+    index: int  # type: ignore[assignment]  # shadows tuple.index; only read by attribute
     plan_dir: Path
     installed: Mapping[str, str]
     python: str
@@ -983,7 +983,7 @@ def build_context(opts: PlanOptions, runner: Runner, clock: Clock, setup: int = 
 def blob_shas(ctx: Context, path: str) -> tuple[str, str | None]:
     blob = rev_parse(ctx.repo, f"{ctx.gated_sha}:{path}")
     try:
-        head_blob: str | None = rev_parse(ctx.repo, f"{ctx.opts.pr_head_sha}:{path}")
+        head_blob: str | None = rev_parse(ctx.repo, f"{cast(PlanOptions, ctx.opts).pr_head_sha}:{path}")
     except GateError:
         head_blob = None
     return blob, head_blob

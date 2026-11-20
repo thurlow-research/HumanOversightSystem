@@ -13,6 +13,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1047,13 +1048,13 @@ def _path_parts(node: ast.AST) -> list[str]:
     if isinstance(node, ast.BinOp):
         return _path_parts(node.left) + _path_parts(node.right)
     if isinstance(node, ast.Constant):
-        return [node.value]
+        return [cast(str, node.value)]
     return []
 
 
 def _assign_parts(tree: ast.AST, name: str) -> str:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and node.targets[0].id == name:
+        if isinstance(node, ast.Assign) and cast(ast.Name, node.targets[0]).id == name:
             return "/".join(_path_parts(node.value))
     raise AssertionError(name)
 
@@ -2053,7 +2054,7 @@ def _final_main_block_lines(rel: str) -> set[int]:
     tree = ast.parse((REPO / rel).read_text(encoding="utf-8"))
     last = tree.body[-1]
     assert isinstance(last, ast.If)
-    return set(range(last.lineno, last.end_lineno + 1))
+    return set(range(last.lineno, cast(int, last.end_lineno) + 1))
 
 
 def test_gate_modules_have_no_q5_or_nq2_findings():

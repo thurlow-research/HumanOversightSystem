@@ -801,7 +801,7 @@ class FileMerge:
         self.rec = rec
         self.holders = list(holders)
         self.docs = {i: usable[i] for i in holders if i in usable}
-        self.entries = {
+        self.entries: dict[int, Any] = {
             i: next((e for e in d["files"] if e["path"] == rec["path"]), None)
             for i, d in self.docs.items()
         }
@@ -833,7 +833,7 @@ class FileMerge:
 
 
 def _shard_reasons(fm: FileMerge) -> list[dict[str, str]]:
-    found = []
+    found: list[dict[str, str]] = []
     for index in fm.holders:
         entry = fm.entries.get(index)
         if entry is not None and fm.docs[index]["status"] in ("complete", "timeout"):
@@ -995,7 +995,7 @@ def shard_summary(
 def runner_minutes_total(records: Mapping[str, Any], gate_seconds: float) -> float | None:
     """(plan + shard job seconds + the gate's own seconds) / 60, or None if any is unknown."""
     shards = records.get("shards")
-    terms = [records.get("plan_job_seconds"), gate_seconds]
+    terms: list[Any] = [records.get("plan_job_seconds"), gate_seconds]
     if isinstance(shards, dict):
         terms.extend(s["job_seconds"] for s in shards["per_shard"])
     if any(t is None for t in terms):
