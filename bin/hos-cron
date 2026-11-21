@@ -405,7 +405,7 @@ _hos_inprogress_clear() {
   [[ -n "$_out" ]] && echo "$LOG_PREFIX $_out"
   return 0
 }
-trap '_hos_inprogress_clear; rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
+trap '_hos_inprogress_clear; rm -rf "$_LOCK_DIR" 2>/dev/null || true; [[ -z "${_OSR_SCRATCH:-}" ]] || rm -rf "$_OSR_SCRATCH" 2>/dev/null || true' EXIT
 
 # ── Cycle identity (#967, ADR-037 AD-5) ───────────────────────────────────────
 # Minted exactly once per invocation, under the overlap lock, and exported into
@@ -1567,6 +1567,7 @@ fi
 # Only non-conflicting, non-draft PRs are passed to the overseer. If none exist,
 # skip the Claude invocation entirely — no AI turn wasted on an unmergeable queue.
 _HOS_ACTIONABLE_PRS=""   # space-separated "#N" list injected into overseer prompt
+_HOS_HELD_PRS=""         # space-separated "N" list: actionable PRs already carrying needs-human/hos-halt (#2357)
 _HOS_SKIPPED_PRS=""      # for logging only
 if [[ "$ROLE" == "overseer" ]]; then
   # Capture gh's exit status separately from its output (#915). A bare
@@ -1597,7 +1598,7 @@ if [[ "$ROLE" == "overseer" ]]; then
     # fallback. On failure keep the PR actionable (ms=unknown); the overseer
     # re-checks live state and the merge gates are independent.
     if ! _detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-        --jq '{ms: .mergeable_state, d: .draft}' 2>/dev/null); then
+        --jq '{ms: .mergeable_state, d: .draft, labels: [.labels[].name]}' 2>/dev/null); then
       echo "$LOG_PREFIX WARN: PR #${_pr_num} detail fetch failed which=detail — treating as actionable ms=unknown"
       _detail='{"ms":"unknown","d":false}'
       _detail_failed_nums="${_detail_failed_nums:+${_detail_failed_nums},}${_pr_num}"
@@ -1606,10 +1607,15 @@ if [[ "$ROLE" == "overseer" ]]; then
       "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
     _d=$(printf '%s' "$_detail" | python3 -c \
       "import json,sys; print(json.load(sys.stdin).get('d', False))" 2>/dev/null || echo "False")
+    # #2357: a held PR stays actionable (the overseer still reports on it) but the second-review
+    # phase skips it. A fetch that failed or carries no labels reads as not held; the runner
+    # re-reads the labels itself and returns skipped-held.
+    _held=$(printf '%s' "$_detail" | python3 -I "$_HOS_CRON_DIR/lib/osr_phase.py" held 2>/dev/null || echo "0")
     if [[ "$_ms" == "dirty" || "$_d" == "True" ]]; then
       _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS} #${_pr_num}(${_ms})"
     else
       _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS} #${_pr_num}"
+      [[ "$_held" != "1" ]] || _HOS_HELD_PRS="${_HOS_HELD_PRS} ${_pr_num}"
     fi
   done
   if [[ -n "${_detail_failed_nums:-}" ]]; then
@@ -1617,6 +1623,7 @@ if [[ "$ROLE" == "overseer" ]]; then
       "failed_pr_nums=${_detail_failed_nums}" "which=detail" "fallback=actionable"
   fi
   _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS# }"
+  _HOS_HELD_PRS="${_HOS_HELD_PRS# }"
   _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS# }"
   if [[ -z "$_HOS_ACTIONABLE_PRS" ]]; then
     echo "$LOG_PREFIX all open PRs are conflicting/draft (${_HOS_SKIPPED_PRS}) — skipping cycle"
@@ -2414,6 +2421,253 @@ if [[ "$ROLE" == "worker" ]]; then
 fi
 
 
+# ── Overseer second-review phase (#2357, ADR-2357 AD-1/AD-12, TD-2357-S1b) ────
+# The overseer's own cross-vendor review decides what it may approve, so it runs here, before
+# the model, from the committed script rather than from an agent prompt. Bash owns process
+# control only (timeouts, labels, the lock heartbeat); every parse of runner output, every
+# strike and budget decision, and every rendered line lives in bin/lib/osr_phase.py.
+#
+# The phase never ends the cycle (AD-1): it runs in a subshell whose status is captured with
+# `set +e ... set -e` (never `||`, which would switch errexit off inside it). An abort renders
+# a `pending phase-error` block, so the model still runs and G1c still refuses any approval
+# that has no record. The third consecutive abort labels every non-held PR needs-human.
+# `pending` is the only label-less outcome, and every path to it is bounded by a strike count.
+_OSR_HEADER='[hos-cron overseer second review (#2357)]'
+_OSR_LINE_RE='^OSR pr=#[1-9][0-9]{0,6} head=([0-9a-f]{40}|-) base=([0-9a-f]{40}|-) tier=(LOW|MEDIUM|HIGH|CRITICAL|-) vendors=(none|agy|agy[+]codex|-) verdict=(approve|request_changes|not-required|hold|pending|skipped-held) reason=[a-z0-9:-]{1,64} findings_file=(/[A-Za-z0-9._/+-]{1,512}|-) reused=(true|false) persisted=(true|false|-) count=([1-9][0-9]{0,5}|-) last_reason=([a-z0-9:-]{1,64}|-) label=(applied|failed|existing|-)$'
+_OSR_STATE="$_HOS_DIR/osr-phase/$PROJECT"
+_OSR_RUNS_DIR="$REPO_ROOT/.claudetmp/overseer-authority/second-review/runs"
+_OSR_TB=""
+if command -v timeout &>/dev/null; then _OSR_TB="timeout"
+elif command -v gtimeout &>/dev/null; then _OSR_TB="gtimeout"; fi
+_OSR_SCRATCH=""
+_OSR_BLOCK=""
+_OSR_BLOCK_TEXT=""
+
+_osr_py() { python3 -I "$_HOS_CRON_DIR/lib/osr_phase.py" "$@"; }
+
+# The block the phase renders itself when the helper cannot: one pending line per PR, no
+# helper output involved, so a broken helper cannot break the fallback.
+_osr_phase_error_block() {
+  local _tok
+  printf '%s\n' "$_OSR_HEADER"
+  for _tok in $_HOS_ACTIONABLE_PRS; do
+    [[ "$_tok" =~ ^#([1-9][0-9]{0,6})$ ]] || continue
+    printf 'OSR pr=#%s head=- base=- tier=- vendors=- verdict=pending reason=phase-error findings_file=- reused=false persisted=- count=- last_reason=- label=-\n' "${BASH_REMATCH[1]}"
+  done
+  printf '%s\n' '---'
+}
+
+# $1 = file, $2 = the number of PRs it must describe. The block reaches a model prompt, so it
+# is re-validated here whatever produced it.
+_osr_block_valid() {
+  local _line _count=0 _first=1 _done=0
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    (( _done == 0 )) || return 1
+    if (( _first == 1 )); then
+      [[ "$_line" == "$_OSR_HEADER" ]] || return 1
+      _first=0
+    elif [[ "$_line" == '---' ]]; then
+      _done=1
+    else
+      [[ "$_line" =~ $_OSR_LINE_RE ]] || return 1
+      _count=$(( _count + 1 ))
+    fi
+  done < "$1"
+  (( _done == 1 && _count == $2 ))
+}
+
+# $1 = PR. Idempotent. Returns non-zero (after a WARN and an audit event) when the label
+# could not be applied, which the model sees as label=failed and acts on itself.
+_osr_apply_label() {
+  if ${_OSR_TB:+"$_OSR_TB" --kill-after=10 120} bash "$REPO_ROOT/bootstrap/edit_issue.sh" \
+      --number "$1" --add-label needs-human --app overseer >/dev/null; then
+    return 0
+  fi
+  echo "$LOG_PREFIX WARN: osr phase could not apply needs-human to PR #$1" >&2
+  _audit cycle-osr-hold-label-failed "pr=$1"
+  return 1
+}
+
+# $1 = PR, $2 = head. The label stands whatever this returns.
+_osr_mark_hold() {
+  local _mrc=0
+  (cd "$REPO_ROOT" && ${_OSR_TB:+"$_OSR_TB" --kill-after=10 120} python3 -m scripts.automation.lib.overseer_second_review mark-hold-label --pr "$1" --head "$2" --applied true) >/dev/null || _mrc=$?
+  if (( _mrc != 0 )); then
+    echo "$LOG_PREFIX WARN: osr mark-hold-label for PR #$1 exited $_mrc — the label stands" >&2
+    _audit cycle-osr-mark-hold-failed "pr=$1" "rc=$_mrc"
+  fi
+}
+
+# $1 = PR with ACTION=label. Applies the label, records the outcome for the rendered line.
+_osr_label_and_record() {
+  local _res="failed" _mark=""
+  if _osr_apply_label "$1"; then
+    _res="applied"
+    _mark="$(_osr_py mark-args --scratch "$_OSR_SCRATCH" --pr "$1" 2>/dev/null)" || _mark=""
+    if [[ "$_mark" =~ ^MARK=([0-9a-f]{40})$ ]]; then _osr_mark_hold "$1" "${BASH_REMATCH[1]}"; fi
+  fi
+  _osr_py label-result --scratch "$_OSR_SCRATCH" --pr "$1" --result "$_res"
+}
+
+_osr_phase() {
+  local _helper="$_HOS_CRON_DIR/lib/osr_phase.py"
+  [[ -f "$_helper" ]] || { echo "$LOG_PREFIX WARN: osr helper missing: $_helper" >&2; return 70; }
+  local _t0=$SECONDS _prs="" _held="" _todo="" _order="" _tok _n
+  for _tok in $_HOS_ACTIONABLE_PRS; do
+    [[ "$_tok" =~ ^#([1-9][0-9]{0,6})$ ]] || return 71
+    _prs="${_prs} ${BASH_REMATCH[1]}"
+  done
+  _prs="${_prs# }"
+  _held="${_HOS_HELD_PRS:-}"
+  for _n in $_prs; do
+    [[ " $_held " == *" $_n "* ]] || _todo="${_todo} ${_n}"
+  done
+  _todo="${_todo# }"
+
+  # Setup. The first failure wins, and it applies to every PR that is not already held.
+  local _synth="" _vt _ceil _budget _b _h _o _s
+  _OSR_PER_PR_MAX=0
+  if ! { mkdir -p "$_OSR_STATE" && chmod 700 "$_OSR_STATE"; } 2>/dev/null; then _synth="config-error"; fi
+  [[ -n "$_synth" || -n "$_OSR_TB" ]] || _synth="runner-unbounded"
+  if [[ -z "$_synth" ]]; then
+    _vt="${SECOND_REVIEW_VENDOR_TIMEOUT:-900}"
+    if [[ "$_vt" =~ ^[0-9]{1,6}$ ]]; then
+      _OSR_PER_PR_MAX=$(( 3 * 10#$_vt + 300 ))
+      _ceil=$(( _lock_ceiling - 300 ))
+      if (( _OSR_PER_PR_MAX > _ceil )); then
+        echo "$LOG_PREFIX WARN: osr per-PR max ${_OSR_PER_PR_MAX}s clamped to ${_ceil}s by the lock ceiling" >&2
+        _OSR_PER_PR_MAX=$_ceil
+      fi
+      (( _OSR_PER_PR_MAX >= 300 )) || _synth="config-error"
+    else
+      _synth="config-error"
+    fi
+  fi
+  if [[ -z "$_synth" ]]; then
+    _budget="$(_conf_val overseer_sr_budget)"
+    [[ -n "$_budget" ]] || _budget="$HOS_CRON_MAX_SECONDS"
+    if [[ "$_budget" =~ ^[0-9]{1,9}$ ]]; then
+      _budget=$(( 10#$_budget ))
+      (( _budget != 0 )) || _budget=3600
+      (( _budget >= _OSR_PER_PR_MAX )) || _budget=$_OSR_PER_PR_MAX
+    else
+      _synth="config-error"
+    fi
+  fi
+  if [[ -z "$_synth" ]]; then
+    _b="$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null)" || _b=""
+    _h="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" || _h=""
+    _o="$(git -C "$REPO_ROOT" rev-parse refs/remotes/origin/main 2>/dev/null)" || _o=""
+    _s="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" || _s="unreadable"
+    if [[ "$_b" != "main" || -z "$_h" || "$_h" != "$_o" || -n "$_s" ]]; then
+      _synth="untrusted-checkout"
+      echo "$LOG_PREFIX WARN: osr phase: the overseer checkout is not a clean main at origin/main — no review runs this cycle" >&2
+      _audit cycle-osr-untrusted-checkout "role=$ROLE" "project=$PROJECT"
+    fi
+  fi
+  echo "$LOG_PREFIX osr phase: prs=[${_prs}] held=[${_held}] per_pr_max=${_OSR_PER_PR_MAX}s budget=${_budget:-n/a}s synth=${_synth:-none}"
+
+  [[ -z "$_todo" ]] || _order="$(_osr_py order --state-dir "$_OSR_STATE" --prs "$_todo")"
+
+  local _uncached=0 _labels="" _cache _co _rc _res _bud _out _err _re='^ACTION=(label|none) UNCACHED=([01])$'
+  for _n in $_order; do
+    [[ "$_n" =~ ^[1-9][0-9]{0,6}$ ]] || return 72
+    _hos_refresh_token || true
+    touch "$_LOCK_DIR" 2>/dev/null || true
+    _out="$_OSR_SCRATCH/pr${_n}.out"
+    _err="$_OSR_SCRATCH/pr${_n}.err"
+    if [[ -n "$_synth" ]]; then
+      _res="$(_osr_py ingest --state-dir "$_OSR_STATE" --pr "$_n" --synthetic "$_synth" --scratch "$_OSR_SCRATCH")" || _res=""
+    else
+      _bud="$(_osr_py budget --elapsed "$(( SECONDS - _t0 ))" --uncached-ran "$_uncached" --per-pr "$_OSR_PER_PR_MAX" --budget "$_budget")"
+      case "$_bud" in
+        RUN) _cache=""; _co=0 ;;
+        CACHE_ONLY) _cache="--cache-only"; _co=1 ;;
+        *) return 73 ;;
+      esac
+      _rc=0
+      (cd "$REPO_ROOT" && "$_OSR_TB" --kill-after=30 "$_OSR_PER_PR_MAX" python3 -m scripts.automation.lib.overseer_second_review run --pr "$_n" $_cache) >"$_out" 2>"$_err" || _rc=$?
+      _res="$(_osr_py ingest --state-dir "$_OSR_STATE" --runs-dir "$_OSR_RUNS_DIR" --pr "$_n" --rc "$_rc" --cache-only "$_co" --held 0 --out "$_out" --err "$_err" --scratch "$_OSR_SCRATCH")" || _res=""
+    fi
+    if [[ "$_res" =~ $_re ]]; then
+      [[ "${BASH_REMATCH[1]}" != "label" ]] || _labels="${_labels} ${_n}"
+      [[ "${BASH_REMATCH[2]}" != "1" ]] || _uncached=1
+    else
+      echo "$LOG_PREFIX WARN: osr helper gave no usable result for PR #${_n} — recording phase-error" >&2
+      printf '{"pr":%s,"head":null,"base":null,"tier":null,"vendors":null,"verdict":"hold","reason":"phase-error","findings_file":null,"reused":false,"persisted":false,"count":null,"last_reason":null,"label":null}\n' "$_n" > "$_OSR_SCRATCH/pr${_n}.line.json"
+      _labels="${_labels} ${_n}"
+    fi
+  done
+
+  for _n in $_labels; do _osr_label_and_record "$_n"; done
+
+  touch "$_LOCK_DIR" 2>/dev/null || true
+  _hos_refresh_token || true
+  if _osr_py render --scratch "$_OSR_SCRATCH" --prs "$_prs" --held "$_held" > "$_OSR_BLOCK" 2>/dev/null \
+      && _osr_block_valid "$_OSR_BLOCK" "$(wc -w <<< "$_prs")"; then
+    return 0
+  fi
+  echo "$LOG_PREFIX WARN: osr phase could not render its block — every PR is pending phase-error" >&2
+  _audit cycle-osr-render-failed "role=$ROLE" "project=$PROJECT"
+  _osr_phase_error_block > "$_OSR_BLOCK"
+  for _n in $_todo; do
+    [[ " $_labels " == *" $_n "* ]] || _osr_apply_label "$_n" || true
+  done
+  return 0
+}
+
+# Runs the phase and leaves the block (or the bash-rendered fallback) in _OSR_BLOCK_TEXT.
+_osr_run() {
+  local _osr_rc=0 _aborts=0 _tok _n _total=0
+  for _tok in $_HOS_ACTIONABLE_PRS; do _total=$(( _total + 1 )); done
+  _OSR_SCRATCH="$(mktemp -d 2>/dev/null)" || _OSR_SCRATCH=""
+  if [[ -z "$_OSR_SCRATCH" ]]; then
+    _osr_rc=75
+  else
+    _OSR_BLOCK="$_OSR_SCRATCH/block.txt"
+    set +e
+    ( set -euo pipefail; _osr_phase )
+    _osr_rc=$?
+    set -e
+  fi
+  if (( _osr_rc == 0 )) && _osr_block_valid "$_OSR_BLOCK" "$_total"; then
+    _OSR_BLOCK_TEXT="$(cat "$_OSR_BLOCK")"
+    rm -f "$_OSR_STATE/phase-aborts" 2>/dev/null || true
+  else
+    echo "$LOG_PREFIX WARN: osr phase aborted (rc=${_osr_rc}) — the overseer runs without second-review results" >&2
+    _audit cycle-osr-phase-error "rc=${_osr_rc}"
+    _OSR_BLOCK_TEXT="$(_osr_phase_error_block)"
+    if [[ -f "$_OSR_STATE/phase-aborts" ]]; then
+      _aborts="$(cat "$_OSR_STATE/phase-aborts" 2>/dev/null)" || _aborts=""
+      [[ "$_aborts" =~ ^[0-9]{1,4}$ ]] || _aborts=2
+    fi
+    _aborts=$(( 10#$_aborts + 1 ))
+    if ! { mkdir -p "$_OSR_STATE" && chmod 700 "$_OSR_STATE" \
+        && printf '%s\n' "$_aborts" > "$_OSR_STATE/phase-aborts.tmp" \
+        && mv -f "$_OSR_STATE/phase-aborts.tmp" "$_OSR_STATE/phase-aborts"; } 2>/dev/null; then
+      _aborts=3
+    fi
+    if (( _aborts >= 3 )); then
+      for _tok in $_HOS_ACTIONABLE_PRS; do
+        [[ "$_tok" =~ ^#([1-9][0-9]{0,6})$ ]] || continue
+        _n="${BASH_REMATCH[1]}"
+        [[ " ${_HOS_HELD_PRS:-} " == *" $_n "* ]] || _osr_apply_label "$_n" || true
+      done
+    fi
+  fi
+  _hos_refresh_token || true
+  [[ -z "$_OSR_SCRATCH" ]] || rm -rf "$_OSR_SCRATCH"
+  _OSR_SCRATCH=""
+}
+
+if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
+  if [[ -f "$REPO_ROOT/scripts/automation/lib/overseer_second_review.py" ]]; then
+    _osr_run
+  else
+    echo "$LOG_PREFIX osr phase skipped: scripts/automation/lib/overseer_second_review.py is absent" >&2
+  fi
+fi
+
 # ── Cycle start ───────────────────────────────────────────────────────────────
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT cycle_id=$HOS_CYCLE_ID"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
@@ -2628,9 +2882,13 @@ fi
 # (plus the real wall-clock gap spent in Step 0–2 before reaching this line)
 # for a lock failure; it wasn't one. See `tests/automation/test_hos_cron.py`
 # `TestOverlapLock` for a test pinning this exact shape as benign.
+# #2357: the lock heartbeat just before the session starts, so claude gets a full ceiling window
+# after however long the second-review phase ran.
+touch "$_LOCK_DIR" 2>/dev/null || true
 if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
   { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
         "$_HOS_ACTIONABLE_PRS" "${_HOS_SKIPPED_PRS:-none}"; \
+    [[ -z "$_OSR_BLOCK_TEXT" ]] || printf '%s\n' "$_OSR_BLOCK_TEXT"; \
     _build_prompt; } | _run_claude || _claude_exit=$?
 else
   _build_prompt | _run_claude || _claude_exit=$?

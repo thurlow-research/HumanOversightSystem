@@ -63,6 +63,9 @@ _PR_RE = re.compile(r"^[0-9]+$")
 _VALID_TIERS = ("SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 _NON_MERGE_DISPOSITIONS = ("HUMAN_REQUIRED", "PROPOSE_ONLY")
 _VERDICT_DISPOSITIONS = ("AUTO_MERGE",) + _NON_MERGE_DISPOSITIONS
+# The checks the overseer's own record must clear before it may approve, with the lowest tier at
+# which each applies (ADR-2357 AD-9; later slices add rows without changing the gate's shape).
+REQUIRED_OVERSEER_CHECKS = {"second-review": "MEDIUM"}
 _EXPECTED_ACTIONS = (
     "APPROVE",
     "REQUEST_CHANGES",
@@ -692,6 +695,30 @@ def _verdict_payload_base(
     }
 
 
+def _load_osr():
+    """The overseer second-review module, imported at call time (#2357). Every submit-verdict
+    calls it, because the check marker goes on comment verdicts as well as approvals; the
+    import is deferred so importing this CLI stays free of the vendor-report parsers."""
+    from scripts.automation.lib import overseer_second_review
+
+    return overseer_second_review
+
+
+def _base_tip(pre: _Preamble) -> str | None:
+    return (pre.pr_obj.get("base") or {}).get("sha")
+
+
+def _marker_record(osr, ctx: _Context, pre: _Preamble, pr: int) -> dict | None:
+    """The record the AD-4 marker describes when G1c did not accept one (TD 10.2): the newest
+    valid record for this head on the base G1c would pin, or a hold written before the tier was
+    known (it carries no base)."""
+    base = osr.pinned_base(ctx.repo_root, _base_tip(pre), pre.head_sha)
+    for rec in osr.find_records(ctx.repo_root, repo=pre.repo, pr=pr, head_sha=pre.head_sha):
+        if rec["tier"] is None or rec["base_sha"] == base:
+            return rec
+    return None
+
+
 def _record_signoff(
     payload: dict,
     not_verified: list[str],
@@ -879,6 +906,36 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             pr=args.pr,
         )
 
+    # G1c — never approve a head the overseer's own second review has not cleared (#2357, AD-9).
+    # The record, the raise file and the head all live in this clone, so a refusal here is
+    # mechanical: a missing, unverifiable or non-approving record can never become an approval.
+    osr = _load_osr()
+    gate = None
+    if args.event == "approve" and osr.CHECK in REQUIRED_OVERSEER_CHECKS:
+        gate = osr.approval_gate(
+            ctx.repo_root,
+            repo=pre.repo,
+            pr=args.pr,
+            head_sha=pre.head_sha,
+            base_tip=_base_tip(pre),
+            argv_tier=args.tier,
+        )
+        if not gate.ok:
+            payload = {
+                **base,
+                "refused": True,
+                "refusal_reason": gate.reason,
+                "commit_id": pre.head_sha,
+                "second_review": gate.diag,
+            }
+            return _Outcome(
+                payload=payload,
+                exit_code=3,
+                not_verified=pre.not_verified,
+                repo=pre.repo,
+                pr=args.pr,
+            )
+
     # G3 — already approved this exact head: skip, no POST.
     if args.event == "approve":
         for review in pre.reviews:
@@ -935,7 +992,10 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     # wrapper appends it. A line that opens the marker comment is refused on
     # every disposition (a mere mention mid-line is fine).
     roa = _load_require_overseer_approval()
-    if any(line.lstrip().startswith(roa.MARKER_PREFIX) for line in body_text.splitlines()):
+    if any(
+        line.lstrip().startswith((roa.MARKER_PREFIX, osr.CHECK_MARKER_PREFIX))
+        for line in body_text.splitlines()
+    ):
         return _Outcome(
             payload={},
             exit_code=2,
@@ -966,6 +1026,24 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     marker_appended = non_merge and args.event == "comment"
     if marker_appended:
         body_text = _with_interim_signoff(body_text, args.disposition, action, pre.head_sha)
+
+    # The overseer's check marker (#2357 AD-4, #2358): code appends it, never the model. It is
+    # added after the interim sign-off so that marker's own parser is unaffected.
+    check_marker = None
+    if ctx.app_role == "overseer":
+        record = gate.record if gate is not None else _marker_record(osr, ctx, pre, args.pr)
+        try:
+            check_marker = osr.check_marker(pr=args.pr, head_sha=pre.head_sha, record=record)
+        except ValueError:
+            return _Outcome(
+                payload={},
+                exit_code=1,
+                error="PR head is not a 40-hex commit id; refusing to post an unmarked verdict",
+                not_verified=pre.not_verified,
+                repo=pre.repo,
+                pr=args.pr,
+            )
+        body_text = body_text.rstrip("\n") + "\n\n" + check_marker + "\n"
 
     # G4 — an identical COMMENT verdict already posted on this exact head:
     # skip, no POST. Narrow by design (byte-identical body, same head SHA):
@@ -1098,7 +1176,10 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 "commit_id": existing.get("commit_id"),
                 "body_bytes": len(body_text.encode("utf-8")),
                 "marker_appended": marker_appended,
+                "check_marker": check_marker,
             }
+            if gate is not None:
+                payload["second_review"] = gate.diag
             not_verified.append(
                 f"review posted despite an ambiguous submit_pull_review response: {_scrub_exc(exc)}"
             )
@@ -1164,7 +1245,10 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         "commit_id": result.get("commit_id"),
         "body_bytes": len(body_text.encode("utf-8")),
         "marker_appended": marker_appended,
+        "check_marker": check_marker,
     }
+    if gate is not None:
+        payload["second_review"] = gate.diag
     _record_signoff(payload, not_verified, args, ctx, pre, action)
     return _Outcome(
         payload=payload,
