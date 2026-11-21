@@ -1,0 +1,1 @@
+{"attempts":3,"event":"validator-failure","final_outcome":"failed","last_error":"exit 126","required":true,"timestamp":"2026-11-21T08:48:03Z","validator":"detect-secrets"}
