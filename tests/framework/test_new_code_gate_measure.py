@@ -95,10 +95,13 @@ class Templates:
     def __init__(self, factory):
         self.factory = factory
         self.built = {}
+        self.dirs = []
 
     def get(self, key, build):
         if key not in self.built:
-            rig = Rig(self.factory.mktemp("template"), None)
+            template_dir = self.factory.mktemp("template")
+            self.dirs.append(template_dir)
+            rig = Rig(template_dir, None)
             build(rig)
             self.built[key] = (rig.root, rig.head(), rig.git("rev-parse", "HEAD^{tree}"))
         return self.built[key]
@@ -421,12 +424,33 @@ def templates(tmp_path_factory):
     # Session scope, not module: a mutation run hands pytest its node IDs in arbitrary order, which
     # interleaves this module's tests with another's, and a module-scoped fixture would then be
     # rebuilt at every switch (a hundred templates, past the tmp budget).
-    return Templates(tmp_path_factory)
+    built = Templates(tmp_path_factory)
+    yield built
+    # The templates are read-only inputs to per-test copies; once the last test is done they are
+    # dead weight in the session's temp budget, so each is deleted here (the copies are per test).
+    for template_dir in built.dirs:
+        shutil.rmtree(template_dir, ignore_errors=True)
 
 
 @pytest.fixture
 def rig(tmp_path, templates):
     return Rig(tmp_path, templates)
+
+
+@pytest.fixture(autouse=True)
+def drop_tmp_path_link_at_teardown(request, tmp_path):
+    """Remove this test's `<name>current` link from the session's base temp once the test passed.
+
+    pytest deletes a passing test's tmp_path itself (retention policy "failed") but leaves the
+    link to it, and every such link is allocated space in the session's temp budget. A failed test
+    keeps both the directory and its link, for diagnosis.
+    """
+    failed_before = request.session.testsfailed
+    yield
+    if request.session.testsfailed == failed_before:
+        link = tmp_path.parent / (re.sub(r"\d+$", "", tmp_path.name) + "current")
+        if link.is_symlink() and link.resolve() == tmp_path.resolve():
+            link.unlink()
 
 
 @pytest.fixture(autouse=True)

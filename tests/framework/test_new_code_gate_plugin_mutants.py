@@ -9,6 +9,7 @@ test, like `test_new_code_gate_plugin.py`.
 
 import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -16,6 +17,22 @@ from pathlib import Path
 import pytest
 
 from scripts.framework import new_code_gate_pytest_plugin as plugin
+
+
+@pytest.fixture(autouse=True)
+def drop_tmp_path_link_at_teardown(request, tmp_path):
+    """Remove this test's `<name>current` link from the session's base temp once the test passed.
+
+    pytest deletes a passing test's tmp_path itself (retention policy "failed") but leaves the
+    link to it, and every such link is allocated space in the session's temp budget. A failed test
+    keeps both the directory and its link, for diagnosis.
+    """
+    failed_before = request.session.testsfailed
+    yield
+    if request.session.testsfailed == failed_before:
+        link = tmp_path.parent / (re.sub(r"\d+$", "", tmp_path.name) + "current")
+        if link.is_symlink() and link.resolve() == tmp_path.resolve():
+            link.unlink()
 
 
 @pytest.fixture(autouse=True)

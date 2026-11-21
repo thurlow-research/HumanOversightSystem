@@ -25,6 +25,22 @@ LOGIC_FILE = REPO / "scripts" / "framework" / "new_code_gate_logic.py"
 
 
 @pytest.fixture(autouse=True)
+def drop_tmp_path_link_at_teardown(request, tmp_path):
+    """Remove this test's `<name>current` link from the session's base temp once the test passed.
+
+    pytest deletes a passing test's tmp_path itself (retention policy "failed") but leaves the
+    link to it, and every such link is allocated space in the session's temp budget. A failed test
+    keeps both the directory and its link, for diagnosis.
+    """
+    failed_before = request.session.testsfailed
+    yield
+    if request.session.testsfailed == failed_before:
+        link = tmp_path.parent / (re.sub(r"\d+$", "", tmp_path.name) + "current")
+        if link.is_symlink() and link.resolve() == tmp_path.resolve():
+            link.unlink()
+
+
+@pytest.fixture(autouse=True)
 def run_in_tmp_path(tmp_path, monkeypatch):
     """A mutant that turns a computed path relative lands here, never in mutmut's cwd (RV3-7a)."""
     monkeypatch.chdir(tmp_path)
