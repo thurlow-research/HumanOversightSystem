@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"5bc8cc87e58005ecf7db1c2de26b46e208a6d52e","pr":2433,"reason":"verdict posted 11:43Z on same head; needs-human applied; no human review/comment since","timestamp":"2026-11-21T11:56:44Z"}
