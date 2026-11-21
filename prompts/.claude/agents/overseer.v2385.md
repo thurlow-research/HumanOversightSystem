@@ -166,3 +166,83 @@ Source: issue #2385 body, "Scope" items 1-7 and "Acceptance".
 ## Final second-review run 7 (2026-11-21, full range at ac7e9e3e8): 1 new agy finding fixed
 
 - agy (medium, error-handling): the security issue for a changed App review is filed right after the dismissals and before sub-step 5, so a sub-step 5 halt cannot drop it; its body lists every failed dismissal (review id, exit code or HTTP status). codex repeated CWE-862 (ledgered `filed:#1643`).
+
+## Human send-back 2026-11-21 (CHANGES_REQUESTED on PR #2433 at 5bc8cc87e)
+
+Prompt (ScottThurlow, verbatim in substance): fix #2432 item 1 in this PR before
+merge. Step 4d must not re-dispatch lenses or post a new verdict on an unchanged
+head that already has this App's verdict and a pending human request; reuse the
+recorded lens table. The code-review loop cap is reset for this change. Q2 C stands
+for CWE-862, cross-PR writes included, until #1643 W7. #2432 items 2–3 stay deferred.
+
+As implemented (step 4d sub-step 1, new "Unchanged head awaiting the human" bullet):
+reuse when the required set is non-empty, this App has a review on `head_sha` with
+the lens table, that table names this sweep's digest and exactly the required lenses,
+`requested_reviewers`/`requested_teams` is non-empty, and nothing but this App's own
+entries is newer than it in the comments+reviews union. Reuse = skip the PR for the
+cycle (no dispatch, no verdict, no thread, no audit, no labels), one `LENS-REUSE:`
+stdout line. 4a/4c bounces and step 1a's merge are unaffected. The #1215 "one dedup
+authority" statements (step 5 and step 6 HUMAN_REQUIRED CRITICAL) name this as the
+one exception. The cron prompt summarises it.
+
+Send-back review round 1 (code-reviewer APPROVED, reliability-reviewer and
+security-reviewer CONDITIONAL, no MUST_FIX), all SHOULD_FIX applied in one batch:
+no `FAILED`/`(all)` row may be reused (a failed run is always retried); `recorded`
+must not be `DISMISSED`; a recorded HUMAN_REQUIRED needs `needs-human` present (an
+unfinished step 6 is finished by a full review); the human condition is
+`HUMAN_REVIEWER` requested **or** having reviewed the head (a human comment or
+approval costs one full review, then reuse resumes); the newer-entry union is
+paginated and includes review-thread comments, ties count as newer, a failed read
+discards partial output; the #1215 "every other step-6 action still runs" sentence
+is scoped; residuals add the base-branch move and the App-token forgery (Q2 C, W7).
+
+Send-back review round 2: security-reviewer and reliability-reviewer APPROVED;
+code-reviewer APPROVED with one SHOULD_FIX, applied: the `needs-human` condition is
+scoped to non-CRITICAL tiers (step 6's CRITICAL path applies no label, so the
+condition would never hold there and re-dispatch every cycle). Step 5's exception
+sentence now names `HUMAN_REVIEWER` requested-or-reviewed, matching sub-step 1.
+
+Full-range second review at 4b5372eed (agy + codex, `--tier HIGH`): codex CWE-862
+repeated (ledgered `filed:#1643`, Q2 C restated by the human). agy raised five new
+findings, all applied: a "newest entry seen" line under the lens table so the
+verdict after a human entry always differs and the wrapper posts it (no
+re-dispatch loop); the CRITICAL `needs-human` exemption only for a CRITICAL-tier
+`Expected action: **APPROVE**` record; a `DISMISSED`/`PENDING` human review does not
+count; a comment's `updated_at` counts; the cron prompt states the non-empty set,
+most-recent review and `LENS-VERDICT:` quote conditions.
+
+Code review of the agy-fix delta (1 MUST_FIX, 2 SHOULD_FIX, all applied): the
+reuse check and the "newest entry seen" line share one effective timestamp
+(comment: later of `created_at`/`updated_at`; review: `submitted_at`), the line
+always names the newest non-App entry and is re-read just before composing the
+verdict; the sanitizer drops reviewer text containing `Expected action:` or
+`**Decision:` so a quote cannot forge the reuse markers.
+
+Full-range second review at 611b1d63a: codex CWE-862 repeated (ledgered). agy
+raised three new findings, all applied. (1) high, TOCTOU: the watermark was
+read after step 5, so an entry landing between step 5 and the post was
+absorbed. It is now read immediately before step 5, and reuse requires the
+current newest non-App entry to equal the one the watermark names (same list,
+id and effective timestamp, with a deterministic tie-break), rather than
+comparing against `recorded.submitted_at`. This also closes the same-second
+tie. (2) `recorded` is the App's single most recent review on the head; it
+qualifies only if it is not DISMISSED or PENDING, has a `submitted_at`, and
+carries the table. It never falls back to an older review. (3) A failed
+watermark read writes `unreadable (<list>)`, which is never reused.
+
+Code review of 8a09abffa (1 MUST_FIX, applied; security and reliability APPROVED):
+`post_review_thread.sh` submits an empty-body `COMMENT` review to carry each §8.2
+thread, which would become the "latest review" and defeat reuse on every
+HUMAN_REQUIRED PR. `recorded` is now the App's latest review with a non-empty body,
+with no fallback behind a non-empty review that does not qualify.
+
+Full-range second review at fa77a9bd2: the gate passed with `approve` (codex CWE-862
+and an agy high `error-handling` silenced by the ledger). The silenced agy finding
+was new content, so it and four more agy findings were read and applied:
+- An unset `HOS_BOT_LOGIN` fails the pre-dispatch baseline (every lens failed),
+  and the watermark becomes `unreadable (bot-login)`.
+- A review's `state` is part of the watermark identity, so a dismissal ends reuse.
+- `recorded` is ordered by the highest review id.
+- The list tokens are fixed (`issue_comments`, `reviews`, `review_comments`), and
+  the line has an exact format.
+- Verdict paths that do not reach step 5 read the watermark just before composing.
