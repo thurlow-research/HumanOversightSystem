@@ -1,0 +1,1 @@
+{"actor":"overseer","event":"pr-review-skipped-idempotent","head_sha":"cb95f0137da2c50afc847c1aa4ac42c2f485feb5","pr":2426,"reason":"1215: overseer HUMAN_REQUIRED verdict (review 6001666819) already posted at this head; needs-human applied; no new commits or human activity since","repo":"thurlow-research/HumanOversightSystem"}
