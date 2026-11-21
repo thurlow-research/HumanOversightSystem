@@ -66,7 +66,10 @@ def test_evaluator_phase1_numeric_mutant_score_rule():
         "`Mutant_score_pct` must each be a bare number (integer or decimal, optionally followed by `%`)"
     ) in flat
     assert "`N/A`, `not run`, `sampled`, a range, prose, or an absent field" in flat
-    assert "The PACK N/A form is accepted only when the step changes no `.py` file. (#2304 REQ-32)" in flat
+    assert (
+        "The PACK N/A form is accepted only when the step changes no `.py` file. (#2304 REQ-32)"
+        in flat
+    )
 
 
 def test_contract_register_example_and_note():
@@ -101,15 +104,21 @@ def test_template_register_example_matches_contract():
 def test_base_agents_spec_field_list_and_python_sentences():
     text = _text(SPEC)
     assert "Equivalents_documented" not in text
-    assert ("`Mutant_score_pct` is measured; N/A only for PACK-disabled non-Python stacks, #2304") in text
-    sentence = "Python has a mutation framework, so a PACK may not disable mutation for Python (#2304)."
+    assert (
+        "`Mutant_score_pct` is measured; N/A only for PACK-disabled non-Python stacks, #2304"
+    ) in text
+    sentence = (
+        "Python has a mutation framework, so a PACK may not disable mutation for Python (#2304)."
+    )
     assert text.count(sentence) == 2
 
 
 def test_django_pack_denominator_includes_equivalent_mutants():
     text = _text(DJANGO_PACK)
     assert "non-equivalent" not in text
-    assert ("total mutants (equivalent mutants are not excluded; the 25% headroom absorbs them — #2304)") in text
+    assert (
+        "total mutants (equivalent mutants are not excluded; the 25% headroom absorbs them — #2304)"
+    ) in text
 
 
 def test_claude_md_canonical_entry_point_row_present_after_test_suite_row():

@@ -130,7 +130,11 @@ def gate_import_offenders(tree, module):
             continue
         for name in names:
             leaf = name.rsplit(".", 1)[-1]
-            if leaf.startswith("new_code_gate") and leaf != module and leaf not in GATE_EDGES[module]:
+            if (
+                leaf.startswith("new_code_gate")
+                and leaf != module
+                and leaf not in GATE_EDGES[module]
+            ):
                 found.append(name)
     return found
 
@@ -764,7 +768,9 @@ def test_shard_matrix_and_job_contract():
     assert "job-start" not in workflow_text().split(f"\n  {GATE}:\n", 1)[1]
     assert shard["name"] == "new-code-shard ${{ matrix.shard }}"
     assert (shard["needs"], shard["timeout-minutes"]) == (PLAN, 30)
-    assert shard["strategy"]["matrix"] == {"shard": "${{ fromJSON(needs.new-code-plan.outputs.shards) }}"}
+    assert shard["strategy"]["matrix"] == {
+        "shard": "${{ fromJSON(needs.new-code-plan.outputs.shards) }}"
+    }
     assert step_using(SHARD, "actions/checkout@")["with"]["fetch-depth"] == 1
     (index_step,) = [s for s in shard["steps"] if ENTRY in s.get("run", "")]
     assert index_step["env"] == {"HOS_SHARD_INDEX": "${{ matrix.shard }}"}
@@ -838,7 +844,9 @@ def test_ci_invokes_only_plan_shard_and_verdict_entry_points():
         gate_lines = [c for c in run_lines(job) if "new_code_gate" in c]
         assert len(gate_lines) == 1, job
         assert re.search(rf'" {re.escape(WRAPPER_ARGS)} {phase}( |$)', gate_lines[0]), gate_lines[0]
-        for other in {"plan", "shard", "verdict", "run", "meta", "_enumerate", "_collect"} - {phase}:
+        for other in {"plan", "shard", "verdict", "run", "meta", "_enumerate", "_collect"} - {
+            phase
+        }:
             assert f"{WRAPPER_ARGS} {other} " not in gate_lines[0]
     text = workflow_text()
     assert "new_code_gate.sh" not in text
@@ -850,8 +858,16 @@ def test_ci_invokes_only_plan_shard_and_verdict_entry_points():
 def test_new_jobs_shell_lines_are_only_the_designed_ones():
     """Only the job start, the venv build, the gate call and the one-line summary append run as shell."""
     allowed = {
-        PLAN: [JOB_START, "bash scripts/oversight/ensure_venv.sh", "scripts/oversight/.venv/bin/python"],
-        SHARD: [JOB_START, "bash scripts/oversight/ensure_venv.sh", "scripts/oversight/.venv/bin/python"],
+        PLAN: [
+            JOB_START,
+            "bash scripts/oversight/ensure_venv.sh",
+            "scripts/oversight/.venv/bin/python",
+        ],
+        SHARD: [
+            JOB_START,
+            "bash scripts/oversight/ensure_venv.sh",
+            "scripts/oversight/.venv/bin/python",
+        ],
         GATE: [wrapper("python") + " verdict", "cat "],
     }
     for job, prefixes in allowed.items():
@@ -1047,12 +1063,7 @@ def test_fragment_artifact_names_unique_with_index_and_n():
 
 
 def run_scripts(data):
-    return [
-        step["run"]
-        for job in data["jobs"].values()
-        for step in job["steps"]
-        if "run" in step
-    ]
+    return [step["run"] for job in data["jobs"].values() for step in job["steps"] if "run" in step]
 
 
 def offending_run_scripts(data):
@@ -1064,9 +1075,7 @@ def test_no_needs_or_matrix_expressions_in_run_scripts():
     data = yaml.safe_load(workflow_text())
     assert run_scripts(data)
     assert offending_run_scripts(data) == []
-    seeded = yaml.safe_load(
-        "jobs:\n  j:\n    steps:\n      - run: echo ${{   matrix.shard }}\n"
-    )
+    seeded = yaml.safe_load("jobs:\n  j:\n    steps:\n      - run: echo ${{   matrix.shard }}\n")
     assert offending_run_scripts(seeded) != []
     seeded_needs = yaml.safe_load(
         "jobs:\n  j:\n    steps:\n      - run: echo ${{needs.plan.result }}\n"
@@ -1209,7 +1218,14 @@ def bound_plan(tmp_path):
     plan_dir.mkdir(parents=True)
     fragments_dir.mkdir(parents=True)
     argv = [
-        sys.executable, "-I", "-c", PLAN_WRITER, str(ROOT), SHA, str(plan_dir), str(fragments_dir),
+        sys.executable,
+        "-I",
+        "-c",
+        PLAN_WRITER,
+        str(ROOT),
+        SHA,
+        str(plan_dir),
+        str(fragments_dir),
     ]
     proc = run(argv, tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -1228,7 +1244,10 @@ def literal_verdict_argv(tmp_path, root):
         "needs.new-code-shard.result": "success",
     }
     (step,) = [s for s in steps_of("new-code-gate") if s["name"] == "Apply thresholds"]
-    env = {k: re.sub(r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], v) for k, v in step["env"].items()}
+    env = {
+        k: re.sub(r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], v)
+        for k, v in step["env"].items()
+    }
     text = re.sub(
         r"\$\{\{ ([^}]+) \}\}", lambda m: values[m.group(1)], " ".join(step["run"].split())
     )

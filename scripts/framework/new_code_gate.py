@@ -436,7 +436,9 @@ def valid_durations(value: Any) -> bool:
 def durations_are_stale(durations: Path, coverage_file: Path) -> bool:
     """True when the durations file predates the coverage data it pairs with, or cannot be dated."""
     try:
-        return durations.stat().st_mtime < coverage_file.stat().st_mtime - ncg.DURATIONS_SKEW_SECONDS
+        return (
+            durations.stat().st_mtime < coverage_file.stat().st_mtime - ncg.DURATIONS_SKEW_SECONDS
+        )
     except OSError:
         return True
 
@@ -983,7 +985,9 @@ def build_context(opts: PlanOptions, runner: Runner, clock: Clock, setup: int = 
 def blob_shas(ctx: Context, path: str) -> tuple[str, str | None]:
     blob = rev_parse(ctx.repo, f"{ctx.gated_sha}:{path}")
     try:
-        head_blob: str | None = rev_parse(ctx.repo, f"{cast(PlanOptions, ctx.opts).pr_head_sha}:{path}")
+        head_blob: str | None = rev_parse(
+            ctx.repo, f"{cast(PlanOptions, ctx.opts).pr_head_sha}:{path}"
+        )
     except GateError:
         head_blob = None
     return blob, head_blob
@@ -1924,7 +1928,9 @@ def fragment_entry(work: FileRun, errored: set[str]) -> dict[str, Any]:
 def shard_timeout(ctx: Context, works: Sequence[FileRun]) -> dict[str, str]:
     where = ctx.expired_phase or "an unrecorded phase"
     seconds = {w.path: (w.record["seconds"], w.workspace_seconds) for w in works}
-    text = ncg.timeout_message(ctx.phase_seconds, seconds, where, ctx.lead(f"{ctx.label} overran its budget"))
+    text = ncg.timeout_message(
+        ctx.phase_seconds, seconds, where, ctx.lead(f"{ctx.label} overran its budget")
+    )
     return {
         "phase": ctx.expired_phase,
         "file": ctx.expired_file,

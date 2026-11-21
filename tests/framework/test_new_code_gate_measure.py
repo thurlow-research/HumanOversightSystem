@@ -4376,6 +4376,7 @@ def test_shard_refuses_unbound_or_tampered_plan(rig, case):
     elif case == "plan-n":
         rewrite_json(path, lambda d: d.update(N=d["N"] + 1))
     elif case == "plan-n-rehashed":
+
         def bump_n(d):
             d["N"] += 1
             d["plan_hash"] = ncs.plan_hash(d)
@@ -4510,7 +4511,10 @@ def test_plan_with_setup_past_the_budget_times_out_every_file_and_names_the_setu
     for rec in doc["files"]:
         assert rec["mutation_reason"] == "timeout"
         reason = next(r for r in rec["fail_reasons"] if r["code"] == "mutation_timeout")
-        assert f"{ncg.PLAN_BUDGET_SECONDS + 1}s of job setup was charged to the budget" in reason["message"]
+        assert (
+            f"{ncg.PLAN_BUDGET_SECONDS + 1}s of job setup was charged to the budget"
+            in reason["message"]
+        )
         assert "split the PR" in reason["message"]
     assert runner.calls_for("mutmut_run") == []
 

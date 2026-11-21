@@ -42,11 +42,14 @@ _INVENTORY_DOC = _REPO_ROOT / "docs" / "CI-EXECUTION-INVENTORY.md"
 _INVENTORY_JOB_RE = re.compile(r"\(job: `([^`]+)`\)")
 # Read from source, not imported: this file must not load gate code in process (TD 5.19).
 _SHARD_N_MAX = int(
-    cast(re.Match[str], re.search(
-        r"^N_MAX = (\d+)$",
-        (_FRAMEWORK_DIR / "new_code_gate_shard.py").read_text(encoding="utf-8"),
-        re.M,
-    )).group(1)
+    cast(
+        re.Match[str],
+        re.search(
+            r"^N_MAX = (\d+)$",
+            (_FRAMEWORK_DIR / "new_code_gate_shard.py").read_text(encoding="utf-8"),
+            re.M,
+        ),
+    ).group(1)
 )
 
 

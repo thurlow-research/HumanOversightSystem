@@ -544,7 +544,9 @@ def test_clock_epoch_is_whole_seconds_since_the_unix_epoch():
 # --------------------------------------------------------------------------
 
 
-def test_extract_archive_applies_the_data_filter_and_neutralises_hostile_members(tmp_path, monkeypatch):
+def test_extract_archive_applies_the_data_filter_and_neutralises_hostile_members(
+    tmp_path, monkeypatch
+):
     import io
     import tarfile
     from types import SimpleNamespace

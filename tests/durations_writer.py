@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,13 +27,13 @@ def write_durations(path: Path, seconds: dict[str, float]) -> None:
     """Write `{node_id: ms}` to `path` atomically (temp file beside it, then `os.replace`)."""
     document = {node: round(value * 1000) for node, value in sorted(seconds.items())}
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with open(temp, "x", encoding="utf-8") as handle:
             json.dump(document, handle)
         os.replace(temp, path)
     except BaseException:
-        Path(temp).unlink(missing_ok=True)
+        temp.unlink(missing_ok=True)
         raise
 
 
