@@ -40,7 +40,15 @@ agent checks which mode it is in before acting.
   hands off to `oversight-orchestrator` to open a PR. It opens PRs; it never
   approves or merges them, and it never writes implementation work itself.
 - **`overseer`** (`bin/hos-cron --role overseer`) — reviews the open bot PRs,
-  checks the risk tier and gates against the merge-authority matrix, and either
+  runs every applicable review lens itself (INTERIM #2385, until #1643 W7/W8;
+  only where the dimension sweep is installed, i.e. the HOS source repo, and
+  every consumer verdict says the lenses did not run:
+  the lenses `run_post_change_sweep.sh` returns for the PR's changed files, each
+  dispatched to its reviewer agent without the worker's register or PR-body
+  rationale; a blocking lens finding bounces the PR, a lens that fails to run
+  means `needs-human`; on any PR where a lens is required, the overseer never
+  auto-merges and only proposes, per the #2385 Q2 C ruling, until W7), checks
+  the risk tier and gates against the merge-authority matrix, and either
   **auto-merges** (tier ≤ `OVERSEER_CEILING`, default `HIGH`, non-protected
   surface, all checks green) or escalates to **HUMAN_REQUIRED** (CRITICAL tier,
   protected surface, or above ceiling). It evaluates and merges; it never opens
