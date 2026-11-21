@@ -246,3 +246,11 @@ was new content, so it and four more agy findings were read and applied:
 - The list tokens are fixed (`issue_comments`, `reviews`, `review_comments`), and
   the line has an exact format.
 - Verdict paths that do not reach step 5 read the watermark just before composing.
+
+Squashed send-back delta to 9527c89c9, then a full-range second review there.
+codex CWE-862 is ledgered. agy raised three findings, all applied:
+- The watermark records `dismissed=<n>` (dismissed non-App reviews), so
+  dismissing a non-newest review ends reuse.
+- The sanitizer also drops `Newest entry seen:` and `### Review lenses`.
+- The tie-break order is explicit: `reviews`, then `review_comments`, then
+  `issue_comments`, then highest id.
