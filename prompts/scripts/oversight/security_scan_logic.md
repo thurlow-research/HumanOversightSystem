@@ -61,6 +61,8 @@ two files.
 
 - v4 (2026-11-15, #2352): opentelemetry-api CVE-2026-126360 exemption (fixed_in `1.45.2`, expires 2027-01-31, tracking #2179) plus premise test PR8 (installed semgrep's only `propagate.extract` call builds its traceparent from its own environment), per the human ruling on #2352 (ScottThurlow, 2026-11-15T18:47:15Z): option A, expiry 2027-01-31, premise test, check the advisory against HOS usage first.
 
+- v5 (2026-11-20, #2409): mcp CVE-2026-115563 exemption (OAuth client issuer / credential binding; fixed_in `1.30.0`, expires 2026-12-31, tracking #2120) mirroring the #2194 records, per the human ruling on #2409 (ScottThurlow, 2026-11-20): option A. Premise tests PR5/PR5b extended so no tracked file may use `mcp.client.auth` or the OAuthClientProvider / ClientCredentialsOAuthProvider / PrivateKeyJWTOAuthProvider / RFC7523OAuthClientProvider classes.
+
 ## Human Review Notes
 
 <!-- Filled in at CODEOWNERS review. -->
