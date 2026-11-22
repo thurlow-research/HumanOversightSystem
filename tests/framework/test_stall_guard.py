@@ -33,8 +33,11 @@ def drop_tmp_path_link_at_teardown(request, tmp_path):
 
 @pytest.fixture(autouse=True)
 def short_stall_and_clean_signal_state(monkeypatch):
-    """Patch the limit down, and put the signal state back whatever a test did to it."""
-    monkeypatch.setattr(_stall_guard, "STALL_SECONDS", 0.05)
+    """Patch the limit high, so no test but the stall test can be hit by it on a loaded runner.
+
+    Also puts the signal state back whatever a test did to it.
+    """
+    monkeypatch.setattr(_stall_guard, "STALL_SECONDS", 30.0)
     handler = signal.getsignal(signal.SIGALRM)
     signal.setitimer(signal.ITIMER_REAL, 0)
     yield
@@ -46,7 +49,8 @@ def _outer_handler(signum, frame):
     raise AssertionError("outer handler must not run")
 
 
-def test_stalled_test_is_failed_by_the_guard_with_its_message():
+def test_stalled_test_is_failed_by_the_guard_with_its_message(monkeypatch):
+    monkeypatch.setattr(_stall_guard, "STALL_SECONDS", 0.05)
     guard = GUARD()
     next(guard)
     with pytest.raises(AssertionError, match=r"made no progress for 0\.05 s"):
