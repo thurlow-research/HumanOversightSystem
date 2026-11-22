@@ -12,6 +12,9 @@ import textwrap
 import pytest
 
 from scripts.framework import new_code_gate_logic as ncg
+from tests.framework._stall_guard import stalled_test_fails_fast  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("stalled_test_fails_fast")
 
 # --------------------------------------------------------------------------
 # Small helpers

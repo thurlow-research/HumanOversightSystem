@@ -19,6 +19,9 @@ import pytest
 
 from scripts.framework import new_code_gate_logic as ncg
 from scripts.oversight.validators.shell_logic_check import decision_lines, is_hard_exempt
+from tests.framework._stall_guard import stalled_test_fails_fast  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("stalled_test_fails_fast")
 
 REPO = Path(__file__).resolve().parents[2]
 LOGIC_FILE = REPO / "scripts" / "framework" / "new_code_gate_logic.py"
