@@ -1,9 +1,9 @@
 """security_scan: time-boxed, visible advisory exemptions that fail closed (#1776).
 
 `dependency_audit.sh` blocks on any pip-audit advisory, which made it permanently
-red on advisories in tools HOS cannot yet upgrade (black x2, and mcp, opentelemetry-api
-and wcmatch via semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with
-no exemption).
+red on advisories in tools HOS cannot yet upgrade (black x2, and mcp and opentelemetry-api via
+semgrep's pins, plus wcmatch via semgrep's pin; PyJWT is handled by the requirements.txt
+floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
