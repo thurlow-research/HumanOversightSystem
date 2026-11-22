@@ -86,13 +86,13 @@ def pytest_configure(config):
     register_if_requested(config)
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
+def _report_retry_rescues(terminalreporter, environ, write_event):
     """Surface pytest-rerunfailures retry-rescues (#1244 ruling item 4).
 
     A test that fails once then passes on the --reruns 1 retry doesn't fail
     the build, but going silent about it is exactly the drift this repo's
     testability work exists to catch. Detection/formatting logic lives in
-    retry_rescue_logic.py (importable, unit-tested); this hook only reads
+    retry_rescue_logic.py (importable, unit-tested); this helper only reads
     pytest's own per-outcome report buckets and does the I/O.
 
     Best-effort only: on a CI checkout (`permissions: contents: read` in
@@ -101,9 +101,12 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     below are what keeps CI visible in that case. Persisting CI-originated
     events and escalating a threshold breach into a filed bug ticket needs
     its own design (state channel, de-dup) and is tracked separately.
-    """
-    emit_report(terminalreporter)
 
+    Inside a mutmut run (MUTANT_UNDER_TEST present, even if empty) the audit
+    write is skipped: a rescue there describes the mutant, not suite
+    flakiness, the workspace is deleted afterwards, and a write under ROOT
+    trips the mutation workspace-integrity check (TD-2304 §5.20.17).
+    """
     from retry_rescue_logic import build_retry_rescue_event, now_iso, rescued_nodeids
 
     rerun_nodeids = [r.nodeid for r in terminalreporter.stats.get("rerun", [])]
@@ -116,12 +119,23 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
     terminalreporter.section("retry-rescues (#1244 ruling item 4)")
     ts = now_iso()
-    pr_number = os.environ.get("PR_NUMBER") or None
+    pr_number = environ.get("PR_NUMBER") or None
+    in_mutation_run = "MUTANT_UNDER_TEST" in environ
     for nodeid in rescues:
         terminalreporter.write_line(f"RETRY-RESCUE: {nodeid} failed once, passed on retry")
+        if in_mutation_run:
+            terminalreporter.write_line("  (audit write skipped: inside a mutation run)")
+            continue
         try:
-            from scripts.oversight.lib.audit_log import write_event
-
             write_event(build_retry_rescue_event(nodeid, ts, pr_number), root=str(ROOT))
         except Exception as exc:  # best-effort — never fail the test run over logging
             terminalreporter.write_line(f"  (audit write skipped: {exc})")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Emit the gate report, then surface retry-rescues (see the helper)."""
+    emit_report(terminalreporter)
+
+    from scripts.oversight.lib.audit_log import write_event
+
+    _report_retry_rescues(terminalreporter, os.environ, write_event)
