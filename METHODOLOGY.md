@@ -365,6 +365,16 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
                             matrix; incomplete → pr-bounced (PR stays open,
                             re-assigned to worker, failure counter unchanged) [✅ #317]
 
+   overseer review lenses → INTERIM (#2385, retired by #1643 W7/W8): the
+                            overseer dispatches every judgment lens the
+                            dimension registry marks applicable (code, security,
+                            privacy, reliability, ops, ui, a11y, infra) at every
+                            tier, on independent inputs (no worker register or
+                            PR-body rationale); blocking finding → bounce;
+                            lens failed to run → needs-human, never approval;
+                            any lens required → no auto-merge, propose only (the
+                            reviewers hold the overseer token; Q2 C, until W7)
+
 13. CI CHEAP GATES   lint, types, build, unit tests, secret scan.
                      If CI fails on a gate the inner loop should have
                      caught, that is a process health signal — the

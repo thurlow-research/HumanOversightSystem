@@ -749,7 +749,7 @@ _CLOSER_QUERY = (
     "closer{ __typename "
     "... on PullRequest{ number merged mergedAt baseRefName "
     "baseRepository{ nameWithOwner } mergeCommit{ oid } } "
-    "... on Commit{ oid } } } } } } }"
+    "... on Commit{ oid } } } } } } } }"
 )
 
 

@@ -908,6 +908,7 @@ class TestMachineFilingMarker:
             "[BLOCKED] agent unavailable — worker halted (missing: foo)",
             "[BLOCKED] local main diverged on my-project (worker) — needs manual recovery",
             "[BLOCKED] inner-loop tests failing on my-project — diagnose and fix",
+            "[BLOCKED] overseer branch reap: shallow clone on my-project — needs manual recovery",
             "[SUSPENDED] worker timeout breaker tripped on my-project — worker halted",
             "[SUSPENDED] worker usage-limit breaker tripped on my-project",
             "[AI: self-review] some-class: some description here",
@@ -927,7 +928,7 @@ class TestMachineFilingMarker:
 
     def test_issue_creation_site_count_is_pinned(self):
         hos_cron = (ROOT / "bin" / "hos-cron").read_text()
-        assert hos_cron.count("gh issue create") == 6
+        assert hos_cron.count("gh issue create") == 7
         review_self = (ROOT / "scripts" / "review_self.sh").read_text()
         assert review_self.count("gh issue create") == 1
         # Exactly one file under scripts/automation/lib/ POSTs to /issues.
