@@ -2,7 +2,8 @@
 
 `dependency_audit.sh` blocks on any pip-audit advisory, which made it permanently
 red on advisories in tools HOS cannot yet upgrade (black x2, and mcp, opentelemetry-api
-and wcmatch via semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
+and wcmatch via semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with
+no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
@@ -987,12 +988,44 @@ _PREMISE_132276 = (
     "editing this test"
 )
 _SEMGREP_RULES_DIR = "scripts/oversight/validators/semgrep_rules"
-# A semgrep launch: the binary name followed by an option (a quoted list element or
-# a shell word). Captures the rest of the line/list so --config/--include/--exclude
-# can be read off it. `--version` probes are not scans.
-_SEMGREP_LAUNCH = re.compile(r"""\b(?:py)?semgrep["']?[,\s]+["']?(-[^\n\]]*)""")
+# A semgrep mention that can launch it, in any tracked text file: a quoted argv
+# element or command string ("semgrep", 'pysemgrep', "semgrep scan ..."), or
+# `python -m semgrep`. In shell/YAML files any bare, non-comment `semgrep`/`pysemgrep`
+# word also counts (`semgrep ci`, `semgrep scan`, `... | semgrep`, loops over tools).
+# Prose such as "semgrep's pin" or "semgrep-mcp" does not match either form.
+_SEMGREP_QUOTED = re.compile(
+    r"""(["'])(?:py)?semgrep(?:\1|\s+-|\s+(?:scan|ci|login|publish|mcp)(?:\s+-|\1))"""
+    r"""|-m\s+(?:py)?semgrep\b"""
+)
+_SEMGREP_WORD = re.compile(r"""(?<![\w./-])(?:py)?semgrep(?![\w/=.'-])""")
 _SEMGREP_CONFIG = re.compile(r"""--config["']?[,=\s]+["']?([^"',\s\]]+)""")
 _SEMGREP_FILTER = re.compile(r"--(?:include|exclude)\b")
+_SHELL_SUFFIXES = {".sh", ".yml", ".yaml", ""}
+# The only tracked files that launch semgrep, with how many launch mentions each has
+# (static_analysis.py: the --version probe and the p/django scan) and the one
+# --config value each may pass. A new call site, or a changed count, fails PR9c.
+_SEMGREP_CALL_SITES = {
+    "scripts/oversight/validators/static_analysis.py": (2, ["p/django"]),
+    "scripts/oversight/validators/static_analysis_js.py": (1, ["str(_RULESET)"]),
+}
+# Tracked files that mention semgrep but never launch it. Each is skipped wholesale,
+# so every entry must stay narrow and a new mention elsewhere fails PR9c (like
+# _OTEL_NAME_ONLY).
+_SEMGREP_NON_LAUNCH = {
+    "scripts/oversight/security_scan_logic.py": "exemption roster and reason text only",
+    "scripts/oversight/smoke_test.sh": "tool-presence loop (`command -v` style probe)",
+    "scripts/oversight/ensure_venv.sh": "post-install `import semgrep` health check",
+    "bootstrap/hos_bootstrap.sh": "optional pip package install loop",
+}
+
+
+def _semgrep_mentions(text: str, suffix: str) -> list[str]:
+    hits = [m.group(0) for m in _SEMGREP_QUOTED.finditer(text)]
+    if suffix in _SHELL_SUFFIXES:
+        for line in text.splitlines():
+            if not line.lstrip().startswith("#"):
+                hits += [m.group(0) for m in _SEMGREP_WORD.finditer(line)]
+    return hits
 
 
 def _star_count(pattern: str) -> int:
@@ -1026,25 +1059,43 @@ def test_pr9d_star_count_ignores_globstars(pattern, expected):
         ("pysemgrep --quiet --config r/all .", "r/all"),
     ],
 )
-def test_pr9e_semgrep_launch_pattern_reads_the_config(text, config):
-    launch = _SEMGREP_LAUNCH.search(text)
-    assert launch is not None
-    found = _SEMGREP_CONFIG.search(launch.group(1))
+def test_pr9e_semgrep_config_pattern_reads_the_config(text, config):
+    found = _SEMGREP_CONFIG.search(text)
     assert found is not None and found.group(1) == config
 
 
 @pytest.mark.parametrize(
-    "text,launches",
+    "text,suffix,launches",
     [
-        ("semgrep --version", True),
-        ('["semgrep", "--version"]', True),
-        ("semgrep's ERROR severity", False),
-        ("semgrep-mcp", False),
-        ("the semgrep ruleset", False),
+        ('["semgrep", "--version"]', ".py", True),
+        ('["semgrep", *args]', ".py", True),
+        ("argv = ['pysemgrep', 'scan']", ".py", True),
+        ('subprocess.run("semgrep scan --config auto .", shell=True)', ".py", True),
+        ('subprocess.run([sys.executable, "-m", "semgrep"])', ".py", True),
+        ("python -m semgrep --config auto .", ".py", True),
+        ("python3 -m semgrep ci", ".sh", True),
+        ("semgrep --version", ".sh", True),
+        ("  semgrep scan --config p/django .", ".sh", True),
+        ("semgrep ci", ".sh", True),
+        ("git diff | xargs pysemgrep", ".sh", True),
+        ("for tool in bandit pysemgrep black; do", ".sh", True),
+        ("      run: semgrep scan --config auto", ".yml", True),
+        ("semgrep ci", "", True),
+        ('run("semgrep ci")', ".py", True),
+        ('return "semgrep scan timed out after 60s"', ".py", False),
+        ("# semgrep ci is documented here", ".sh", False),
+        ("    # semgrep scan", ".yml", False),
+        ("semgrep's ERROR severity", ".py", False),
+        ("semgrep's ERROR severity", ".sh", False),
+        ("semgrep-mcp", ".sh", False),
+        ("semgrep==1.179.0", ".sh", False),
+        ("the semgrep ruleset", ".py", False),
+        ("semgrep/target_manager.py", ".sh", False),
+        ('"semgrep_rules" / "js_ts_security.yaml"', ".py", False),
     ],
 )
-def test_pr9f_semgrep_launch_pattern_needs_an_option(text, launches):
-    assert bool(_SEMGREP_LAUNCH.search(text)) is launches
+def test_pr9f_semgrep_mention_pattern_covers_every_launch_form(text, suffix, launches):
+    assert bool(_semgrep_mentions(text, suffix)) is launches
 
 
 def test_pr9_no_tracked_python_file_imports_wcmatch():
@@ -1095,30 +1146,31 @@ def test_pr9c_semgrep_runs_only_tracked_or_django_rulesets_with_no_multi_star_pa
     # a tracked .semgrepignore or a multi-star path pattern in a tracked ruleset fails.
     import yaml
 
-    launches, unreadable = [], []
+    mentions, configs, filtered, unreadable = {}, {}, [], []
     for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
-        if path.suffix not in {".py", ".sh", ".yml", ".yaml", ""}:
+        if path.suffix not in {".py", *_SHELL_SUFFIXES}:
+            continue
+        rel = path.relative_to(_REPO).as_posix()
+        if rel in _SEMGREP_NON_LAUNCH:
             continue
         try:
             text = path.read_text()
         except UnicodeDecodeError:
-            unreadable.append(str(path.relative_to(_REPO)))
+            unreadable.append(rel)
             continue
-        for m in _SEMGREP_LAUNCH.finditer(text):
-            rest = m.group(1)
-            if rest.startswith("--version"):
-                continue
-            cfg = _SEMGREP_CONFIG.search(rest)
-            launches.append(
-                (path.relative_to(_REPO).as_posix(), cfg.group(1) if cfg else None, rest)
-            )
+        found = _semgrep_mentions(text, path.suffix)
+        if found:
+            mentions[rel] = len(found)
+            configs[rel] = _SEMGREP_CONFIG.findall(text)
+            if _SEMGREP_FILTER.search(text):
+                filtered.append(rel)
     assert not unreadable, f"cannot scan {unreadable} for semgrep calls: {_PREMISE_132276}"
-    sites = sorted((f, c) for f, c, _ in launches)
-    assert sites == [
-        ("scripts/oversight/validators/static_analysis.py", "p/django"),
-        ("scripts/oversight/validators/static_analysis_js.py", "str(_RULESET)"),
-    ], f"{sites}: {_PREMISE_132276}"
-    assert not [f for f, _, rest in launches if _SEMGREP_FILTER.search(rest)], _PREMISE_132276
+    expected = {f: n for f, (n, _) in _SEMGREP_CALL_SITES.items()}
+    assert mentions == expected, f"semgrep call sites {mentions}: {_PREMISE_132276}"
+    assert configs == {f: c for f, (_, c) in _SEMGREP_CALL_SITES.items()}, _PREMISE_132276
+    assert not filtered, f"{filtered} pass --include/--exclude: {_PREMISE_132276}"
+    for rel in _SEMGREP_NON_LAUNCH:
+        assert (_REPO / rel).is_file(), f"stale non-launch entry {rel}: {_PREMISE_132276}"
     js = (_REPO / "scripts/oversight/validators/static_analysis_js.py").read_text()
     assert re.search(
         r'^_RULESET\s*=.*"semgrep_rules"\s*/\s*"js_ts_security\.yaml"', js, re.MULTILINE
