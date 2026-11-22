@@ -992,21 +992,24 @@ _SEMGREP_RULES_DIR = "scripts/oversight/validators/semgrep_rules"
 # element or command string ("semgrep", 'pysemgrep', "semgrep scan ..."), or
 # `python -m semgrep`. In shell/YAML files any bare, non-comment `semgrep`/`pysemgrep`
 # word also counts (`semgrep ci`, `semgrep scan`, `... | semgrep`, loops over tools).
-# Prose such as "semgrep's pin" or "semgrep-mcp" does not match either form.
+# Either may carry a path prefix (`.venv/bin/semgrep`, `"$VENV/bin/pysemgrep"`,
+# `f"{venv}/bin/semgrep"`). Prose such as "semgrep's pin", "semgrep-mcp",
+# `semgrep/target_manager.py` or `semgrep_rules` does not match either form.
 _SEMGREP_QUOTED = re.compile(
-    r"""(["'])(?:py)?semgrep(?:\1|\s+-|\s+(?:scan|ci|login|publish|mcp)(?:\s+-|\1))"""
-    r"""|-m\s+(?:py)?semgrep\b"""
+    r"""(["'])(?:[^"'\s]*/)?(?:py)?semgrep(?:\1|\s)|-m\s+(?:py)?semgrep\b"""
 )
-_SEMGREP_WORD = re.compile(r"""(?<![\w./-])(?:py)?semgrep(?![\w/=.'-])""")
-_SEMGREP_CONFIG = re.compile(r"""--config["']?[,=\s]+["']?([^"',\s\]]+)""")
+_SEMGREP_WORD = re.compile(r"""(?<![\w.-])(?:py)?semgrep(?![\w/=.'-])""")
+# `-c` / `-f` are semgrep's short aliases for --config.
+_SEMGREP_CONFIG = re.compile(r"""(?:--config|(?<![\w-])-[cf])["']?[,=\s]+["']?([^"',\s\]]+)""")
 _SEMGREP_FILTER = re.compile(r"--(?:include|exclude)\b")
 _SHELL_SUFFIXES = {".sh", ".yml", ".yaml", ""}
-# The only tracked files that launch semgrep, with how many launch mentions each has
-# (static_analysis.py: the --version probe and the p/django scan) and the one
-# --config value each may pass. A new call site, or a changed count, fails PR9c.
+# The only tracked files that launch semgrep, with the one --config/-c/-f value each
+# may pass. The mention count is not pinned: these files also start user-facing error
+# messages with "semgrep ...", which the launch pattern cannot tell from a command.
+# A new call-site file or any other config value fails PR9c.
 _SEMGREP_CALL_SITES = {
-    "scripts/oversight/validators/static_analysis.py": (2, ["p/django"]),
-    "scripts/oversight/validators/static_analysis_js.py": (1, ["str(_RULESET)"]),
+    "scripts/oversight/validators/static_analysis.py": ["p/django"],
+    "scripts/oversight/validators/static_analysis_js.py": ["str(_RULESET)"],
 }
 # Tracked files that mention semgrep but never launch it. Each is skipped wholesale,
 # so every entry must stay narrow and a new mention elsewhere fails PR9c (like
@@ -1028,8 +1031,26 @@ def _semgrep_mentions(text: str, suffix: str) -> list[str]:
     return hits
 
 
+def _semgrep_configs(text: str, suffix: str) -> list[str]:
+    # Read --config/-c/-f only from the argv following a semgrep mention (to the end of
+    # its list or line), so another tool's `-f json` in the same file is not mistaken
+    # for a ruleset. A launch whose argv spans lines yields nothing and fails PR9c.
+    matches = list(_SEMGREP_QUOTED.finditer(text))
+    if suffix in _SHELL_SUFFIXES:
+        matches += _SEMGREP_WORD.finditer(text)
+    configs = []
+    for m in matches:
+        tail = text[m.end() :]  # noqa: E203 (black's slice style)
+        argv = re.split(r"[\]\n]", tail, maxsplit=1)[0]
+        configs += _SEMGREP_CONFIG.findall(argv)
+    return configs
+
+
 def _star_count(pattern: str) -> int:
-    return pattern.replace("**", "").count("*")
+    # Only a whole path segment `**` is a globstar; inside a name wcmatch reads each
+    # `*` as a lazy wildcard.
+    segments = pattern.replace("\\", "/").split("/")
+    return sum(seg.count("*") for seg in segments if seg != "**")
 
 
 @pytest.mark.parametrize(
@@ -1043,9 +1064,13 @@ def _star_count(pattern: str) -> int:
         ("*_*_*.csv", 3),
         ("**/*_*.csv/**", 2),
         ("plain.txt", 0),
+        ("a**b**c**d.csv", 6),
+        ("****_****", 8),
+        ("foo/**/bar*", 1),
+        ("foo\\**\\bar*", 1),
     ],
 )
-def test_pr9d_star_count_ignores_globstars(pattern, expected):
+def test_pr9d_star_count_ignores_only_whole_segment_globstars(pattern, expected):
     assert _star_count(pattern) == expected
 
 
@@ -1057,11 +1082,25 @@ def test_pr9d_star_count_ignores_globstars(pattern, expected):
         ("semgrep --config=auto x.py", "auto"),
         ('["semgrep", "--config", str(_RULESET), "--json"]', "str(_RULESET)"),
         ("pysemgrep --quiet --config r/all .", "r/all"),
+        ("semgrep -c p/python .", "p/python"),
+        ("semgrep -f rules.yaml .", "rules.yaml"),
+        ('["semgrep", "-c", "auto"]', "auto"),
+        ("semgrep -f=rules.yaml .", "rules.yaml"),
     ],
 )
 def test_pr9e_semgrep_config_pattern_reads_the_config(text, config):
     found = _SEMGREP_CONFIG.search(text)
     assert found is not None and found.group(1) == config
+
+
+def test_pr9e3_semgrep_configs_ignore_other_tools_short_flags():
+    text = 'run(["bandit", "-f", "json"])\nrun(["semgrep", "-c", "p/django", "--json"])\n'
+    assert _semgrep_configs(text, ".py") == ["p/django"]
+
+
+@pytest.mark.parametrize("text", ["--no-conf", "x-c y", "ls -cf", "--max-target-bytes 5"])
+def test_pr9e2_semgrep_config_pattern_ignores_lookalikes(text):
+    assert _SEMGREP_CONFIG.search(text) is None
 
 
 @pytest.mark.parametrize(
@@ -1082,7 +1121,22 @@ def test_pr9e_semgrep_config_pattern_reads_the_config(text, config):
         ("      run: semgrep scan --config auto", ".yml", True),
         ("semgrep ci", "", True),
         ('run("semgrep ci")', ".py", True),
-        ('return "semgrep scan timed out after 60s"', ".py", False),
+        ('subprocess.run("semgrep scan .", shell=True)', ".py", True),
+        ('[".venv/bin/semgrep", "scan"]', ".py", True),
+        ('["$VENV/bin/semgrep", "scan"]', ".py", True),
+        ('cmd = "$VENV_BIN/pysemgrep"', ".py", True),
+        ('cmd = f"{venv}/bin/semgrep"', ".py", True),
+        ("cmd = '/usr/bin/semgrep'", ".py", True),
+        ("scripts/oversight/.venv/bin/semgrep scan .", ".sh", True),
+        ("$VENV/bin/semgrep ci", ".sh", True),
+        ('"$VENV_BIN/pysemgrep" --version', ".sh", True),
+        ("/usr/bin/semgrep --config auto .", ".yml", True),
+        ('p = "semgrep/target_manager.py"', ".py", False),
+        ('d = "scripts/semgrep_rules/x.yaml"', ".py", False),
+        ("ls scripts/oversight/validators/semgrep_rules/", ".sh", False),
+        ('x = "semgrep-mcp"', ".py", False),
+        ('x = "semgrep==1.179.0"', ".py", False),
+        ("cat .semgrepignore", ".sh", False),
         ("# semgrep ci is documented here", ".sh", False),
         ("    # semgrep scan", ".yml", False),
         ("semgrep's ERROR severity", ".py", False),
@@ -1136,7 +1190,8 @@ def test_pr9b_installed_semgrep_uses_wcmatch_only_for_one_globmatch():
     assert hits == ["target_manager.py"], f"{hits}: {_PREMISE_132276}"
     body = (root / "target_manager.py").read_text(errors="replace")
     assert re.search(r"^\s*from\s+wcmatch\s+import\s+glob\s*$", body, re.MULTILINE), _PREMISE_132276
-    assert len(re.findall(r"\bglob\.globmatch\s*\(", body)) == 1, _PREMISE_132276
+    assert len(imp.findall(body)) == 1, _PREMISE_132276
+    assert re.findall(r"\bglob\.(\w+)\s*\(", body) == ["globmatch"], _PREMISE_132276
     assert not re.search(r"\bfnmatch\b", body), _PREMISE_132276
 
 
@@ -1161,13 +1216,14 @@ def test_pr9c_semgrep_runs_only_tracked_or_django_rulesets_with_no_multi_star_pa
         found = _semgrep_mentions(text, path.suffix)
         if found:
             mentions[rel] = len(found)
-            configs[rel] = _SEMGREP_CONFIG.findall(text)
+            configs[rel] = _semgrep_configs(text, path.suffix)
             if _SEMGREP_FILTER.search(text):
                 filtered.append(rel)
     assert not unreadable, f"cannot scan {unreadable} for semgrep calls: {_PREMISE_132276}"
-    expected = {f: n for f, (n, _) in _SEMGREP_CALL_SITES.items()}
-    assert mentions == expected, f"semgrep call sites {mentions}: {_PREMISE_132276}"
-    assert configs == {f: c for f, (_, c) in _SEMGREP_CALL_SITES.items()}, _PREMISE_132276
+    assert sorted(mentions) == sorted(
+        _SEMGREP_CALL_SITES
+    ), f"semgrep call sites {sorted(mentions)}: {_PREMISE_132276}"
+    assert configs == _SEMGREP_CALL_SITES, f"{configs}: {_PREMISE_132276}"
     assert not filtered, f"{filtered} pass --include/--exclude: {_PREMISE_132276}"
     for rel in _SEMGREP_NON_LAUNCH:
         assert (_REPO / rel).is_file(), f"stale non-launch entry {rel}: {_PREMISE_132276}"
@@ -1181,12 +1237,12 @@ def test_pr9c_semgrep_runs_only_tracked_or_django_rulesets_with_no_multi_star_pa
     bad = []
     for ruleset in rulesets:
         doc = yaml.safe_load(ruleset.read_text())
-        for rule in doc.get("rules", []):
+        for rule in (doc or {}).get("rules") or []:
             paths = rule.get("paths") or {}
             for key in ("include", "exclude"):
                 bad += [
                     (ruleset.name, rule.get("id"), p)
-                    for p in paths.get(key, [])
+                    for p in paths.get(key) or []
                     if _star_count(str(p)) > 1
                 ]
     assert not bad, f"multi-star path patterns {bad}: {_PREMISE_132276}"
