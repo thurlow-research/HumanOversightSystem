@@ -103,7 +103,7 @@ class Templates:
             self.dirs.append(template_dir)
             rig = Rig(template_dir, None)
             build(rig)
-            self.built[key] = (rig.root, rig.head(), rig.git("rev-parse", "HEAD^{tree}"))
+            self.built[key] = (rig.root, *rig.head_and_tree())
         return self.built[key]
 
 
@@ -117,9 +117,15 @@ class Rig:
         self.root.mkdir()
         self.work = tmp_path / "work"
         self.work.mkdir()
-        self.git("init", "-q", "-b", "main")
 
     def git(self, *args, cwd=None):
+        if cwd is None and not (self.root / ".git").exists():
+            # Adopting a template copies its `.git` over this root, so the `git init` is only
+            # spent by a rig that builds its own repository (a template or a hand-built one).
+            self.run_git("init", "-q", "-b", "main", cwd=None)
+        return self.run_git(*args, cwd=cwd)
+
+    def run_git(self, *args, cwd=None):
         env = dict(os.environ, **GIT_ENV)
         proc = subprocess.run(
             ["git", "-c", "commit.gpgsign=false", *args],
@@ -139,10 +145,14 @@ class Rig:
     def commit(self, message="c"):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", message)
-        return self.head()
 
     def head(self):
         return self.git("rev-parse", "HEAD")
+
+    def head_and_tree(self):
+        """HEAD and its tree from one `git` spawn."""
+        head, tree = self.git("rev-parse", "HEAD", "HEAD^{tree}").split()
+        return head, tree
 
     def build_base(self, extra=None):
         for rel, text in (extra or {}).items():
@@ -191,10 +201,14 @@ class Rig:
         data.write()
 
     def sidecar(self, **override):
+        if override.get("head_sha") and override.get("head_tree"):
+            head, tree = override["head_sha"], override["head_tree"]
+        else:
+            head, tree = self.head_and_tree()
         meta = {
             "schema": ncg.SCHEMA_META,
-            "head_sha": override.get("head_sha") or self.head(),
-            "head_tree": override.get("head_tree") or self.git("rev-parse", "HEAD^{tree}"),
+            "head_sha": override.get("head_sha") or head,
+            "head_tree": override.get("head_tree") or tree,
             "checkout_root": str(self.root.resolve()),
             "clean": True,
             "coverage_core": "ctrace",
@@ -208,10 +222,11 @@ class Rig:
         (self.tmp / "coverage-meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
     def options(self, **override):
+        head = self.head()
         values = {
             "repo": self.root,
-            "gated_sha": self.head(),
-            "pr_head_sha": self.head(),
+            "gated_sha": head,
+            "pr_head_sha": head,
             "pr": None,
             "coverage_file": self.tmp / ".coverage",
             "meta_path": self.tmp / "coverage-meta.json",
@@ -2343,7 +2358,8 @@ def test_one_unsafe_file_does_not_stop_the_other_files(rig):
 def merge_rig(rig, base_side_edit=True):
     rig.base(extra={"scripts/framework/m.py": lines_text(6)})
     rig.write("scripts/framework/m.py", lines_text(1, offset=100) + lines_text(5, start=2))
-    pr_head = rig.commit("pr edits line 1")
+    rig.commit("pr edits line 1")
+    pr_head = rig.head()
     rig.git("checkout", "-q", "main")
     if base_side_edit:
         rig.write("scripts/framework/m.py", lines_text(5) + "a6 = 600\n")
