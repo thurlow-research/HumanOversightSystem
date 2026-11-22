@@ -1,8 +1,8 @@
 """security_scan: time-boxed, visible advisory exemptions that fail closed (#1776).
 
 `dependency_audit.sh` blocks on any pip-audit advisory, which made it permanently
-red on advisories in tools HOS cannot yet upgrade (black x2, and mcp and opentelemetry-api via
-semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
+red on advisories in tools HOS cannot yet upgrade (black x2, and mcp, opentelemetry-api
+and wcmatch via semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
@@ -96,6 +96,7 @@ _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 _OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
 _OTEL_126360 = _vuln("CVE-2026-126360", ("1.45.2",))
+_WCMATCH_132276 = _vuln("CVE-2026-132276", ("11.2",), ("GHSA-53pm-wgxf-c6qf",))
 _MCP_115563 = _vuln("CVE-2026-115563", ("1.30.0", "2.2.0"), ("GHSA-qx49-fqc8-xw99",))
 _MCP_2194 = (
     _vuln("CVE-2026-116684", ("1.30.0", "2.2.0"), ("GHSA-w4fh-qvv9-3v23",)),
@@ -118,7 +119,7 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_ten_authorized_records():
+def test_r1_roster_is_exactly_the_eleven_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
@@ -133,6 +134,7 @@ def test_r1_roster_is_exactly_the_ten_authorized_records():
         ("mcp", "CVE-2026-115563", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
         ("opentelemetry-api", "CVE-2026-126360", "1.45.2", _EXPIRES, 2179),
+        ("wcmatch", "CVE-2026-132276", "11.2", _EXPIRES_MCP_2194, 2120),
     ]
 
 
@@ -221,6 +223,16 @@ def test_s2h_mcp_115563_is_suppressed_at_1_29_0_and_kept_once_fixed():
     out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_115563)))
     assert status == 1
     assert "mcp 1.30.0 [CVE-2026-115563]" in out
+
+
+def test_s2i_wcmatch_132276_is_suppressed_at_8_5_2_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("wcmatch", "8.5.2", _WCMATCH_132276)))
+    assert status == 0, out
+    line = next(ln for ln in out.splitlines() if "wcmatch 8.5.2 [CVE-2026-132276]" in ln)
+    assert "exempt until 2026-12-31 (#2120)" in line
+    out, _, status = _run(_audit(_dep("wcmatch", "11.2", _WCMATCH_132276)))
+    assert status == 1
+    assert "wcmatch 11.2 [CVE-2026-132276]" in out
 
 
 def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
@@ -966,6 +978,166 @@ def test_pr8_installed_semgrep_extracts_only_from_its_own_environment():
         r'carrier\s*=\s*\{\s*"traceparent"\s*:\s*f"00-\{trace_id\}-\{span_id\}-', body
     ), _PREMISE_126360
     assert "os.getenv(_SEMGREP_TRACE_PARENT_TRACE_ID)" in body, _PREMISE_126360
+
+
+_PREMISE_132276 = (
+    "the CVE-2026-132276 exemption's premise no longer holds (wcmatch must stay "
+    "semgrep's path include/exclude matcher only, fed no multi-star pattern) — remove "
+    "the exemption (upgrade wcmatch once semgrep unpins it, #2120) rather than "
+    "editing this test"
+)
+_SEMGREP_RULES_DIR = "scripts/oversight/validators/semgrep_rules"
+# A semgrep launch: the binary name followed by an option (a quoted list element or
+# a shell word). Captures the rest of the line/list so --config/--include/--exclude
+# can be read off it. `--version` probes are not scans.
+_SEMGREP_LAUNCH = re.compile(r"""\b(?:py)?semgrep["']?[,\s]+["']?(-[^\n\]]*)""")
+_SEMGREP_CONFIG = re.compile(r"""--config["']?[,=\s]+["']?([^"',\s\]]+)""")
+_SEMGREP_FILTER = re.compile(r"--(?:include|exclude)\b")
+
+
+def _star_count(pattern: str) -> int:
+    return pattern.replace("**", "").count("*")
+
+
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [
+        ("*.html", 1),
+        ("**/*.html", 1),
+        ("**/*.html/**", 1),
+        ("**", 0),
+        ("src/**/test_*.py", 1),
+        ("*_*_*.csv", 3),
+        ("**/*_*.csv/**", 2),
+        ("plain.txt", 0),
+    ],
+)
+def test_pr9d_star_count_ignores_globstars(pattern, expected):
+    assert _star_count(pattern) == expected
+
+
+@pytest.mark.parametrize(
+    "text,config",
+    [
+        ('["semgrep", "--config", "p/django", "--json"] + files', "p/django"),
+        ("semgrep --config p/django --json x.py", "p/django"),
+        ("semgrep --config=auto x.py", "auto"),
+        ('["semgrep", "--config", str(_RULESET), "--json"]', "str(_RULESET)"),
+        ("pysemgrep --quiet --config r/all .", "r/all"),
+    ],
+)
+def test_pr9e_semgrep_launch_pattern_reads_the_config(text, config):
+    launch = _SEMGREP_LAUNCH.search(text)
+    assert launch is not None
+    found = _SEMGREP_CONFIG.search(launch.group(1))
+    assert found is not None and found.group(1) == config
+
+
+@pytest.mark.parametrize(
+    "text,launches",
+    [
+        ("semgrep --version", True),
+        ('["semgrep", "--version"]', True),
+        ("semgrep's ERROR severity", False),
+        ("semgrep-mcp", False),
+        ("the semgrep ruleset", False),
+    ],
+)
+def test_pr9f_semgrep_launch_pattern_needs_an_option(text, launches):
+    assert bool(_SEMGREP_LAUNCH.search(text)) is launches
+
+
+def test_pr9_no_tracked_python_file_imports_wcmatch():
+    bad, unparsed = [], []
+    for path in _tracked_files("*.py"):
+        if path == Path(__file__).resolve():
+            continue
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            unparsed.append(str(path.relative_to(_REPO)))
+            continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            if any(n == "wcmatch" or n.startswith("wcmatch.") for n in names):
+                bad.append(str(path.relative_to(_REPO)))
+                break
+    assert not unparsed, f"cannot parse {unparsed} to check for wcmatch imports: {_PREMISE_132276}"
+    assert not bad, f"{bad} import wcmatch: {_PREMISE_132276}"
+
+
+def test_pr9b_installed_semgrep_uses_wcmatch_only_for_one_globmatch():
+    # Premise of #2425: semgrep's only wcmatch use is glob.globmatch() in
+    # target_manager.py (rule paths.include/exclude matching); fnmatch is never used.
+    spec = importlib.util.find_spec("semgrep")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("semgrep is not installed in this environment")
+    root = Path(next(iter(spec.submodule_search_locations)))
+    imp = re.compile(r"^\s*(?:from\s+wcmatch\b|import\s+wcmatch\b)", re.MULTILINE)
+    hits = []
+    for path in sorted(root.rglob("*.py")):
+        if imp.search(path.read_text(errors="replace")):
+            hits.append(path.relative_to(root).as_posix())
+    assert hits == ["target_manager.py"], f"{hits}: {_PREMISE_132276}"
+    body = (root / "target_manager.py").read_text(errors="replace")
+    assert re.search(r"^\s*from\s+wcmatch\s+import\s+glob\s*$", body, re.MULTILINE), _PREMISE_132276
+    assert len(re.findall(r"\bglob\.globmatch\s*\(", body)) == 1, _PREMISE_132276
+    assert not re.search(r"\bfnmatch\b", body), _PREMISE_132276
+
+
+def test_pr9c_semgrep_runs_only_tracked_or_django_rulesets_with_no_multi_star_paths():
+    # Premise of #2425: no semgrep scan HOS launches can feed wcmatch a multi-star
+    # pattern. A new semgrep call site, a new remote config, any --include/--exclude,
+    # a tracked .semgrepignore or a multi-star path pattern in a tracked ruleset fails.
+    import yaml
+
+    launches, unreadable = [], []
+    for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
+        if path.suffix not in {".py", ".sh", ".yml", ".yaml", ""}:
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            unreadable.append(str(path.relative_to(_REPO)))
+            continue
+        for m in _SEMGREP_LAUNCH.finditer(text):
+            rest = m.group(1)
+            if rest.startswith("--version"):
+                continue
+            cfg = _SEMGREP_CONFIG.search(rest)
+            launches.append(
+                (path.relative_to(_REPO).as_posix(), cfg.group(1) if cfg else None, rest)
+            )
+    assert not unreadable, f"cannot scan {unreadable} for semgrep calls: {_PREMISE_132276}"
+    sites = sorted((f, c) for f, c, _ in launches)
+    assert sites == [
+        ("scripts/oversight/validators/static_analysis.py", "p/django"),
+        ("scripts/oversight/validators/static_analysis_js.py", "str(_RULESET)"),
+    ], f"{sites}: {_PREMISE_132276}"
+    assert not [f for f, _, rest in launches if _SEMGREP_FILTER.search(rest)], _PREMISE_132276
+    js = (_REPO / "scripts/oversight/validators/static_analysis_js.py").read_text()
+    assert re.search(
+        r'^_RULESET\s*=.*"semgrep_rules"\s*/\s*"js_ts_security\.yaml"', js, re.MULTILINE
+    ), _PREMISE_132276
+    assert not _tracked_files(".semgrepignore", "**/.semgrepignore"), _PREMISE_132276
+    rulesets = _tracked_files(_SEMGREP_RULES_DIR)
+    assert rulesets, f"no tracked rulesets under {_SEMGREP_RULES_DIR}: {_PREMISE_132276}"
+    bad = []
+    for ruleset in rulesets:
+        doc = yaml.safe_load(ruleset.read_text())
+        for rule in doc.get("rules", []):
+            paths = rule.get("paths") or {}
+            for key in ("include", "exclude"):
+                bad += [
+                    (ruleset.name, rule.get("id"), p)
+                    for p in paths.get(key, [])
+                    if _star_count(str(p)) > 1
+                ]
+    assert not bad, f"multi-star path patterns {bad}: {_PREMISE_132276}"
 
 
 # ── Gate (shell path, via the HOS_PIP_AUDIT_BIN stub seam) ──────────────────
