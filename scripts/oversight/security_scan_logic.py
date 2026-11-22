@@ -37,6 +37,10 @@ THE RULINGS
   * 2026-11-15 (#2352): opentelemetry-api CVE-2026-126360 (regex DoS in
     TraceContextTextMapPropagator.extract) is exempted on the 2027-01-31 timebox,
     same premise and same semgrep pin as CVE-2026-114603; upgrade tracked in #2179.
+  * 2026-11-20 (#2409): mcp CVE-2026-115563 (OAuth client does not validate the
+    authorization-server issuer or bind stored credentials to it) is exempted on
+    the same shorter 2026-12-31 box as the #2194 mcp records, tracked in #2120, on
+    the premise that HOS never runs an MCP client or any MCP OAuth client provider.
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -348,6 +352,31 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "so no fixed combination is installable; upgrade mcp once semgrep unpins "
             "it, tracked in #2120. The no-client premise is enforced by tests PR5 "
             "and PR5b. Human ruling #2194, 2026-10-28."
+        ),
+    ),
+    Exemption(
+        package="mcp",
+        advisory_id="CVE-2026-115563",
+        fixed_in="1.30.0",
+        expires=datetime.date(2026, 12, 31),
+        tracking_issue=2120,
+        # What: the MCP SDK's OAuth *client* support (mcp.client.auth) does not
+        # validate the authorization-server issuer nor bind stored client credentials
+        # to their authorization server, so a malicious MCP server can redirect a
+        # client's OAuth credentials to itself. Only an MCP client over HTTP using an
+        # OAuth provider as its transport auth handler is affected.
+        reason=(
+            "The MCP SDK's OAuth client support (mcp.client.auth) does not validate "
+            "the authorization-server issuer or bind stored client credentials to "
+            "their authorization server, so a malicious MCP server can redirect a "
+            "client's OAuth credentials to itself; only an MCP client over HTTP using "
+            "OAuthClientProvider, ClientCredentialsOAuthProvider, "
+            "PrivateKeyJWTOAuthProvider or RFC7523OAuthClientProvider is affected. HOS "
+            "never imports mcp directly and never runs an MCP client or any of those "
+            "providers; the installed semgrep contains no MCP client usage. semgrep "
+            "pins mcp==1.29.0, so no fixed combination is installable; upgrade mcp "
+            "once semgrep unpins it, tracked in #2120. The no-client premise is "
+            "enforced by tests PR5 and PR5b. Human ruling #2409, 2026-11-20."
         ),
     ),
     Exemption(

@@ -65,6 +65,7 @@ source_paths = [
     "scripts/oversight/retry_rescue_logic.py",
     "scripts/oversight/second_review_logic.py",
     "scripts/oversight/secret_scan_logic.py",
+    "scripts/oversight/security_scan_logic.py",
     "scripts/oversight/signoff_gate.py",
     "scripts/oversight/suspension_manager.py",
     "scripts/oversight/token_tracker.py",
