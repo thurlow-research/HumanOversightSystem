@@ -20,7 +20,17 @@ def _stalled(signum, frame):
 
 @pytest.fixture
 def stalled_test_fails_fast():
-    """Fail the test, rather than wait for it, once it has run `STALL_SECONDS` without returning."""
+    """Fail the test, rather than wait for it, once it has run `STALL_SECONDS` without returning.
+
+    An `ITIMER_REAL` that is already armed is not ours to cancel (the exit below would discard it),
+    so the guard refuses to start rather than silently turn a protection into a no-op (C6-7 a).
+    """
+    outer_delay, outer_interval = signal.getitimer(signal.ITIMER_REAL)
+    if outer_delay or outer_interval:
+        raise RuntimeError(
+            "stall guard: an ITIMER_REAL is already armed "
+            f"(delay {outer_delay} s, interval {outer_interval} s); refusing to cancel it"
+        )
     previous = signal.signal(signal.SIGALRM, _stalled)
     signal.setitimer(signal.ITIMER_REAL, STALL_SECONDS)
     try:
