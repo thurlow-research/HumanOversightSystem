@@ -136,6 +136,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Emit the gate report, then surface retry-rescues (see the helper)."""
     emit_report(terminalreporter)
 
-    from scripts.oversight.lib.audit_log import write_event
+    def write_event(event, root):
+        # Imported on first use so a session with no rescue never loads it, and an
+        # ImportError lands in the helper's best-effort except.
+        from scripts.oversight.lib.audit_log import write_event as real_write_event
+
+        return real_write_event(event, root=root)
 
     _report_retry_rescues(terminalreporter, os.environ, write_event)
