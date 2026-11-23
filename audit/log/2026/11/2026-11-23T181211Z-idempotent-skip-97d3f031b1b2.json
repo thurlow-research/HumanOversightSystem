@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"e439b634d62037e24118130dcb4b42cf22c6fe6e","pr":2445,"reason":"Unchanged head; human approved 17:48Z; press-Merge notice already posted 18:02Z; step-1a blocked by #2450 stale predecessor gate run; no new non-App entry since","timestamp":"2026-11-23T18:12:11Z"}
