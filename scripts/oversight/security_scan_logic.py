@@ -41,6 +41,10 @@ THE RULINGS
     authorization-server issuer or bind stored credentials to it) is exempted on
     the same shorter 2026-12-31 box as the #2194 mcp records, tracked in #2120, on
     the premise that HOS never runs an MCP client or any MCP OAuth client provider.
+  * 2026-11-21 (#2425): wcmatch CVE-2026-132276 (multi-star glob pattern ReDoS) is
+    exempted on the 2026-12-31 box, tracked in #2120, on the premise that wcmatch is
+    only semgrep's path include/exclude matcher and HOS's rulesets carry no
+    multi-star path pattern; semgrep pins wcmatch~=8.3.
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -430,6 +434,35 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "is installable; upgrade opentelemetry-api once semgrep unpins it, "
             "tracked in #2179. The no-import and no-extract premises are enforced by "
             "tests PR6, PR6b, PR7 and PR8. Human ruling #2352, 2026-11-15."
+        ),
+    ),
+    Exemption(
+        package="wcmatch",
+        advisory_id="CVE-2026-132276",
+        fixed_in="11.2",
+        expires=datetime.date(2026, 12, 31),
+        tracking_issue=2120,
+        # What: with default flags, a wcmatch.fnmatch/glob pattern with several `*`
+        # wildcards (e.g. `*_*_*_*_*.csv`) takes O(n^k) time to reject a crafted
+        # name, because each `*` compiles to a lazy `.*?`. Single-star patterns are
+        # not affected; CPU exhaustion only.
+        reason=(
+            "wcmatch.fnmatch()/glob.globmatch() take polynomial time to reject a "
+            "crafted name against a pattern with several `*` wildcards (each `*` "
+            "compiles to a lazy `.*?`); single-star patterns are unaffected and the "
+            "impact is CPU exhaustion only. HOS never imports wcmatch; it is installed "
+            "only as a dependency of semgrep, whose only use is "
+            "glob.globmatch(path, pattern) in semgrep/target_manager.py to match "
+            "target paths against a rule's paths.include/exclude patterns. HOS passes "
+            "no --include/--exclude and its rulesets (p/django, whose single path "
+            "pattern is `*.html`, and the tracked local JS ruleset, which has none) "
+            "carry no multi-star path pattern; worst-case wrapped matching measured "
+            "0.4 ms. p/django is a remote ruleset, so a future multi-star pattern "
+            "there is bounded by the 60 s scan timeout, which surfaces as an error, "
+            "not a clean pass. semgrep pins wcmatch~=8.3 (1.186.0 still does), so no "
+            "fixed combination is installable; upgrade wcmatch once semgrep unpins "
+            "it, tracked in #2120. The premise is enforced by tests PR9, PR9b and "
+            "PR9c. Human ruling #2425, 2026-11-21."
         ),
     ),
 )
