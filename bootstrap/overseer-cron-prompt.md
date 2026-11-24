@@ -49,7 +49,7 @@ If an open `release-request` issue with neither a `release-authorized` nor a `ne
 
 **Step 1 — Review open PRs:**
 
-The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt. The `[hos-cron overseer second review (#2357)]` block, if present, is authoritative for second-review state; follow `overseer.md` step 4a.
+The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt. The `[hos-cron overseer second review (#2357)]` block, if present, is authoritative for second-review state; follow `overseer.md` step 4a. Only `approve` or `not-required` for the head under review lets a PR go on to step 4d, the matrix and step 6; every other result ends that PR's handling for the cycle, and Expected action `APPROVE` is never posted without one.
 
 **Merge on a designated human's approval (#2213) — literal first command for each PR, before anything else:**
 ```bash

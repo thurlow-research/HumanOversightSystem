@@ -326,6 +326,13 @@ These notes record how TD-2357-S1b (approved with changes, iteration 1) carries 
 - **AD-9 reasons.** A fourth refusal reason is added: `second_review_record_unverifiable` (exit 3), used when `head_lock` times out or is unavailable, or on an IO error reading the record. The model treats it as `second_review_record_missing`. `--tier SAFE` compares as LOW. A record with `tier: null` is never a tier input.
 - **AD-9 placement caveat.** G1c runs inside the overseer model's sandboxed Bash, through `pr_review.sh`. Before S2, the first live cycle must show that G1c can read the records under the sandbox (TD-2357-S1b §13).
 
+## Correction note (S1b re-adoption over #2385, architect 2026-11-24)
+
+#2385 (PR #2433) changed a premise of AD-9 and AD-10. Under its ruling Q2 C, a clean PR on which step 4d requires a lens is not approved by the overseer. The overseer posts a PROPOSE_ONLY `comment` verdict, with Expected action APPROVE, and requests the human. Step 1a then merges on the human's approval, and G1c never sees that path. These notes narrow the decisions above to match. They loosen nothing. The full ruling is TD-2357-S1b §17 (AR28-AR32).
+
+- **AD-3 and AD-10 (`pending`).** AD-10's last sentence, "G1c guarantees it can never become an approval", is replaced by: "`pending`, like every OSR result other than `approve` or `not-required`, ends the PR's handling for the cycle. No step 4d, matrix or step 6 runs, so it cannot become an approval or an approval request (TD AR28). G1c covers the `approve` event. Prose covers the approval request until S1d (#2428)." The AD-3 table's "Do not approve" row is read the same way.
+- **AD-9 (Not covered).** The step 1a exclusion stands: a designated human's approval of a head is a human decision. That holds only if the overseer never asks the human to approve a head that lacks a covering record. So the overseer posts Expected action APPROVE, on any disposition, only when this cycle's OSR line for that exact head is `approve` or `not-required` and covers the vendors for the PR's tier (TD AR29). In S1b this is prose. **S1d (#2428) makes it mechanical before S2.** `pr_review_cli.py` applies G1c's record test to a `comment` event with Expected action `APPROVE`, and to `request-reviewer` on PROPOSE_ONLY (TD AR30).
+
 ## Amendment traceability
 
 | Item | Satisfied by |
