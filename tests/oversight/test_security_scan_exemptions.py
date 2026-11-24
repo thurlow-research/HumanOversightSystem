@@ -2,7 +2,8 @@
 
 `dependency_audit.sh` blocks on any pip-audit advisory, which made it permanently
 red on advisories in tools HOS cannot yet upgrade (black x2, and mcp and opentelemetry-api via
-semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
+semgrep's pins, plus wcmatch via semgrep's pin; PyJWT is handled by the requirements.txt
+floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
@@ -96,6 +97,7 @@ _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 _OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
 _OTEL_126360 = _vuln("CVE-2026-126360", ("1.45.2",))
+_WCMATCH_132276 = _vuln("CVE-2026-132276", ("11.2",), ("GHSA-53pm-wgxf-c6qf",))
 _MCP_115563 = _vuln("CVE-2026-115563", ("1.30.0", "2.2.0"), ("GHSA-qx49-fqc8-xw99",))
 _MCP_2194 = (
     _vuln("CVE-2026-116684", ("1.30.0", "2.2.0"), ("GHSA-w4fh-qvv9-3v23",)),
@@ -118,7 +120,7 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_ten_authorized_records():
+def test_r1_roster_is_exactly_the_eleven_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
@@ -133,6 +135,7 @@ def test_r1_roster_is_exactly_the_ten_authorized_records():
         ("mcp", "CVE-2026-115563", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
         ("opentelemetry-api", "CVE-2026-126360", "1.45.2", _EXPIRES, 2179),
+        ("wcmatch", "CVE-2026-132276", "11.2", _EXPIRES_MCP_2194, 2120),
     ]
 
 
@@ -221,6 +224,16 @@ def test_s2h_mcp_115563_is_suppressed_at_1_29_0_and_kept_once_fixed():
     out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_115563)))
     assert status == 1
     assert "mcp 1.30.0 [CVE-2026-115563]" in out
+
+
+def test_s2i_wcmatch_132276_is_suppressed_at_8_5_2_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("wcmatch", "8.5.2", _WCMATCH_132276)))
+    assert status == 0, out
+    line = next(ln for ln in out.splitlines() if "wcmatch 8.5.2 [CVE-2026-132276]" in ln)
+    assert "exempt until 2026-12-31 (#2120)" in line
+    out, _, status = _run(_audit(_dep("wcmatch", "11.2", _WCMATCH_132276)))
+    assert status == 1
+    assert "wcmatch 11.2 [CVE-2026-132276]" in out
 
 
 def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
@@ -966,6 +979,760 @@ def test_pr8_installed_semgrep_extracts_only_from_its_own_environment():
         r'carrier\s*=\s*\{\s*"traceparent"\s*:\s*f"00-\{trace_id\}-\{span_id\}-', body
     ), _PREMISE_126360
     assert "os.getenv(_SEMGREP_TRACE_PARENT_TRACE_ID)" in body, _PREMISE_126360
+
+
+_PREMISE_132276 = (
+    "the CVE-2026-132276 exemption's premise no longer holds (wcmatch must stay "
+    "semgrep's path include/exclude matcher only, fed no multi-star pattern) — remove "
+    "the exemption (upgrade wcmatch once semgrep unpins it, #2120) rather than "
+    "editing this test"
+)
+_SEMGREP_RULES_DIR = "scripts/oversight/validators/semgrep_rules"
+# A semgrep mention that can launch it, in any tracked text file: a quoted argv
+# element or command string ("semgrep", 'pysemgrep', "semgrep scan ..."), or
+# `python -m semgrep`. In shell/YAML files any bare, non-comment `semgrep`/`pysemgrep`
+# word also counts (`semgrep ci`, `semgrep scan`, `... | semgrep`, loops over tools).
+# Either may carry a path prefix (`.venv/bin/semgrep`, `"$VENV/bin/pysemgrep"`,
+# `f"{venv}/bin/semgrep"`). Prose such as "semgrep's pin", "semgrep-mcp",
+# `semgrep/target_manager.py` or `semgrep_rules` does not match either form.
+_SEMGREP_QUOTED = re.compile(
+    r"""(["'])(?:[^"'\s]*/)?(?:py)?semgrep(?:\1|\s)|-m\s+(?:py)?semgrep(?:\.\w+)*\b"""
+)
+_SEMGREP_WORD = re.compile(r"""(?<![\w.-])(?:py)?semgrep(?![\w/=.'-])""")
+# `-c` / `-f` are semgrep's short aliases for --config.
+_SEMGREP_CONFIG = re.compile(r"""(?:--config|(?<![\w-])-[cf])["']?[,=\s]+["']?([^"',\s\]]+)""")
+_SEMGREP_FILTER = re.compile(r"--(?:include|exclude)\b")
+_SHELL_SUFFIXES = {".sh", ".yml", ".yaml", ""}
+# A semgrep executable as a Python string: bare or path-prefixed `semgrep`/`pysemgrep`.
+_SEMGREP_EXEC = re.compile(r"""(?:[^\s"']*/)?(?:py)?semgrep""")
+# `-msemgrep` (module name glued to -m, optionally dotted: `-msemgrep.cli`).
+_SEMGREP_DASH_M = re.compile(r"(?<![\w-])-m\s*(?:py)?semgrep(?:\.\w+)*(?![\w/=.'-])")
+# A --config/-c/-f flag string (or `--config=...`) as a whole string constant.
+_SEMGREP_FLAG = re.compile(r"(?:--config|-[cf])(?:=.*)?", re.DOTALL)
+# The tracked .py files that launch semgrep, each with the exact sorted list of its
+# launches as `ast.unparse` text (see _semgrep_launches). This is a tripwire for the
+# launch shapes it recognises, not proof that no other start exists: a call argument or
+# keyword that carries a semgrep executable or shell word, and an argv literal carrying
+# one outside such an argument. A new launch, a changed config, or a new call-site file
+# fails PR9c. _SEMGREP_FLAG_COUNTS additionally pins how many --config/-c/-f string
+# constants each file holds, so a flag added by `argv.extend([...])` is noticed.
+# Pinning launches, not mention counts, is safe: the error messages in these files
+# ("semgrep exited ...") sit in return tuples, not call arguments, so they are not
+# launches.
+_SEMGREP_CALL_SITES = {
+    "scripts/oversight/validators/static_analysis.py": [
+        "['semgrep', '--config', 'p/django', '--json', '--quiet'] + files",
+        "['semgrep', '--version']",
+        # Not launches: user-facing text passed to a call. The shell-word rule cannot
+        # tell it from a command string, so it is pinned verbatim; a changed message
+        # fails PR9c and is reviewed there.
+        "f'⚠ semgrep did not complete ({semgrep_error}) — semgrep_count above is not a "
+        "clean scan result; verify manually'",
+        "make_finding(r.get('path', '?'), loc.get('line', 0), "
+        "f\"[semgrep:{r.get('check_id', '?')}] {r.get('extra', {}).get('message', '')}\", "
+        "severity='medium')",
+    ],
+    "scripts/oversight/validators/static_analysis_js.py": [
+        "['semgrep', '--config', str(_RULESET), '--json', '--quiet'] + files",
+    ],
+}
+# static_analysis.py counts 2: the semgrep --config plus bandit's `-f json`.
+_SEMGREP_FLAG_COUNTS = {
+    "scripts/oversight/validators/static_analysis.py": 2,
+    "scripts/oversight/validators/static_analysis_js.py": 1,
+}
+# Tracked files that mention semgrep but never launch it. Each is skipped wholesale,
+# so every entry must stay narrow and a new mention elsewhere fails PR9c (like
+# _OTEL_NAME_ONLY).
+_SEMGREP_NON_LAUNCH = {
+    "scripts/oversight/security_scan_logic.py": "exemption roster and reason text only",
+    "scripts/oversight/smoke_test.sh": "tool-presence loop (`command -v` style probe)",
+    "scripts/oversight/ensure_venv.sh": "post-install `import semgrep` health check",
+    "bootstrap/hos_bootstrap.sh": "optional pip package install loop",
+}
+
+
+def _semgrep_mentions(text: str, suffix: str) -> list[str]:
+    if suffix in _SHELL_SUFFIXES:
+        text = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    hits = [m.group(0) for m in _SEMGREP_QUOTED.finditer(text)]
+    if suffix in _SHELL_SUFFIXES:
+        hits += [m.group(0) for m in _SEMGREP_WORD.finditer(text)]
+        hits += [m.group(0) for m in _SEMGREP_DASH_M.finditer(text)]
+    return hits
+
+
+def _semgrep_configs(text: str, suffix: str) -> list[str]:
+    # Shell/YAML path only (.py launches go through _semgrep_launches). Read
+    # --config/-c/-f from the argv following a semgrep mention (to the end of its list
+    # or line), so another tool's `-f json` in the same file is not mistaken for a
+    # ruleset. Comment lines are ignored, and a bare-word match inside a quoted span
+    # (`"$VENV/bin/semgrep" --config x`) is the same mention, not a second one.
+    text = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    text = re.sub(r"\\\r?\n", " ", text)  # backslash-newline continuations
+    quoted = list(_SEMGREP_QUOTED.finditer(text))
+    matches = list(quoted)
+    if suffix in _SHELL_SUFFIXES:
+        matches += [
+            w
+            for w in [*_SEMGREP_WORD.finditer(text), *_SEMGREP_DASH_M.finditer(text)]
+            if not any(w.start() < q.end() and q.start() < w.end() for q in quoted)
+        ]
+    configs = []
+    for m in matches:
+        tail = text[m.end() :]  # noqa: E203 (black's slice style)
+        argv = re.split(r"[\]\n]", tail, maxsplit=1)[0]
+        configs += _SEMGREP_CONFIG.findall(argv)
+    return configs
+
+
+def _str_value(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _str_text(node: ast.AST) -> str | None:
+    value = _str_value(node)
+    if value is not None:
+        return value
+    if isinstance(node, ast.JoinedStr):
+        parts = [_str_value(v) for v in node.values]
+        return "".join("{}" if part is None else part for part in parts)
+    return None
+
+
+def _semgrep_text(node: ast.AST) -> bool:
+    # A string that names semgrep as a whole shell word anywhere in it (`bash -c
+    # "cd x && FOO=1 semgrep ..."`), or the glued `-msemgrep` form.
+    text = _str_text(node)
+    return text is not None and bool(_SEMGREP_WORD.search(text) or _SEMGREP_DASH_M.search(text))
+
+
+def _has_semgrep_exec(node: ast.AST, words: bool = True) -> bool:
+    # A list/tuple literal carrying the executable as an element, `-m` followed by the
+    # module name, or (words) a string element naming semgrep as a shell word.
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return False
+    elts = node.elts
+    for i, el in enumerate(elts):
+        value = _str_value(el)
+        if value is not None and _SEMGREP_EXEC.fullmatch(value):
+            return True
+        if words and _semgrep_text(el):
+            return True
+        module = _str_value(elts[i + 1]) if i + 1 < len(elts) else None
+        if (
+            value == "-m"
+            and module is not None
+            and re.fullmatch(r"(?:py)?semgrep(?:\.\w+)*", module)
+        ):
+            return True
+    return False
+
+
+def _semgrep_launches(source: str) -> list[str]:
+    # Launch shapes recognised, as sorted `ast.unparse` text (not every possible start):
+    #  (a) a call argument or keyword whose subtree carries a semgrep executable or
+    #      shell word (argv list/tuple, shell string, `executable="semgrep"`);
+    #  (b) an argv literal carrying one that is not inside such an argument (argv built
+    #      into a variable first). A tuple that is directly returned is exempt from the
+    #      shell-word rule, so `return [], "error", "semgrep timed out"` is not a launch.
+    tree = ast.parse(source)
+    nodes = list(ast.walk(tree))  # breadth-first, so outer calls come first
+    returned = {id(n.value) for n in nodes if isinstance(n, ast.Return) and n.value}
+    covered: set[int] = set()
+    launches = []
+    for node in nodes:
+        if id(node) in covered or not isinstance(node, ast.Call):
+            continue
+        for unit in [*node.args, *node.keywords]:
+            sub = list(ast.walk(unit))
+            if any(_semgrep_text(n) or _has_semgrep_exec(n) for n in sub):
+                launches.append(ast.unparse(unit))
+                covered.update(id(n) for n in sub)
+    for node in nodes:
+        if id(node) not in covered and _has_semgrep_exec(node, words=id(node) not in returned):
+            launches.append(ast.unparse(node))
+            covered.update(id(n) for n in ast.walk(node))
+    return sorted(launches)
+
+
+def _semgrep_flag_count(source: str) -> int:
+    # Every --config/-c/-f string constant anywhere in the file, wherever it is built.
+    values = [_str_value(n) for n in ast.walk(ast.parse(source))]
+    return len([v for v in values if v is not None and _SEMGREP_FLAG.fullmatch(v)])
+
+
+def _star_count(pattern: str) -> int:
+    # Only a whole path segment `**` is a globstar; inside a name wcmatch reads each
+    # `*` as a lazy wildcard. A leading and/or trailing whole `**` is free; an interior
+    # one can backtrack against its neighbours, so it counts 2.
+    segments = pattern.replace("\\", "/").split("/")
+    total = 0
+    last = len(segments) - 1
+    for i, seg in enumerate(segments):
+        if seg == "**":
+            total += 0 if i in (0, last) else 2
+        else:
+            total += seg.count("*")
+    return total
+
+
+def _as_pattern_list(value: Any) -> list:
+    # A YAML `include:`/`exclude:` may be a scalar; a str must not be iterated by
+    # character, and any other non-list type is a malformed ruleset.
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    assert isinstance(value, list), f"paths value {value!r} is not a list: {_PREMISE_132276}"
+    return value
+
+
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [
+        ("*.html", 1),
+        ("**/*.html", 1),
+        ("**/*.html/**", 1),
+        ("**", 0),
+        ("src/**/test_*.py", 3),
+        ("**/a/**/b/**/c", 4),
+        ("a/**/b", 2),
+        ("**/**", 0),
+        ("*_*_*.csv", 3),
+        ("**/*_*.csv/**", 2),
+        ("plain.txt", 0),
+        ("a**b**c**d.csv", 6),
+        ("****_****", 8),
+        ("foo/**/bar*", 3),
+        ("foo\\**\\bar*", 3),
+    ],
+)
+def test_pr9d_star_count_frees_only_leading_and_trailing_globstars(pattern, expected):
+    assert _star_count(pattern) == expected
+
+
+@pytest.mark.parametrize(
+    "text,config",
+    [
+        ('["semgrep", "--config", "p/django", "--json"] + files', "p/django"),
+        ("semgrep --config p/django --json x.py", "p/django"),
+        ("semgrep --config=auto x.py", "auto"),
+        ('["semgrep", "--config", str(_RULESET), "--json"]', "str(_RULESET)"),
+        ("pysemgrep --quiet --config r/all .", "r/all"),
+        ("semgrep -c p/python .", "p/python"),
+        ("semgrep -f rules.yaml .", "rules.yaml"),
+        ('["semgrep", "-c", "auto"]', "auto"),
+        ("semgrep -f=rules.yaml .", "rules.yaml"),
+    ],
+)
+def test_pr9e_semgrep_config_pattern_reads_the_config(text, config):
+    found = _SEMGREP_CONFIG.search(text)
+    assert found is not None and found.group(1) == config
+
+
+def test_pr9e3_semgrep_configs_ignore_other_tools_short_flags():
+    text = 'run(["bandit", "-f", "json"])\nrun(["semgrep", "-c", "p/django", "--json"])\n'
+    assert _semgrep_configs(text, ".py") == ["p/django"]
+
+
+@pytest.mark.parametrize("text", ["--no-conf", "x-c y", "ls -cf", "--max-target-bytes 5"])
+def test_pr9e2_semgrep_config_pattern_ignores_lookalikes(text):
+    assert _SEMGREP_CONFIG.search(text) is None
+
+
+@pytest.mark.parametrize(
+    "text,suffix,launches",
+    [
+        ('["semgrep", "--version"]', ".py", True),
+        ('["semgrep", *args]', ".py", True),
+        ("argv = ['pysemgrep', 'scan']", ".py", True),
+        ('subprocess.run("semgrep scan --config auto .", shell=True)', ".py", True),
+        ('subprocess.run([sys.executable, "-m", "semgrep"])', ".py", True),
+        ("python -m semgrep --config auto .", ".py", True),
+        ("python3 -m semgrep ci", ".sh", True),
+        ("semgrep --version", ".sh", True),
+        ("  semgrep scan --config p/django .", ".sh", True),
+        ("semgrep ci", ".sh", True),
+        ("git diff | xargs pysemgrep", ".sh", True),
+        ("for tool in bandit pysemgrep black; do", ".sh", True),
+        ("      run: semgrep scan --config auto", ".yml", True),
+        ("semgrep ci", "", True),
+        ('run("semgrep ci")', ".py", True),
+        ('subprocess.run("semgrep scan .", shell=True)', ".py", True),
+        ('[".venv/bin/semgrep", "scan"]', ".py", True),
+        ('["$VENV/bin/semgrep", "scan"]', ".py", True),
+        ('cmd = "$VENV_BIN/pysemgrep"', ".py", True),
+        ('cmd = f"{venv}/bin/semgrep"', ".py", True),
+        ("cmd = '/usr/bin/semgrep'", ".py", True),
+        ("scripts/oversight/.venv/bin/semgrep scan .", ".sh", True),
+        ("$VENV/bin/semgrep ci", ".sh", True),
+        ('"$VENV_BIN/pysemgrep" --version', ".sh", True),
+        ("/usr/bin/semgrep --config auto .", ".yml", True),
+        ('p = "semgrep/target_manager.py"', ".py", False),
+        ('d = "scripts/semgrep_rules/x.yaml"', ".py", False),
+        ("ls scripts/oversight/validators/semgrep_rules/", ".sh", False),
+        ('x = "semgrep-mcp"', ".py", False),
+        ('x = "semgrep==1.179.0"', ".py", False),
+        ("cat .semgrepignore", ".sh", False),
+        ("# semgrep ci is documented here", ".sh", False),
+        ("    # semgrep scan", ".yml", False),
+        ("semgrep's ERROR severity", ".py", False),
+        ("semgrep's ERROR severity", ".sh", False),
+        ("semgrep-mcp", ".sh", False),
+        ("semgrep==1.179.0", ".sh", False),
+        ("the semgrep ruleset", ".py", False),
+        ("semgrep/target_manager.py", ".sh", False),
+        ('"semgrep_rules" / "js_ts_security.yaml"', ".py", False),
+        ('# run "semgrep" here', ".sh", False),
+        ("python3 -msemgrep ci", ".sh", True),
+        ("      run: python3 -msemgrep ci", ".yml", True),
+        ("python -m semgrep.cli scan", ".sh", True),
+        ("python -msemgrep.cli scan", ".sh", True),
+        ("# python -msemgrep ci", ".sh", False),
+        ("python -msemgrep_rules", ".sh", False),
+        ('  # run "semgrep" here', ".yml", False),
+        ('# note\nrun "semgrep" here', ".sh", True),
+    ],
+)
+def test_pr9f_semgrep_mention_pattern_covers_every_launch_form(text, suffix, launches):
+    assert bool(_semgrep_mentions(text, suffix)) is launches
+
+
+def _imports_module(tree: ast.AST, name: str) -> bool:
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        if any(n == name or n.startswith(name + ".") for n in names):
+            return True
+    return False
+
+
+def _tracked_py_importing(name: str) -> tuple[list[str], list[str]]:
+    bad, unparsed = [], []
+    for path in _tracked_files("*.py"):
+        if path == Path(__file__).resolve():
+            continue
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            unparsed.append(str(path.relative_to(_REPO)))
+            continue
+        if _imports_module(tree, name):
+            bad.append(str(path.relative_to(_REPO)))
+    return bad, unparsed
+
+
+@pytest.mark.parametrize(
+    "source,name,expected",
+    [
+        ("import semgrep", "semgrep", True),
+        ("import semgrep.cli", "semgrep", True),
+        ("from semgrep import x", "semgrep", True),
+        ("from semgrep.target_manager import y", "semgrep", True),
+        ("def f():\n    import semgrep\n", "semgrep", True),
+        ("import semgrep_mcp", "semgrep", False),
+        ("from . import semgrep", "semgrep", False),
+        ("x = 'import semgrep'", "semgrep", False),
+    ],
+)
+def test_pr9h_import_detector_matches_the_module_and_its_submodules(source, name, expected):
+    assert _imports_module(ast.parse(source), name) is expected
+
+
+def test_pr9_no_tracked_python_file_imports_wcmatch():
+    bad, unparsed = _tracked_py_importing("wcmatch")
+    assert not unparsed, f"cannot parse {unparsed} to check for wcmatch imports: {_PREMISE_132276}"
+    assert not bad, f"{bad} import wcmatch: {_PREMISE_132276}"
+
+
+def test_pr9g_no_tracked_python_file_imports_semgrep():
+    # In-process use (semgrep.* APIs) would bypass the launch checks in PR9c.
+    bad, unparsed = _tracked_py_importing("semgrep")
+    assert not unparsed, f"cannot parse {unparsed} to check for semgrep imports: {_PREMISE_132276}"
+    assert not bad, f"{bad} import semgrep in-process: {_PREMISE_132276}"
+
+
+@pytest.mark.parametrize(
+    "source,launches",
+    [
+        ('subprocess.run(["semgrep", "--version"])', ["['semgrep', '--version']"]),
+        (
+            'subprocess.run(\n    [\n        "semgrep",\n'
+            '        "--config",\n        "p/django",\n    ]\n)',
+            ["['semgrep', '--config', 'p/django']"],
+        ),
+        (
+            'run(["semgrep", "--config", "p/django",\n     "--config", "p/evil"])',
+            ["['semgrep', '--config', 'p/django', '--config', 'p/evil']"],
+        ),
+        (
+            'run(["semgrep", "--config", files[0], "--config", "r/all"])',
+            ["['semgrep', '--config', files[0], '--config', 'r/all']"],
+        ),
+        (
+            'run(["semgrep", "--config", "p/django"] + files)',
+            ["['semgrep', '--config', 'p/django'] + files"],
+        ),
+        (
+            'argv = ["semgrep", "scan"]\nsubprocess.run(argv)',
+            ["['semgrep', 'scan']"],
+        ),
+        (
+            'argv = ("pysemgrep", "scan")\nsubprocess.run(list(argv))',
+            ["('pysemgrep', 'scan')"],
+        ),
+        (
+            'subprocess.run([sys.executable, "-m", "semgrep", "scan"])',
+            ["[sys.executable, '-m', 'semgrep', 'scan']"],
+        ),
+        (
+            'subprocess.run([sys.executable, "-m", "pysemgrep"])',
+            ["[sys.executable, '-m', 'pysemgrep']"],
+        ),
+        (
+            'subprocess.run("semgrep scan --config auto .", shell=True)',
+            ["'semgrep scan --config auto .'"],
+        ),
+        ('subprocess.run("semgrep", shell=True)', ["'semgrep'"]),
+        (
+            'subprocess.run(f"{venv}/bin/semgrep scan", shell=True)',
+            ["f'{venv}/bin/semgrep scan'"],
+        ),
+        ('subprocess.run([".venv/bin/semgrep", "scan"])', ["['.venv/bin/semgrep', 'scan']"]),
+        (
+            'subprocess.run(["semgrep", "--version"])\nsubprocess.run(["semgrep", "scan"])',
+            ["['semgrep', '--version']", "['semgrep', 'scan']"],
+        ),
+        ('subprocess.run(list(["semgrep", "scan"]))', ["list(['semgrep', 'scan'])"]),
+        ('return [], "error", "semgrep scan timed out"', []),
+        ('return [], f"semgrep exited {rc} - scan failed"', []),
+        ('subprocess.run(["bandit", "-f", "json"])', []),
+        ('x = "semgrep==1.179.0"', []),
+        ('subprocess.run(["pip", "install", "semgrep-mcp"])', []),
+        ('subprocess.run("semgrepx --version", shell=True)', []),
+        ('subprocess.run("python3 -msemgrep scan", shell=True)', ["'python3 -msemgrep scan'"]),
+        ('subprocess.run("-msemgrep_rules")', []),
+        (
+            'subprocess.run("python -m semgrep.cli scan", shell=True)',
+            ["'python -m semgrep.cli scan'"],
+        ),
+        (
+            'subprocess.run("python -msemgrep.cli scan", shell=True)',
+            ["'python -msemgrep.cli scan'"],
+        ),
+        (
+            'subprocess.run([sys.executable, "-m", "semgrep.cli"])',
+            ["[sys.executable, '-m', 'semgrep.cli']"],
+        ),
+        ('subprocess.run(["python", "-m", "semgrep.yaml"])', ["['python', '-m', 'semgrep.yaml']"]),
+        ('subprocess.run("cat semgrep.yaml", shell=True)', []),
+        ('subprocess.run("x-msemgrepx")', []),
+        ('subprocess.run("echo foo-msemgrep")', []),
+    ],
+)
+def test_pr9i_semgrep_launches_extracts_every_launch_form(source, launches):
+    assert _semgrep_launches(source) == launches
+
+
+@pytest.mark.parametrize(
+    "source,launches",
+    [
+        (
+            'subprocess.run(["bash", "-c", "semgrep --config evil"])',
+            ["['bash', '-c', 'semgrep --config evil']"],
+        ),
+        ('subprocess.run("cd x && semgrep scan .", shell=True)', ["'cd x && semgrep scan .'"]),
+        ('subprocess.run("FOO=1 semgrep scan", shell=True)', ["'FOO=1 semgrep scan'"]),
+        ('subprocess.run(f"cd {d} && $V/bin/pysemgrep ci", shell=True)', None),
+        ('subprocess.run(["-msemgrep", "scan"])', ["['-msemgrep', 'scan']"]),
+        ('subprocess.run(argv, executable="semgrep")', ["executable='semgrep'"]),
+        ('cmd = ["bash", "-c", "semgrep ci"]\nrun(cmd)', ["['bash', '-c', 'semgrep ci']"]),
+        ('return [], "error", "semgrep scan timed out"', []),
+        ('return [], "error", (f"semgrep exited {rc} - scan failed")', []),
+        ('subprocess.run("echo semgrep-mcp semgrep\'s pin", shell=True)', []),
+        (
+            'subprocess.run("cd x && semgrep scan", shell=True)',
+            ["'cd x && semgrep scan'"],
+        ),
+        (
+            'run([sys.executable, "-m", "pysemgrep.cli", "--config", "x"])',
+            ["[sys.executable, '-m', 'pysemgrep.cli', '--config', 'x']"],
+        ),
+        (
+            'subprocess.run(["bash", "-c", "python -m semgrep.cli --config auto ."])',
+            ["['bash', '-c', 'python -m semgrep.cli --config auto .']"],
+        ),
+        (
+            'os.system("cd /w && python -msemgrep scan")',
+            ["'cd /w && python -msemgrep scan'"],
+        ),
+    ],
+)
+def test_pr9l_semgrep_launches_closes_shell_word_and_keyword_evasions(source, launches):
+    found = _semgrep_launches(source)
+    if launches is None:
+        assert len(found) == 1
+    else:
+        assert found == launches
+
+
+@pytest.mark.parametrize(
+    "source,count",
+    [
+        ('run(["semgrep", "--config", "p/django"])', 1),
+        ('run(["semgrep", "--config=p/django"])', 1),
+        ('run(["semgrep", "-c", "a", "-f", "b"])', 2),
+        ('argv.extend(["--config", "evil"])', 1),
+        ('run(["semgrep", "--config", "a"])\nargv.extend(["--config", "evil"])', 2),
+        ('run(["bandit", "-f", "json"])', 1),
+        ('x = "--configure"\ny = "-cf"\nz = "config"', 0),
+        ("", 0),
+    ],
+)
+def test_pr9m_flag_count_sees_every_flag_constant(source, count):
+    assert _semgrep_flag_count(source) == count
+
+
+def test_pr9i2_a_second_launch_in_a_call_site_file_breaks_the_pin():
+    pinned = _semgrep_launches('run(["semgrep", "--config", "p/django"] + files)')
+    extra = _semgrep_launches(
+        'run(["semgrep", "--config", "p/django"] + files)\nrun(["semgrep", "ci"])'
+    )
+    assert extra != pinned and len(extra) == len(pinned) + 1
+
+
+def test_pr9i3_real_call_sites_are_extracted_by_the_ast_not_the_pin_text():
+    for rel, pin in _SEMGREP_CALL_SITES.items():
+        assert _semgrep_launches((_REPO / rel).read_text()) == pin
+
+
+@pytest.mark.parametrize(
+    "text,suffix,configs",
+    [
+        ('"$VENV/bin/semgrep" --config p/django .', ".sh", ["p/django"]),
+        ("$VENV/bin/semgrep --config p/django .", ".sh", ["p/django"]),
+        ("# semgrep --config evil/ruleset .\nsemgrep --config p/django .", ".sh", ["p/django"]),
+        ("    # semgrep -c auto", ".yml", []),
+        ("semgrep \\\n  --config evil/ruleset .", ".sh", ["evil/ruleset"]),
+        ("# note \\\nsemgrep --config evil/ruleset .", ".sh", ["evil/ruleset"]),
+        ("python3 -msemgrep scan --config evil/ruleset .", ".sh", ["evil/ruleset"]),
+        ("python -m semgrep.cli --config p/django .", ".sh", ["p/django"]),
+    ],
+)
+def test_pr9j_semgrep_configs_shell_path_skips_comments_and_overlaps(text, suffix, configs):
+    assert _semgrep_configs(text, suffix) == configs
+
+
+@pytest.mark.parametrize(
+    "text,patterns",
+    [
+        ("paths:\n  include: '*_*.csv'\n", ["*_*.csv"]),
+        ("paths:\n  include: ['a/**', 'b']\n", ["a/**", "b"]),
+        ("paths: {}\n", []),
+        ("paths:\n  include:\n", []),
+    ],
+)
+def test_pr9k_path_patterns_accept_scalars_and_lists(text, patterns):
+    import yaml
+
+    value = (yaml.safe_load(text) or {}).get("paths", {}).get("include")
+    assert _as_pattern_list(value) == patterns
+
+
+@pytest.mark.parametrize("value", [{"a": 1}, 5, True])
+def test_pr9k2_path_patterns_reject_other_types(value):
+    with pytest.raises(AssertionError):
+        _as_pattern_list(value)
+
+
+def test_pr9b_installed_semgrep_uses_wcmatch_only_for_one_globmatch():
+    # Premise of #2425: semgrep's only wcmatch use is glob.globmatch() in
+    # target_manager.py (rule paths.include/exclude matching); fnmatch is never used.
+    spec = importlib.util.find_spec("semgrep")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("semgrep is not installed in this environment")
+    root = Path(next(iter(spec.submodule_search_locations)))
+    imp = re.compile(r"^\s*(?:from\s+wcmatch\b|import\s+wcmatch\b)", re.MULTILINE)
+    hits = []
+    for path in sorted(root.rglob("*.py")):
+        if imp.search(path.read_text(errors="replace")):
+            hits.append(path.relative_to(root).as_posix())
+    assert hits == ["target_manager.py"], f"{hits}: {_PREMISE_132276}"
+    body = (root / "target_manager.py").read_text(errors="replace")
+    assert re.search(r"^\s*from\s+wcmatch\s+import\s+glob\s*$", body, re.MULTILINE), _PREMISE_132276
+    assert len(imp.findall(body)) == 1, _PREMISE_132276
+    assert re.findall(r"\bglob\.(\w+)\s*\(", body) == ["globmatch"], _PREMISE_132276
+    assert not re.search(r"\bfnmatch\b", body), _PREMISE_132276
+    # The call must pass GLOBSTAR: without it `**` is an ordinary `*` and the star
+    # counts in _star_count would not describe what wcmatch compiles.
+    calls = [
+        n
+        for n in ast.walk(ast.parse(body))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "globmatch"
+    ]
+    assert len(calls) == 1, _PREMISE_132276
+    flags = [
+        n
+        for n in ast.walk(calls[0])
+        if (isinstance(n, ast.Attribute) and n.attr == "GLOBSTAR")
+        or (isinstance(n, ast.Name) and n.id == "GLOBSTAR")
+    ]
+    assert flags, f"globmatch is not called with GLOBSTAR: {_PREMISE_132276}"
+
+
+def _ruleset_is_vendored_file(source: str) -> bool:
+    # `_RULESET` has exactly one binding in the module (any Assign/AnnAssign/AugAssign
+    # target, including `global` rebinds inside functions), at module level, whose value
+    # is a `/` chain ending in "semgrep_rules" then "js_ts_security.yaml". A comment or a
+    # later reassignment cannot satisfy it.
+    tree = ast.parse(source)
+    # Every way a module can bind the name: Store-context names (assignment, augmented
+    # and annotated assignment, walrus, for/with/comprehension targets), import aliases,
+    # def/class names, `except ... as` names and parameters.
+    bound = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            bound += isinstance(node.ctx, ast.Store) and node.id == "_RULESET"
+        elif isinstance(node, ast.alias):
+            bound += (node.asname or node.name.split(".")[0]) == "_RULESET"
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound += node.name == "_RULESET"
+        elif isinstance(node, ast.ExceptHandler):
+            bound += node.name == "_RULESET"
+        elif isinstance(node, ast.arg):
+            bound += node.arg == "_RULESET"
+    plain = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id == "_RULESET"
+    ]
+    if bound != 1 or len(plain) != 1:
+        return False
+    value = plain[0].value
+    if not (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div)):
+        return False
+    last, parent = _str_value(value.right), value.left
+    return (
+        last == "js_ts_security.yaml"
+        and isinstance(parent, ast.BinOp)
+        and isinstance(parent.op, ast.Div)
+        and _str_value(parent.right) == "semgrep_rules"
+    )
+
+
+@pytest.mark.parametrize(
+    "source,ok",
+    [
+        ('_RULESET = Path(__file__).parent / "semgrep_rules" / "js_ts_security.yaml"', True),
+        ('# _RULESET = x / "semgrep_rules" / "js_ts_security.yaml"\n_RULESET = Path("x")', False),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n_RULESET = Path("x")', False),
+        (
+            '_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n'
+            "def f():\n    global _RULESET\n    _RULESET = Path('x')",
+            False,
+        ),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n_RULESET += "x"', False),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n(_RULESET := 1)', False),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\nfor _RULESET in x: pass', False),
+        (
+            '_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n'
+            "with open(f) as _RULESET: pass",
+            False,
+        ),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\nimport os as _RULESET', False),
+        ('_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\ndef _RULESET(): pass', False),
+        (
+            '_RULESET = P / "semgrep_rules" / "js_ts_security.yaml"\n'
+            "try: pass\nexcept E as _RULESET: pass",
+            False,
+        ),
+        ('_RULESET = P / "other" / "js_ts_security.yaml"', False),
+        ('_RULESET = P / "semgrep_rules" / "other.yaml"', False),
+        ("", False),
+    ],
+)
+def test_pr9n_ruleset_binding_check_rejects_comments_and_rebinding(source, ok):
+    assert _ruleset_is_vendored_file(source) is ok
+
+
+def test_pr9c_semgrep_runs_only_tracked_or_django_rulesets_with_no_multi_star_paths():
+    # Premise of #2425: no semgrep scan HOS launches can feed wcmatch a multi-star
+    # pattern. A new semgrep call site, a new remote config, any --include/--exclude,
+    # a tracked .semgrepignore or a multi-star path pattern in a tracked ruleset fails.
+    import yaml
+
+    mentions, launches, shell_configs, filtered, unreadable = {}, {}, {}, [], []
+    for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
+        if path.suffix not in {".py", *_SHELL_SUFFIXES}:
+            continue
+        rel = path.relative_to(_REPO).as_posix()
+        if rel in _SEMGREP_NON_LAUNCH:
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            unreadable.append(rel)
+            continue
+        found = _semgrep_mentions(text, path.suffix)
+        if path.suffix == ".py":
+            # Every .py is parsed: the mention pre-check alone misses a shell string
+            # such as "cd x && semgrep scan".
+            try:
+                found_launches = _semgrep_launches(text)
+            except (SyntaxError, ValueError):
+                unreadable.append(rel)
+                continue
+            if found_launches or found:
+                launches[rel] = found_launches
+        elif found:
+            shell_configs[rel] = _semgrep_configs(text, path.suffix)
+        if found or (path.suffix == ".py" and rel in launches):
+            mentions[rel] = len(found)
+            if _SEMGREP_FILTER.search(text):
+                filtered.append(rel)
+    assert not unreadable, f"cannot scan {unreadable} for semgrep calls: {_PREMISE_132276}"
+    assert sorted(mentions) == sorted(
+        _SEMGREP_CALL_SITES
+    ), f"semgrep call sites {sorted(mentions)}: {_PREMISE_132276}"
+    assert launches == _SEMGREP_CALL_SITES, f"{launches}: {_PREMISE_132276}"
+    assert not any(shell_configs.values()), f"{shell_configs}: {_PREMISE_132276}"
+    flag_counts = {
+        rel: _semgrep_flag_count((_REPO / rel).read_text()) for rel in _SEMGREP_CALL_SITES
+    }
+    assert flag_counts == _SEMGREP_FLAG_COUNTS, f"{flag_counts}: {_PREMISE_132276}"
+    assert not filtered, f"{filtered} pass --include/--exclude: {_PREMISE_132276}"
+    for rel in _SEMGREP_NON_LAUNCH:
+        assert (_REPO / rel).is_file(), f"stale non-launch entry {rel}: {_PREMISE_132276}"
+    js = (_REPO / "scripts/oversight/validators/static_analysis_js.py").read_text()
+    assert _ruleset_is_vendored_file(js), _PREMISE_132276
+    vendored = f"{_SEMGREP_RULES_DIR}/js_ts_security.yaml"
+    assert _tracked_files(vendored), f"{vendored} is not tracked: {_PREMISE_132276}"
+    assert not _tracked_files(".semgrepignore", "**/.semgrepignore"), _PREMISE_132276
+    rulesets = _tracked_files(_SEMGREP_RULES_DIR)
+    assert rulesets, f"no tracked rulesets under {_SEMGREP_RULES_DIR}: {_PREMISE_132276}"
+    bad = []
+    for ruleset in rulesets:
+        doc = yaml.safe_load(ruleset.read_text())
+        for rule in (doc or {}).get("rules") or []:
+            paths = rule.get("paths") or {}
+            for key in ("include", "exclude"):
+                bad += [
+                    (ruleset.name, rule.get("id"), p)
+                    for p in _as_pattern_list(paths.get(key))
+                    if _star_count(str(p)) > 1
+                ]
+    assert not bad, f"multi-star path patterns {bad}: {_PREMISE_132276}"
 
 
 # ── Gate (shell path, via the HOS_PIP_AUDIT_BIN stub seam) ──────────────────

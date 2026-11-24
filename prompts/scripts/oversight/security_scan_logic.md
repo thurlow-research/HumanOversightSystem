@@ -63,6 +63,8 @@ two files.
 
 - v5 (2026-11-20, #2409): mcp CVE-2026-115563 exemption (OAuth client issuer / credential binding; fixed_in `1.30.0`, expires 2026-12-31, tracking #2120) mirroring the #2194 records, per the human ruling on #2409 (ScottThurlow, 2026-11-20): option A. Premise tests PR5/PR5b extended so no tracked file may use `mcp.client.auth` or the OAuthClientProvider / ClientCredentialsOAuthProvider / PrivateKeyJWTOAuthProvider / RFC7523OAuthClientProvider classes.
 
+- v6 (2026-11-22, #2425): wcmatch CVE-2026-132276 exemption (multi-star glob pattern ReDoS; fixed_in `11.2`, expires 2026-12-31, tracking #2120), per the human ruling on #2425 (ScottThurlow, 2026-11-21): option A, conditional on research showing semgrep's wcmatch use does not reach the affected path. Premise tests PR9 (no tracked file imports wcmatch), PR9b (installed semgrep's only wcmatch use is one `glob.globmatch` in `target_manager.py`) and PR9c (every tracked semgrep call uses p/django or a tracked ruleset, no --include/--exclude, no multi-star path pattern, no `.semgrepignore`).
+
 ## Human Review Notes
 
 <!-- Filled in at CODEOWNERS review. -->
