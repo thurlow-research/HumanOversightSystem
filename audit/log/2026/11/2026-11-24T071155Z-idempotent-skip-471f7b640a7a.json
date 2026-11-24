@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"ebe1a130efbb18defc0dfafd652ea39954e5eb21","pr":2458,"reason":"head unchanged since verdict 6033785023 and rule-11 notice 7124455291; human approval 6034785756 stands; 3 unresolved threads still block step 1a; only newer entry is the worker's automated merge-block notice","timestamp":"2026-11-24T07:11:55Z"}
