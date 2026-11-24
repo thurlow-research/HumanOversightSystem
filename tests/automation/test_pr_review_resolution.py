@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,6 +25,8 @@ import pytest
 
 import scripts.automation.pr_review_cli as cli
 from scripts.automation.lib import github as gh
+from scripts.automation.lib import merge_authority as ma
+from scripts.automation.lib import overseer_second_review as osr
 from scripts.automation.lib.merge_authority import RiskTier
 from scripts.automation.lib.merge_config import MergeConfig
 
@@ -414,6 +418,164 @@ def submit_preamble_mocks(monkeypatch):
     monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
 
 
+# --------------------------------------------------------------------------- #
+# G1c / check marker fixtures (#2357 S1b): a real git checkout so the base the
+# gate pins is a real merge-base, and records written through the runner's own
+# atomic writer so they are private (0600 file, 0700 dir) like the real ones.
+# --------------------------------------------------------------------------- #
+SLUG = "test-owner/test-repo"
+_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+_TIER_FOR_SET = {"none": "LOW", "agy": "MEDIUM", "agy+codex": "HIGH"}
+_CHECK_MARKER_PREFIX = "<!-- hos-overseer-check"
+
+
+def _git(root: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+class GateKit:
+    """A submit context over a real repo plus the record fixtures G1c reads."""
+
+    def __init__(self, tmp_path: Path, monkeypatch):
+        self.root = tmp_path
+        self.ctx = _make_submit_ctx(tmp_path)
+        _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "base")
+        self.base = _git(tmp_path, "rev-parse", "HEAD")
+        _git(tmp_path, "checkout", "-q", "-b", "feat")
+        _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "feature")
+        self.head = _git(tmp_path, "rev-parse", "HEAD")
+        self.posted: list[tuple] = []
+        self.body_file = tmp_path / "body.md"
+        self.body_file.write_text("a verdict body\n")
+        monkeypatch.setenv("HOS_BOT_LOGIN", DEFAULT_OVERSEER_HANDLE)
+        self.pull = {
+            "head": {"sha": self.head},
+            "base": {"sha": self.base},
+            "user": {"login": DEFAULT_PR_AUTHOR},
+            "requested_reviewers": [],
+            "review_comments": 0,
+        }
+        monkeypatch.setattr(gh, "get_pull", lambda o, r, n: self.pull)
+        monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
+        monkeypatch.setattr(gh, "submit_pull_review", self._submit)
+
+    def _submit(self, owner, repo, number, event, body, sha):
+        self.posted.append((event, body, sha))
+        return {
+            "id": 9001,
+            "state": "APPROVED" if event == "APPROVE" else "COMMENTED",
+            "body": body,
+            "commit_id": sha,
+            "html_url": f"https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-9001",
+        }
+
+    def record(self, vendorset, **over) -> dict:
+        required = osr.vendors_list(vendorset)
+        verdict = "not-required" if vendorset == "none" else "approve"
+        rec = {
+            "schema": 1,
+            "check": osr.CHECK,
+            "repo": SLUG,
+            "pr": 42,
+            "head_sha": self.head,
+            "base_sha": self.base,
+            "range": f"{self.base}..{self.head}",
+            "tier": _TIER_FOR_SET[vendorset],
+            "tier_sources": None,
+            "vendors_required": required,
+            "vendors_run": [] if vendorset == "none" else list(required),
+            "status": "final",
+            "verdict": verdict,
+            "reason": osr.FINAL_REASON_FOR_VERDICT[verdict],
+            "unresolved_findings": 0,
+            "findings_file": None,
+            "outfile": f"{self.root}/out/steppr42.md",
+            "files_reviewed": None if vendorset == "none" else 5,
+            "binary_files": None if vendorset == "none" else 0,
+            "hold_label_applied": None,
+            "vendor_failures": [],
+            "created_at": "2026-11-18T01:02:03Z",
+        }
+        rec.update(over)
+        return rec
+
+    def write(self, vendorset, **over) -> dict:
+        rec = self.record(vendorset, **over)
+        osr._atomic_write_json(osr._record_path(self.root, 42, self.head, vendorset), rec)
+        return rec
+
+    def write_hold(self, vendorset, **over) -> dict:
+        base = {
+            "status": "hold",
+            "verdict": "hold",
+            "reason": "binary-unreviewed",
+            "vendors_run": [],
+            "files_reviewed": 2,
+            "binary_files": 1,
+            "hold_label_applied": False,
+        }
+        return self.write(vendorset, **{**base, **over})
+
+    def write_findings(self) -> str:
+        runs = osr.runs_dir(self.root)
+        osr._ensure_private_dir(runs)
+        path = runs / "pr42" / "findings.json"
+        osr._atomic_write_json(
+            path,
+            {
+                "findings": [
+                    {
+                        "class": "REVIEW_FINDING",
+                        "slug": "sr-agy-aaaaaaaa",
+                        "summary": "s",
+                        "detail": "d",
+                        "path": None,
+                    }
+                ],
+                "reviewed_head": self.head,
+            },
+        )
+        return str(path)
+
+    def submit(self, *, tier="MEDIUM", event="approve", body=None, **kw):
+        if body is None and kw.get("expected_action"):
+            body = f"a verdict body\n\nExpected action: **{kw['expected_action']}**\n"
+        if body is not None:
+            self.body_file.write_text(body)
+        args = _make_submit_args(self.body_file, event=event, tier=tier, **kw)
+        return cli._cmd_submit_verdict(args, self.ctx)
+
+    def lock(self):
+        return ma.keyed_flock(
+            "osr", f"{SLUG}\0pr42\0{self.head}", subject="t", repo_root=str(self.root), timeout=1
+        )
+
+    def expected_marker(self, tier, vendors, verdict):
+        return (
+            f"{_CHECK_MARKER_PREFIX} v=1 check=second-review pr=42 head={self.head} "
+            f"tier={tier} vendors={vendors} verdict={verdict} bounced=false -->"
+        )
+
+
+@pytest.fixture
+def kit(tmp_path, monkeypatch):
+    return GateKit(tmp_path, monkeypatch)
+
+
 def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(
     tmp_path, monkeypatch, submit_preamble_mocks
 ):
@@ -434,25 +596,9 @@ def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(
     assert outcome.payload["refusal_reason"] != "approve_requires_overseer_identity"
 
 
-def test_s2_direct_l2_approve_succeeds_when_identity_matches(
-    tmp_path, monkeypatch, submit_preamble_mocks
-):
-    monkeypatch.setenv("HOS_BOT_LOGIN", DEFAULT_OVERSEER_HANDLE)
-    monkeypatch.setattr(
-        gh,
-        "submit_pull_review",
-        lambda o, r, n, event, body, sha: {
-            "id": 9001,
-            "state": "APPROVED",
-            "body": body,
-            "commit_id": sha,
-            "html_url": "https://github.com/test-owner/test-repo/pull/42#pullrequestreview-9001",
-        },
-    )
-    body_file = tmp_path / "body.md"
-    body_file.write_text("a verdict body\n")
-    ctx = _make_submit_ctx(tmp_path)
-    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
+def test_s2_direct_l2_approve_succeeds_when_identity_matches(kit):
+    kit.write("none")
+    outcome = kit.submit(tier="LOW")
     assert outcome.exit_code == 0, outcome.error
     assert outcome.payload["posted"] is True
     assert outcome.payload["refused"] is False
@@ -485,26 +631,13 @@ def test_s3_direct_l2_comment_unaffected_by_identity_mismatch(
     assert outcome.payload["posted"] is True
 
 
-def test_s4_case_insensitive_identity_match(tmp_path, monkeypatch, submit_preamble_mocks):
+def test_s4_case_insensitive_identity_match(kit, monkeypatch):
     """Case must not matter for the comparison — mirrors G2/G3's own
     `.lower()` comparisons elsewhere in this module and
     require_overseer_approval.py's login comparison idiom."""
     monkeypatch.setenv("HOS_BOT_LOGIN", DEFAULT_OVERSEER_HANDLE.upper())
-    monkeypatch.setattr(
-        gh,
-        "submit_pull_review",
-        lambda o, r, n, event, body, sha: {
-            "id": 9003,
-            "state": "APPROVED",
-            "body": body,
-            "commit_id": sha,
-            "html_url": "https://github.com/test-owner/test-repo/pull/42#pullrequestreview-9003",
-        },
-    )
-    body_file = tmp_path / "body.md"
-    body_file.write_text("a verdict body\n")
-    ctx = _make_submit_ctx(tmp_path)
-    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
+    kit.write("none")
+    outcome = kit.submit(tier="LOW")
     assert outcome.exit_code == 0, outcome.error
     assert outcome.payload["posted"] is True
 
@@ -776,3 +909,311 @@ def test_write_audit_failure_emits_one_stderr_line(tmp_path, monkeypatch, capsys
     assert record is None and "audit write failed" in failure
     err = capsys.readouterr().err
     assert err.count("audit write failed") == 1
+
+
+# --------------------------------------------------------------------------- #
+# T-G1c-01..18 and T-MK-01..05 — #2357 S1b: the overseer's own second-review
+# gate and the check marker it appends. Each refusal is read back through the
+# real CLI path, so every record field the gate reads is exercised as a reader.
+# --------------------------------------------------------------------------- #
+
+
+def _refused(outcome, reason):
+    assert outcome.exit_code == 3, outcome.error
+    assert outcome.payload["refused"] is True
+    assert outcome.payload["refusal_reason"] == reason
+    assert outcome.payload["commit_id"] is not None
+    assert "second_review" in outcome.payload
+
+
+def test_g1c_01_an_approve_at_medium_with_an_agy_approve_record_posts(kit):
+    kit.write("agy")
+    outcome = kit.submit(tier="MEDIUM")
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["posted"] is True
+    assert outcome.payload["second_review"]["verdict"] == "approve"
+    assert len(kit.posted) == 1 and kit.posted[0][0] == "APPROVE"
+
+
+def test_g1c_02_no_record_refuses(kit):
+    outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_record_missing")
+    assert kit.posted == []
+
+
+def test_g1c_03_a_record_on_another_base_is_missing(kit):
+    kit.write("agy", base_sha="9" * 40)
+    _refused(kit.submit(tier="MEDIUM"), "second_review_record_missing")
+
+
+def test_g1c_04_an_agy_only_record_at_a_high_argv_is_a_tier_raise_and_the_raise_is_written(kit):
+    kit.write("agy")
+    outcome = kit.submit(tier="HIGH")
+    _refused(outcome, "second_review_tier_raise")
+    assert outcome.payload["second_review"]["raise_written"] is True
+    assert osr.read_raise(kit.root, slug=SLUG, pr=42, head=kit.head) == ("HIGH", False)
+    assert kit.posted == []
+
+
+def test_g1c_05_a_stored_high_raise_outranks_a_medium_argv(kit):
+    kit.write("agy")
+    osr.write_raise(kit.root, repo=SLUG, pr=42, head_sha=kit.head, tier="HIGH")
+    outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_tier_raise")
+    diag = outcome.payload["second_review"]
+    assert (diag["required_tier"], diag["required_vendors"], diag["raise_tier"]) == (
+        "HIGH",
+        "agy+codex",
+        "HIGH",
+    )
+    assert diag["raise_written"] is False
+
+
+def test_g1c_06_an_invalid_raise_file_counts_as_high(kit):
+    kit.write("agy")
+    path = osr._raise_path(kit.root, 42, kit.head)
+    osr._atomic_write_json(path, {"tier": "NOPE"})
+    outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_tier_raise")
+    diag = outcome.payload["second_review"]
+    assert diag["raise_invalid"] is True and diag["required_tier"] == "HIGH"
+
+
+def test_g1c_07_a_hold_record_is_not_approved(kit):
+    kit.write_hold("agy")
+    _refused(kit.submit(tier="MEDIUM"), "second_review_not_approved")
+
+
+def test_g1c_08_a_request_changes_record_is_not_approved(kit):
+    kit.write(
+        "agy",
+        verdict="request_changes",
+        reason="findings",
+        unresolved_findings=1,
+        findings_file=kit.write_findings(),
+    )
+    _refused(kit.submit(tier="MEDIUM"), "second_review_not_approved")
+
+
+def test_g1c_09_not_required_is_accepted_at_none_and_an_approve_there_is_refused(kit):
+    kit.write("none")
+    outcome = kit.submit(tier="LOW")
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["second_review"]["verdict"] == "not-required"
+
+
+def test_g1c_09b_an_approve_record_at_none_is_refused(kit):
+    kit.write("none", verdict="approve", reason="ok", files_reviewed=5, binary_files=0)
+    _refused(kit.submit(tier="LOW"), "second_review_not_approved")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"unresolved_findings": 1}, {"binary_files": 1}, {"vendors_run": []}],
+    ids=["unresolved", "binary", "vendors-run"],
+)
+def test_g1c_10_12_the_gate_re_checks_what_load_record_checks(kit, monkeypatch, change):
+    rec = kit.record("agy", **change)
+    monkeypatch.setattr(
+        osr, "load_record", lambda *a, vendorset, **k: rec if vendorset == "agy" else None
+    )
+    _refused(kit.submit(tier="MEDIUM"), "second_review_not_approved")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"unresolved_findings": 1}, {"binary_files": 1}, {"vendors_run": []}],
+    ids=["unresolved", "binary", "vendors-run"],
+)
+def test_g1c_10r_12r_the_real_loader_drops_those_records_so_g1c_sees_none(kit, change):
+    """No monkeypatch: the same records, written to disk, never reach the gate's own check."""
+    kit.write("agy", **change)
+    assert (
+        osr.load_record(
+            kit.root, repo=SLUG, pr=42, head_sha=kit.head, base_sha=kit.base, vendorset="agy"
+        )
+        is None
+    )
+    outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_record_missing")
+    assert kit.posted == []
+
+
+def test_g1c_13_a_safe_argv_is_low_and_needs_the_not_required_record(kit):
+    kit.write("none")
+    outcome = kit.submit(tier="SAFE")
+    assert outcome.exit_code == 0, outcome.error
+    diag = outcome.payload["second_review"]
+    assert (diag["required_tier"], diag["required_vendors"]) == ("LOW", "none")
+    _refused(GateKit.submit(_empty_kit(kit), tier="SAFE"), "second_review_record_missing")
+
+
+def _empty_kit(kit):
+    """The same repo with the record removed."""
+    osr._record_path(kit.root, 42, kit.head, "none").unlink()
+    return kit
+
+
+def test_g1c_14_a_held_head_lock_makes_the_record_unverifiable(kit, monkeypatch):
+    kit.write("agy")
+    monkeypatch.setattr(
+        osr, "approval_gate", functools.partial(osr.approval_gate, lock_timeout=0.2)
+    )
+    with kit.lock():
+        outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_record_unverifiable")
+    assert kit.posted == []
+
+
+@pytest.mark.parametrize("which", ["head", "base"])
+def test_g1c_15_a_non_sha_head_or_base_is_missing(kit, which):
+    kit.write("agy")
+    kit.pull[which] = {"sha": "not-a-sha"}
+    outcome = kit.submit(tier="MEDIUM")
+    assert outcome.exit_code in (3, 1)
+    if outcome.exit_code == 3:
+        assert outcome.payload["refusal_reason"] == "second_review_record_missing"
+    assert kit.posted == []
+
+
+def test_g1c_15b_a_missing_base_is_missing(kit):
+    kit.write("agy")
+    del kit.pull["base"]
+    _refused(kit.submit(tier="MEDIUM"), "second_review_record_missing")
+
+
+def test_g1c_16_a_comment_never_runs_g1c_and_still_gets_a_marker(kit):
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.exit_code == 0, outcome.error
+    assert "second_review" not in outcome.payload
+    assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "none")
+    assert kit.posted[0][1].rstrip().endswith(outcome.payload["check_marker"])
+
+
+_DIAG_KEYS = set(osr._DIAG_KEYS)
+
+
+def test_g1c_17_the_diag_carries_every_key_with_the_records_values(kit):
+    rec = kit.write("agy", files_reviewed=7, vendor_failures=[], outfile="/o/steppr42.md")
+    outcome = kit.submit(tier="MEDIUM")
+    assert outcome.exit_code == 0, outcome.error
+    diag = outcome.payload["second_review"]
+    assert set(diag) == _DIAG_KEYS
+    for key in (
+        "status",
+        "verdict",
+        "reason",
+        "tier",
+        "vendors_run",
+        "unresolved_findings",
+        "files_reviewed",
+        "binary_files",
+        "vendor_failures",
+        "outfile",
+        "findings_file",
+        "created_at",
+        "base_sha",
+    ):
+        assert diag[key] == rec[key], key
+    assert diag["record_path"] == str(osr._record_path(kit.root, 42, kit.head, "agy"))
+    assert (diag["required_tier"], diag["required_vendors"]) == ("MEDIUM", "agy")
+    assert diag["tier_sources"] == {
+        "argv": "MEDIUM",
+        "raise": None,
+        "records": [{"vendors": "agy", "tier": "MEDIUM"}],
+    }
+    assert (diag["raise_tier"], diag["raise_invalid"], diag["raise_written"]) == (
+        None,
+        False,
+        False,
+    )
+    assert diag["raise_error"] is None
+
+
+def test_g1c_17b_diag_values_are_sanitized(kit):
+    kit.write("agy", outfile="/o/@alice [x](http://e)\x00.md")
+    diag = kit.submit(tier="MEDIUM").payload["second_review"]
+    assert "@‍alice" in diag["outfile"] and "](" not in diag["outfile"]
+
+
+def test_g1c_18_the_diag_is_present_on_a_refusal_too(kit):
+    rec = kit.write_hold("agy", files_reviewed=3, outfile="/o/h.md")
+    outcome = kit.submit(tier="MEDIUM")
+    _refused(outcome, "second_review_not_approved")
+    diag = outcome.payload["second_review"]
+    assert set(diag) == _DIAG_KEYS
+    assert (diag["status"], diag["verdict"], diag["reason"]) == ("hold", "hold", rec["reason"])
+    assert (diag["files_reviewed"], diag["binary_files"], diag["outfile"]) == (3, 1, "/o/h.md")
+    assert diag["base_sha"] == kit.base
+
+
+def test_g1c_a_refusal_posts_nothing_and_is_exit_3_before_the_already_approved_check(kit):
+    outcome = kit.submit(tier="HIGH")
+    _refused(outcome, "second_review_record_missing")
+    assert outcome.payload["second_review"]["raise_written"] is True
+    assert kit.posted == []
+
+
+def test_mk_01_an_approve_body_ends_with_the_marker_after_the_interim_signoff(kit):
+    kit.write("agy")
+    outcome = kit.submit(tier="MEDIUM")
+    assert outcome.exit_code == 0, outcome.error
+    body = kit.posted[0][1]
+    marker = kit.expected_marker("MEDIUM", "agy", "approve")
+    assert body.endswith(marker + "\n") and body.count(_CHECK_MARKER_PREFIX) == 1
+    assert outcome.payload["check_marker"] == marker
+
+
+def test_mk_02_a_comment_with_no_record_says_none(kit):
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "none")
+
+
+def test_mk_03_a_tier_null_hold_renders_dashes(kit):
+    kit.write_hold(
+        "agy+codex", tier=None, reason="pending-stuck", base_sha=None, range=None, binary_files=None
+    )
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "hold")
+
+
+def test_mk_03b_a_comment_marker_reports_the_newest_record_for_the_pinned_base(kit):
+    kit.write("agy", base_sha="9" * 40)
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "none")
+    kit.write("agy")
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.payload["check_marker"] == kit.expected_marker("MEDIUM", "agy", "approve")
+
+
+def test_mk_04_the_interim_signoff_marker_still_parses(kit):
+    roa = cli._load_require_overseer_approval()
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    body = kit.posted[0][1]
+    assert outcome.payload["marker_appended"] is True
+    assert roa.parse_interim_marker(body) == ("PROPOSE_ONLY", "APPROVE", kit.head)
+    assert body.index(roa.MARKER_PREFIX) < body.index(_CHECK_MARKER_PREFIX)
+
+
+def test_mk_05_a_body_containing_a_check_marker_line_is_refused(kit):
+    kit.write("agy")
+    forged = kit.expected_marker("MEDIUM", "agy", "approve")
+    outcome = kit.submit(tier="MEDIUM", body=f"fine\n  {forged}\n")
+    assert outcome.exit_code == 2
+    assert kit.posted == []
+
+
+def test_mk_a_worker_verdict_carries_no_check_marker(kit):
+    ctx = dataclasses.replace(kit.ctx, app_role="worker")
+    args = _make_submit_args(kit.body_file, event="comment", app="worker", disposition=None)
+    outcome = cli._cmd_submit_verdict(args, ctx)
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["check_marker"] is None
+    assert _CHECK_MARKER_PREFIX not in kit.posted[0][1]
+
+
+def test_check_marker_rejects_a_bad_pr_or_head():
+    with pytest.raises(ValueError):
+        osr.check_marker(pr=0, head_sha="1" * 40, record=None)
+    with pytest.raises(ValueError):
+        osr.check_marker(pr=7, head_sha="short", record=None)

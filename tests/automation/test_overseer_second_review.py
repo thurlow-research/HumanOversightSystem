@@ -841,8 +841,9 @@ def test_t11_tier_is_the_max_of_floor_trailer_and_raise(
     h.trailers = trailers
     if raise_tier == "invalid":
         path = osr._raise_path(h.root, PR, HEAD)
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, mode=0o700)
         path.write_text("{not json")
+        path.chmod(0o600)
     elif raise_tier:
         osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier=raise_tier)
     result = h.run()
@@ -1075,24 +1076,6 @@ def test_t18_mark_hold_label_requires_a_head():
 
 # -- T19 output ----------------------------------------------------------------
 
-_RESULT_KEYS = {
-    "check",
-    "schema",
-    "pr",
-    "head_sha",
-    "base_sha",
-    "range",
-    "tier",
-    "vendors",
-    "verdict",
-    "status",
-    "reason",
-    "reused",
-    "findings_file",
-    "record",
-    "hold_label_applied",
-}
-
 
 def test_t19_run_prints_exactly_one_json_line(h, monkeypatch, capsys):
     monkeypatch.setattr(osr, "default_config", lambda: h.cfg)
@@ -1100,7 +1083,7 @@ def test_t19_run_prints_exactly_one_json_line(h, monkeypatch, capsys):
     assert osr.main(["run", "--pr", str(PR)]) == 0
     out = capsys.readouterr().out
     assert out.count("\n") == 1 and out.endswith("\n")
-    assert set(json.loads(out)) == _RESULT_KEYS
+    assert set(json.loads(out)) == osr.RESULT_KEYS
 
 
 def test_t19_every_reason_token_is_a_closed_token():
@@ -1242,7 +1225,7 @@ def test_t27_a_stuck_pending_under_the_lock_returns_only_a_matching_final(h):
 
 def _write_raise_file(h, tier="HIGH", **changes):
     path = osr._raise_path(h.root, PR, HEAD)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     rec = {
         "schema": 1,
         "check": osr.CHECK,
@@ -1321,7 +1304,7 @@ def test_t31b_an_invalid_raise_that_appears_counts_as_high(h, monkeypatch, kind)
             target = h.tmp_path / "elsewhere.json"
             target.write_text("{}")
             path = osr._raise_path(h.root, PR, HEAD)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             path.symlink_to(target)
 
     _race(monkeypatch, hook)
@@ -2524,12 +2507,16 @@ def test_classify_run_two_sections_for_one_vendor_are_inconsistent(tmp_path):
 
 def test_findings_shape_ok_requires_a_non_empty_findings_list(tmp_path):
     # kills x__findings_shape_ok__mutmut_22 (>= 0 instead of > 0)
-    empty = tmp_path / "empty.json"
+    runs = tmp_path / "runs"
+    runs.mkdir(mode=0o700)
+    empty = runs / "empty.json"
     empty.write_text(json.dumps({"findings": [], "reviewed_head": HEAD}))
-    full = tmp_path / "full.json"
+    empty.chmod(0o600)
+    full = runs / "full.json"
     full.write_text(json.dumps({"findings": [{"slug": "x"}], "reviewed_head": HEAD}))
-    assert osr._findings_shape_ok(empty, HEAD) is False
-    assert osr._findings_shape_ok(full, HEAD) is True
+    full.chmod(0o600)
+    assert osr._findings_shape_ok(empty, HEAD, runs) is False
+    assert osr._findings_shape_ok(full, HEAD, runs) is True
 
 
 @pytest.mark.parametrize("files_reviewed, expected", [(1, True), (0, False)])
@@ -2861,7 +2848,8 @@ def test_a_run_dir_collision_is_a_state_write_failure(h, monkeypatch):
     fixed = datetime(2026, 11, 16, 12, 0, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(osr.secrets, "token_hex", lambda n: "abcdef")
     name = f"pr{PR}-{HEAD[:12]}-{fixed.strftime('%Y%m%dT%H%M%SZ')}-abcdef"
-    (osr.runs_dir(h.root) / name).mkdir(parents=True)
+    osr.runs_dir(h.root).mkdir(parents=True, mode=0o700)
+    (osr.runs_dir(h.root) / name).mkdir(mode=0o700)
     inner = h.deps()
     deps = osr.Deps(inner.get_pull, inner.run_cmd, lambda: fixed, inner.write_audit)
     result = osr.run(PR, config=h.cfg, deps=deps)
@@ -2912,3 +2900,526 @@ def test_main_output_is_sorted_compact_ascii_json(monkeypatch, capsys):
     monkeypatch.setattr(osr, "run", lambda *a, **k: {"z": "é", "a": 1})
     assert osr.main(["run", "--pr", "7"]) == 0
     assert capsys.readouterr().out == '{"a":1,"z":"\\u00e9"}\n'
+
+
+# =============================================================================
+# S1b: record integrity, result counters, sanitize, field readers (TD-2357-S1b 12.1)
+# =============================================================================
+import hashlib  # noqa: E402
+import tempfile  # noqa: E402
+
+_RC_OVER = {"unresolved_findings": 1, "blocking_count": 1, "new_blocking_count": 1}
+
+
+def _rc_record(h):
+    h.reports("request_changes", over=_RC_OVER, sections=lambda vs: [section("agy", _rc())])
+    return h.run()
+
+
+def _rewrite(h, vendorset="agy", **changes):
+    rec = h.record(vendorset)
+    rec.update(changes)
+    h.record_path(vendorset).write_text(json.dumps(rec))
+
+
+def test_osr30_a_counted_pending_emits_the_counter_values_it_wrote(h):
+    h.objects, h.worktree_rc = "missing", 3
+    first = h.run()
+    path = osr._pending_path(h.root, PR, HEAD)
+    stored = json.loads(path.read_text())
+    assert (first["pending_count"], first["pending_last_reason"]) == (1, "fetch-failed")
+    assert (stored["count"], stored["last_reason"]) == (1, "fetch-failed")
+    second = h.run()
+    assert second["pending_count"] == 2 == json.loads(path.read_text())["count"]
+    assert set(second) == osr.RESULT_KEYS
+
+
+def test_osr31_a_reused_record_emits_null_counters(h):
+    h.run()
+    again = h.run()
+    assert again["reused"] is True
+    assert (again["pending_count"], again["pending_last_reason"]) == (None, None)
+    assert set(again) == osr.RESULT_KEYS
+
+
+def test_osr32_a_record_owned_by_another_uid_is_absent(h, monkeypatch):
+    h.run()
+    assert _load(h) is not None
+    real = os.geteuid()
+    monkeypatch.setattr(osr.os, "geteuid", lambda: real + 1)
+    assert _load(h) is None
+
+
+@pytest.mark.parametrize("mode, present", [(0o600, True), (0o640, False), (0o604, False)])
+def test_osr33_a_record_file_must_have_no_group_or_other_access(h, mode, present):
+    h.run()
+    h.record_path().chmod(mode)
+    assert (_load(h) is not None) is present
+
+
+def test_osr34_a_symlinked_records_dir_makes_the_record_absent(h):
+    h.run()
+    records = osr.records_dir(h.root)
+    real = records.with_name("records.real")
+    records.rename(real)
+    records.symlink_to(real)
+    assert _load(h) is None
+
+
+@pytest.mark.parametrize("bad", ["garbage", "2026-13-45T00:00:00Z", "2026-11-16 12:00:00", None, 5])
+def test_osr35_a_malformed_created_at_makes_the_record_absent(h, bad):
+    h.run()
+    assert _load(h) is not None
+    _rewrite(h, created_at=bad)
+    assert _load(h) is None
+
+
+def test_osr36_a_final_record_whose_reason_does_not_match_its_verdict_is_absent(h):
+    h.run()
+    _rewrite(h, reason="findings")
+    assert _load(h) is None
+    _rewrite(h, reason="ok")
+    assert _load(h) is not None
+
+    h.set_tier("LOW")
+    assert h.run()["verdict"] == "not-required"
+    assert _load(h, "none") is not None
+    osr_rec = h.record("none")
+    assert osr_rec["reason"] == "tier-below-medium"
+    _rewrite(h, "none", reason="ok")
+    assert _load(h, "none") is None
+
+    h2 = Harness(h.tmp_path, name="repo2")
+    _rc_record(h2)
+    assert _load(h2) is not None
+    _rewrite(h2, reason="ok")
+    assert _load(h2) is None
+
+
+def test_osr37_hold_label_applied_is_null_only_on_a_final_record(tmp_path):
+    h = Harness(tmp_path)
+    h.run()
+    _rewrite(h, hold_label_applied=True)
+    assert _load(h) is None
+    _rewrite(h, hold_label_applied=False)
+    assert _load(h) is None
+
+    (tmp_path / "held").mkdir()
+    held = _hold_harness(tmp_path / "held")
+    assert _load(held) is not None
+    for value in (None, "yes", 1):
+        _rewrite(held, hold_label_applied=value)
+        assert _load(held) is None
+
+
+def test_osr38_a_findings_file_at_mode_0644_fails_the_shape_check(h):
+    result = _rc_record(h)
+    path = Path(result["findings_file"])
+    runs = osr.runs_dir(h.root)
+    assert osr._findings_shape_ok(path, HEAD, runs) is True
+    path.chmod(0o644)
+    assert osr._findings_shape_ok(path, HEAD, runs) is False
+    assert _load(h) is None
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("ping @alice now", "ping @‍alice now"),
+        ("[x](http://e)", "[x]‍(http://e)"),
+        ("![i](http://e)", "!‍[i]‍(http://e)"),
+        ("trailing @", "trailing @"),
+        ("at @ space", "at @ space"),
+        ("@-dash", "@‍-dash"),
+    ],
+)
+def test_osr39_sanitize_defangs_mentions_and_link_syntax(text, expected):
+    assert osr.sanitize(text) == expected
+
+
+def test_osr39_the_defang_runs_before_truncation():
+    out = osr.sanitize("@a" * 2000)
+    assert len(out) <= osr.DETAIL_MAX_CHARS
+    assert out.endswith("…")
+
+
+def test_osr40_a_codex_heading_hidden_in_a_fence_holds(h):
+    h.set_tier("HIGH")
+    hidden = f"## {CODEX_HEADING}\n```json\n{json.dumps(CODEX_APPROVE)}\n## {CODEX_HEADING}\n```\n"
+    h.reports("approve", sections=[section("agy", AGY_APPROVE), hidden])
+    result = h.run()
+    assert (result["verdict"], result["reason"]) == ("hold", "review-inconsistent")
+    assert osr._vendor_status("codex", None).token == "vendor-missing:codex"
+
+
+def test_osr41_the_atomic_write_does_not_depend_on_the_global_tempdir(h, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(h.tmp_path / "does-not-exist"))
+    result = h.run()
+    assert (result["verdict"], result["reason"]) == ("approve", "ok")
+    assert h.record_path().exists()
+
+
+def test_osr44_the_temp_name_matches_the_sweep_glob_and_an_aged_one_is_swept(h, monkeypatch):
+    seen = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        seen.append(Path(src).name)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(osr.os, "replace", spy)
+    h.run()
+    assert seen and all(name.startswith(".tmp-") for name in seen)
+    stale = osr.records_dir(h.root) / ".tmp-abandoned.json"
+    stale.write_text("{}")
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    fresh = osr.records_dir(h.root) / ".tmp-fresh.json"
+    fresh.write_text("{}")
+    osr._atomic_write_json(osr.records_dir(h.root) / "x.json", {"a": 1})
+    assert not stale.exists() and fresh.exists()
+
+
+def _git_repo(path: Path):
+    path.mkdir()
+
+    def git(*args):
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_GIT_ENV},
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (path / "f").write_text("0\n")
+    git("add", "f")
+    git("commit", "-q", "-m", "base")
+    return git
+
+
+def test_osr42_pinned_base_is_the_merge_base_or_none(tmp_path):
+    git = _git_repo(tmp_path / "r")
+    root = tmp_path / "r"
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", "feat")
+    (root / "f").write_text("1\n")
+    git("commit", "-q", "-am", "feat")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    (root / "f").write_text("2\n")
+    git("commit", "-q", "-am", "main-moved")
+    tip = git("rev-parse", "HEAD")
+    assert osr.pinned_base(root, tip, head) == base
+    assert osr.pinned_base(root, "nothex", head) is None
+    assert osr.pinned_base(root, tip, "short") is None
+    assert osr.pinned_base(root, "f" * 40, head) is None
+
+
+def test_osr43_a_high_raise_is_never_lowered_by_a_medium_raise(h):
+    _write_raise_file(h, tier="HIGH")
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="MEDIUM")
+    assert osr.read_raise(h.root, slug=SLUG, pr=PR, head=HEAD) == ("HIGH", False)
+    osr.write_raise(h.root, repo=SLUG, pr=PR, head_sha=HEAD, tier="CRITICAL")
+    assert osr.read_raise(h.root, slug=SLUG, pr=PR, head=HEAD) == ("CRITICAL", False)
+
+
+def test_osr45_a_findings_validation_failure_logs_the_exception_type(h, monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise ValueError("secret detail")
+
+    monkeypatch.setattr(osr.merge_authority, "canonicalize_findings_ex", boom)
+    result = _rc_record(h)
+    assert (result["verdict"], result["reason"]) == ("hold", "review-inconsistent")
+    err = capsys.readouterr().err
+    assert "overseer_second_review: findings file failed validation (ValueError); holding\n" in err
+    assert "secret detail" not in err
+
+
+def test_osr45_a_count_mismatch_is_named(monkeypatch):
+    monkeypatch.setattr(osr.merge_authority, "canonicalize_findings_ex", lambda *a, **k: ([], {}))
+    with pytest.raises(osr._FindingsInvalid) as info:
+        osr._validate_entries([{"x": 1}], [], SLUG)
+    assert str(info.value) == "entry-count-mismatch"
+
+
+def test_osr46_the_findings_file_content_is_exact_and_round_trips(h):
+    h.set_tier("HIGH")
+    agy = [
+        _finding(
+            "critical" if i % 3 == 0 else "high",
+            ["a.py", "b.py", f"unchanged{i}.py", "./a.py:12"][i % 4],
+            finding=f"agy {i}",
+            category=f"cat-{i}",
+        )
+        for i in range(26)
+    ]
+    agy.append(dict(agy[1]))  # an exact duplicate collapses into the first entry
+    codex = [
+        _finding("high", "b.py", finding=f"codex {j}", category=f"ccat-{j}") for j in range(16)
+    ]
+    h.reports(
+        "request_changes",
+        over={"unresolved_findings": 43, "blocking_count": 43, "new_blocking_count": 43},
+        sections=lambda vs: [
+            section("agy", _rc("agy", findings=agy)),
+            section("codex", _rc("codex", findings=codex)),
+        ],
+    )
+    result = h.run()
+    assert (result["verdict"], result["status"]) == ("request_changes", "final")
+    data = h.findings(result)
+    assert set(data) == {"findings", "reviewed_head"} and data["reviewed_head"] == HEAD
+    entries = data["findings"]
+    assert len(entries) == osr.SR_ENTRY_CAP
+
+    order = sorted(range(26), key=lambda i: 0 if i % 3 == 0 else 1)
+    expected = [("agy", i, agy[i]) for i in order] + [("codex", j, codex[j]) for j in range(13)]
+    for entry, (vendor, idx, item) in zip(entries, expected):
+        fp = hashlib.sha256(osr.validation_logic.fingerprint(item).encode()).hexdigest()[:8]
+        assert entry["slug"] == f"sr-{vendor}-{fp}"
+        assert entry["class"] == "REVIEW_FINDING"
+        assert entry["path"] == {"a.py": "a.py", "./a.py:12": "a.py", "b.py": "b.py"}.get(
+            item["file"]
+        )
+        sev = item["severity"]
+        base = f"overseer second review ({vendor}): {sev} finding"
+        assert entry["summary"] == base + (
+            " (+1 more with the same file and class)" if (vendor, idx) == ("agy", 1) else ""
+        )
+        assert entry["detail"] == (
+            f"finding: {item['finding']} | why: returns the wrong branch"
+            " | suggestion: invert it | line: 3"
+        )
+    last = entries[-1]
+    assert last == {
+        "class": "REVIEW_FINDING",
+        "slug": "sr-overflow",
+        "summary": "overseer second review: 3 more blocking finding(s) not listed",
+        "detail": "",
+        "path": None,
+    }
+    payload = {"findings": entries}
+    canonical, _ = ma.canonicalize_findings_ex(
+        payload, changed_paths=["a.py", "b.py"], head_check_runs=(), repo_slug=SLUG
+    )
+    assert len(canonical) == len(entries)
+
+
+def test_osr47_a_records_dir_that_is_not_private_is_a_state_write_failure(h):
+    records = osr.records_dir(h.root)
+    records.mkdir(parents=True)
+    records.chmod(0o755)
+    result = h.run()
+    assert (result["verdict"], result["reason"]) == ("pending", "state-write-failed")
+    assert h.n("review") == 0 and h.n("worktree") == 0
+    assert not list(records.glob("*.json"))
+
+
+def test_osr48_a_mixed_request_changes_record_is_present_to_load_record(h):
+    h.set_tier("HIGH")
+    h.reports(
+        "request_changes",
+        over=_RC_OVER,
+        sections=lambda vs: [
+            section("agy", _failed("agy", "timeout")),
+            section("codex", _rc("codex")),
+        ],
+    )
+    result = h.run()
+    assert (result["verdict"], result["status"]) == ("request_changes", "final")
+    rec = h.record("agy+codex")
+    assert rec["vendors_run"] == ["codex"] and rec["vendor_failures"] == ["vendor-timeout:agy"]
+    assert _load(h, "agy+codex") is not None
+    _rewrite(h, "agy+codex", vendors_run=["codex", "agy"])
+    assert _load(h, "agy+codex") is None
+    _rewrite(h, "agy+codex", vendors_run=[])
+    assert _load(h, "agy+codex") is None
+
+
+def test_osr49_a_pending_stuck_hold_carries_the_counter(h):
+    third = _stuck(_stuck_ctx(h), "review-failed")
+    assert (third["verdict"], third["reason"]) == ("hold", "pending-stuck")
+    assert third["pending_count"] >= osr.PENDING_STUCK_AT
+    assert third["pending_last_reason"] == "review-failed"
+    assert set(third) == osr.RESULT_KEYS
+
+
+def test_osr49_a_non_persisted_pending_stuck_hold_also_carries_the_counter(h):
+    h.set_tier("HIGH")
+    h.run()
+    ctx = _stuck_ctx(h, base=None, vendorset=None, tier=None)
+    for _ in range(osr.PENDING_STUCK_AT - 1):
+        assert osr._count_pending_locked(ctx, "fetch-failed") is None
+    # the unknown-tier target collides with the final record, so nothing is persisted
+    full = osr._count_pending_locked(ctx, "fetch-failed")
+    assert full["verdict"] == "hold" and full["reason"] == "pending-stuck"
+    assert full["pending_count"] >= osr.PENDING_STUCK_AT
+    assert full["pending_last_reason"] == "fetch-failed"
+
+
+# -- T-INT: the real run_cmd -----------------------------------------------------
+
+
+def _stub(tmp_path, name, body):
+    path = tmp_path / name
+    _write_exec(path, "#!/bin/sh\n" + body)
+    return path
+
+
+def test_int01_default_run_cmd_passes_cwd_argv_and_closes_stdin(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    out = tmp_path / "obs"
+    stub = _stub(
+        tmp_path,
+        "vendor",
+        f'pwd > {out}\nprintf "%s\\n" "$@" >> {out}\ncat >> {out}\necho "OK" \n',
+    )
+    r, w = os.pipe()
+    os.write(w, b"SENTINEL")
+    os.close(w)
+    saved = os.dup(0)
+    os.dup2(r, 0)
+    try:
+        res = osr._default_run_cmd([str(stub), "--flag", "v"], work, 30, {"PATH": "/usr/bin:/bin"})
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+        os.close(r)
+    assert (res.rc, res.stdout.strip()) == (0, "OK")
+    lines = out.read_text().splitlines()
+    assert lines[0] == str(work.resolve())
+    assert lines[1:3] == ["--flag", "v"]
+    assert "SENTINEL" not in out.read_text()
+
+
+def test_int02_default_run_cmd_env_is_exactly_what_was_passed(tmp_path):
+    stub = _stub(tmp_path, "envdump", "env\n")
+    res = osr._default_run_cmd([str(stub)], tmp_path, 30, {"ONLY": "1", "PATH": "/usr/bin:/bin"})
+    names = {line.split("=", 1)[0] for line in res.stdout.splitlines()}
+    assert "ONLY" in names and "HOME" not in names
+
+
+def test_int03_timeout_and_missing_binary_map_to_124_and_127(tmp_path):
+    slow = _stub(tmp_path, "slow", "sleep 5\n")
+    started = time.time()
+    res = osr._default_run_cmd([str(slow)], tmp_path, 0.3, None)
+    assert (res.rc, res.stderr) == (124, "timeout") and time.time() - started < 4
+    gone = osr._default_run_cmd([str(tmp_path / "nope")], tmp_path, 5, None)
+    assert gone.rc == 127 and gone.stderr
+
+
+def test_int04_the_changed_paths_diff_runs_with_a_scrubbed_git_env_and_timeout(tmp_path):
+    h2 = Harness(tmp_path)
+    h2.reports("request_changes", over=_RC_OVER, sections=lambda vs: [section("agy", _rc())])
+    spied = []
+    real2 = h2._run_cmd
+
+    def spy2(argv, cwd, timeout, env):
+        spied.append((list(argv), cwd, timeout, env))
+        return real2(argv, cwd, timeout, env)
+
+    d2 = h2.deps()
+    osr.run(PR, config=h2.cfg, deps=osr.Deps(d2.get_pull, spy2, d2.now, d2.write_audit))
+    diffs = [c for c in spied if "diff" in c[0]]
+    assert len(diffs) == 1
+    argv, cwd, timeout, env = diffs[0]
+    assert cwd == h2.root and timeout == osr.GIT_TIMEOUT
+    assert env["GIT_CONFIG_GLOBAL"] == "/dev/null" and env["GIT_CONFIG_NOSYSTEM"] == "1"
+    review = [c for c in spied if len(c[0]) > 1 and str(c[0][1]).endswith("run_second_review.sh")]
+    assert review and review[0][1] == h2.root and review[0][2] == osr.REVIEW_TIMEOUT
+
+
+def test_int07_the_classifier_cwd_and_the_cleanup_timeout_are_recorded(tmp_path):
+    h = Harness(tmp_path)
+    spied = []
+    real = h._run_cmd
+
+    def spy(argv, cwd, timeout, env):
+        spied.append((list(argv), cwd, timeout, env))
+        return real(argv, cwd, timeout, env)
+
+    d = h.deps()
+    osr.run(PR, config=h.cfg, deps=osr.Deps(d.get_pull, spy, d.now, d.write_audit))
+    classifier = [c for c in spied if c[0][0] == sys.executable]
+    assert len(classifier) == 1
+    assert classifier[0][1] == h.root and classifier[0][2] == osr.CLASSIFIER_TIMEOUT
+    cleanup = [c for c in spied if "--cleanup" in c[0]]
+    assert len(cleanup) == 1 and cleanup[0][2] == osr.FETCH_TIMEOUT and cleanup[0][1] == h.root
+    fetch = [
+        c
+        for c in spied
+        if len(c[0]) > 1 and str(c[0][1]).endswith("review_worktree.sh") and "--cleanup" not in c[0]
+    ]
+    assert fetch and fetch[0][2] == osr.FETCH_TIMEOUT
+    gits = [c for c in spied if c[0][0] == "git"]
+    assert gits and all(c[2] == osr.GIT_TIMEOUT and c[1] == h.root for c in gits)
+
+
+def test_int06_a_findings_file_is_written_and_read_back_by_the_shape_check(h):
+    result = _rc_record(h)
+    path = Path(result["findings_file"])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert osr._findings_shape_ok(path, HEAD, osr.runs_dir(h.root)) is True
+    assert osr._findings_shape_ok(path, "9" * 40, osr.runs_dir(h.root)) is False
+
+
+def test_osr50_the_findings_writer_is_utf8_whatever_the_locale_codec(tmp_path):
+    """`_serialize_findings` writes ensure_ascii=False, so non-ASCII vendor text reaches the file
+    as-is. The write must name its codec: under an ASCII locale an implicit one would raise
+    (this is the one `_atomic_write_text_28` candidate whose TD 11.5 proof does not hold)."""
+    target = tmp_path / "records" / "findings.json"
+    code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from scripts.automation.lib import overseer_second_review as osr\n"
+        "osr._atomic_write_text(Path(sys.argv[1]), "
+        'json.dumps({"detail": "caf\\u00e9 \\u2014 \\u65e5"}, ensure_ascii=False) + "\\n")\n'
+    )
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-c", code, str(target)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=child_env(
+            {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LC_ALL": "C",
+                "LANG": "C",
+                "PYTHONCOERCECLOCALE": "0",
+                "PYTHONPATH": str(REPO_ROOT),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+        ),
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(target.read_bytes().decode("utf-8")) == {"detail": "café — 日"}
+
+
+def test_int05_the_changed_paths_come_from_a_real_git_diff_over_the_range(tmp_path):
+    git = _git_repo(tmp_path / "r")
+    root = tmp_path / "r"
+    base = git("rev-parse", "HEAD")
+    (root / "a b.py").write_text("x\n")
+    (root / "f").write_text("changed\n")
+    (root / "café.py").write_text("y\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "two")
+    head = git("rev-parse", "HEAD")
+    cfg = osr.Config(repo_root=root, tools_root=REPO_ROOT, repo_slug=SLUG)
+    deps = osr.Deps(
+        get_pull=lambda *a: {},
+        run_cmd=osr._default_run_cmd,
+        now=lambda: datetime(2026, 11, 18, tzinfo=timezone.utc),
+        write_audit=lambda event, path: None,
+    )
+    ctx = osr._Ctx(config=cfg, deps=deps, pr=PR, slug=SLUG, head=head)
+    ctx.base = base
+    assert sorted(osr._changed_paths(ctx)) == ["a b.py", "café.py", "f"]
+    ctx.base = "0" * 40
+    assert osr._changed_paths(ctx) is None
