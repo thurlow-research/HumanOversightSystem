@@ -909,6 +909,22 @@ class CronEnv:
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + ident + ["commit", "-q", "-m", "stray"], check=True)
 
+    def git_init_synced_main(self) -> None:
+        """A git repo on `main`, clean, level with a real origin/main (the overseer's trusted state)."""
+        origin = self.repo.parent / "origin.git"
+        git = ["git", "-C", str(self.repo)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "base"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+
     def git_init_squash_merged_feature_branch(self) -> None:
         """Make the fake repo a git repo whose HEAD sits on a feature branch that
         was squash-merged into origin/main and had its remote branch deleted —
@@ -6878,3 +6894,552 @@ class TestCycleModel:
         recs = cron.audit_records("cycle-model-unresolved")
         assert recs and recs[-1]["reason"]
         assert not [x for x in cron.audit_records("cycle-model") if x["event"] == "cycle-model"]
+
+
+# ───────────── Overseer second-review phase (#2357 S1b, TD-2357-S1b section 4) ─────────────
+_OSR_FAKE_RUNNER = """\
+import json, os, sys, time
+from pathlib import Path
+
+CTL = Path(__file__).resolve().parents[3] / ".fake_osr"
+argv = sys.argv[1:]
+with open(CTL / "calls.log", "a") as fh:
+    fh.write(" ".join(argv) + "\\n")
+if argv[0] == "mark-hold-label":
+    rc = CTL / "mark.rc"
+    sys.exit(int(rc.read_text()) if rc.exists() else 0)
+pr = argv[argv.index("--pr") + 1]
+lock = Path(os.environ["HOS_STATE_DIR"]) / "locks" / "hos-cron-overseer-hos.lock"
+with open(CTL / "lock_mtimes.log", "a") as fh:
+    fh.write("%s %d\\n" % (pr, lock.stat().st_mtime_ns))
+spec = json.loads((CTL / ("pr%s.json" % pr)).read_text())
+cache_only = "--cache-only" in argv
+if not cache_only and spec.get("sleep"):
+    time.sleep(spec["sleep"])
+if "stdout" in spec:
+    sys.stdout.write(spec["stdout"])
+else:
+    print(json.dumps(spec["cache_only_result"] if cache_only and "cache_only_result" in spec else spec["result"]))
+sys.exit(spec.get("rc", 0))
+"""
+
+_OSR_EDIT_ISSUE_STUB = """#!/usr/bin/env bash
+echo "$*" >> "$(dirname "$0")/../.fake_osr/edit.log"
+rc="$(dirname "$0")/../.fake_osr/edit.rc"
+[[ -f "$rc" ]] && exit "$(cat "$rc")"
+exit 0
+"""
+
+_OSR_TIMEOUT_SHIM = """#!/usr/bin/env bash
+echo "$*" >> "{log}"
+if [[ "$1" == "--kill-after=30" ]]; then
+  shift 2
+  exec /usr/bin/timeout --kill-after=1 1 "$@"
+fi
+exec /usr/bin/timeout "$@"
+"""
+
+_OSR_HELPER = HOS_CRON.parent / "lib" / "osr_phase.py"
+_OSR_H40 = "1" * 40
+_OSR_B40 = "3" * 40
+_OSR_REASON = {"approve": "ok", "request_changes": "findings", "not-required": "tier-below-medium"}
+
+
+def _osr_result(repo, pr, verdict="approve", **over):
+    recs = f"{repo}/.claudetmp/overseer-authority/second-review/records"
+    result = {
+        "schema": 1,
+        "check": "second-review",
+        "pr": pr,
+        "head_sha": _OSR_H40,
+        "base_sha": _OSR_B40,
+        "range": f"{_OSR_B40}..{_OSR_H40}",
+        "tier": "MEDIUM",
+        "vendors": "agy",
+        "verdict": verdict,
+        "status": "final",
+        "reason": _OSR_REASON.get(verdict, "ok"),
+        "reused": False,
+        "findings_file": None,
+        "record": f"{recs}/pr{pr}-{_OSR_H40[:12]}-agy.json",
+        "hold_label_applied": None,
+        "pending_count": None,
+        "pending_last_reason": None,
+    }
+    if verdict == "hold":
+        result.update(status="hold", reason="binary-unreviewed", hold_label_applied=False)
+    if verdict == "pending":
+        result.update(
+            status=None,
+            reason="budget",
+            record=None,
+            tier=None,
+            vendors=None,
+            base_sha=None,
+            range=None,
+        )
+    result.update(over)
+    return result
+
+
+def _osr_line(
+    pr,
+    *,
+    head=_OSR_H40,
+    base=_OSR_B40,
+    tier="MEDIUM",
+    vendors="agy",
+    verdict="approve",
+    reason="ok",
+    findings="-",
+    reused="false",
+    persisted="true",
+    count="-",
+    last="-",
+    label="-",
+):
+    return (
+        f"OSR pr=#{pr} head={head} base={base} tier={tier} vendors={vendors} verdict={verdict} "
+        f"reason={reason} findings_file={findings} reused={reused} persisted={persisted} "
+        f"count={count} last_reason={last} label={label}"
+    )
+
+
+class TestOverseerSecondReviewPhase:
+    """The cron pre-model phase, end to end through the real launcher and the real helper.
+
+    The runner is a fake module in the fake repo (scripted per PR from `.fake_osr/`) so what is
+    under test is the launcher: process control, labels, strikes, budget and the prompt block."""
+
+    PRS = "101 102"
+
+    @pytest.fixture
+    def osr(self, cron):
+        cron.install_cycle_log()
+        mod = cron.repo / "scripts" / "automation" / "lib" / "overseer_second_review.py"
+        mod.parent.mkdir(parents=True, exist_ok=True)
+        mod.write_text(_OSR_FAKE_RUNNER)
+        _write_exec(cron.repo / "bootstrap" / "edit_issue.sh", _OSR_EDIT_ISSUE_STUB)
+        cron.git_init_synced_main()
+        # #2357 bounce of PR #2456: the cycle's audit-sync commit ran with no git identity on CI
+        # (empty GECOS), exit 128. Forbid guessing one so this fails locally too, then give the
+        # repo (and its linked audit-sync worktree) an explicit identity.
+        gitconfig = cron.home / ".gitconfig"
+        with gitconfig.open("a") as fh:
+            fh.write("[user]\n\tuseConfigOnly = true\n")
+        for key, val in (("user.name", "t"), ("user.email", "t@t"), ("commit.gpgsign", "false")):
+            subprocess.run(["git", "-C", str(cron.repo), "config", key, val], check=True)
+        self.ctl = cron.repo / ".fake_osr"
+        self.ctl.mkdir()
+        self.stdin = cron.capture_claude_stdin()
+        return cron
+
+    def script(self, pr, result=None, **spec):
+        if result is not None:
+            spec["result"] = result
+        (self.ctl / f"pr{pr}.json").write_text(json.dumps(spec))
+
+    def approve_all(self, cron, prs=None):
+        for pr in (prs or self.PRS).split():
+            self.script(pr, _osr_result(cron.repo, int(pr)))
+
+    def cycle(self, cron, *, prs=None, labels="", launcher=None, **env):
+        overrides = {"HOS_TEST_OPEN_PR_NUMS": prs or self.PRS, **env}
+        if labels:
+            overrides["HOS_TEST_PR_LABELS"] = labels
+        return cron.run(role="overseer", env_overrides=overrides, launcher=launcher)
+
+    def prompt(self):
+        return self.stdin.read_text()
+
+    def block(self):
+        text = self.prompt()
+        header = "[hos-cron overseer second review (#2357)]"
+        assert header in text, text
+        body = text[text.index(header) :].split("\n---\n", 1)[0]
+        return body.splitlines()
+
+    def calls(self):
+        path = self.ctl / "calls.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def edits(self):
+        path = self.ctl / "edit.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def strike(self, cron, pr):
+        path = cron.state / "osr-phase" / "hos" / "strikes" / f"pr{pr}.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    # -- T-CR-01 / 02 / 03 ---------------------------------------------------------------
+    def test_t_cr_01_the_block_follows_the_prefilter_and_carries_one_line_per_pr(self, osr):
+        self.approve_all(osr)
+        r = self.cycle(osr)
+        assert r.returncode == 0, r.stdout + r.stderr
+        text = self.prompt()
+        pre = text.index("[hos-cron pre-filter]")
+        sep = text.index("\n---\n", pre) + len("\n---\n")
+        assert text[sep:].startswith("[hos-cron overseer second review (#2357)]\n")
+        assert self.block() == [
+            "[hos-cron overseer second review (#2357)]",
+            _osr_line(101),
+            _osr_line(102),
+        ]
+        assert self.calls() == ["run --pr 101", "run --pr 102"]
+        assert self.edits() == []
+        assert text.index("\n---\n", sep) < text.index("## overseer cron prompt")
+
+    def test_t_cr_02_the_worker_role_runs_no_phase(self, osr):
+        r = osr.run(role="worker", env_overrides={"HOS_TEST_OPEN_PR_NUMS": self.PRS})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "hos-cron overseer second review" not in self.prompt()
+        assert self.calls() == []
+
+    def test_t_cr_03_an_absent_module_skips_the_phase_with_a_reason(self, osr):
+        (osr.repo / "scripts" / "automation" / "lib" / "overseer_second_review.py").unlink()
+        r = self.cycle(osr)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "osr phase skipped" in r.stderr and "overseer_second_review.py is absent" in r.stderr
+        assert "hos-cron overseer second review" not in self.prompt()
+        assert osr.claude_ran()
+
+    # -- T-CR-04: no timeout binary -------------------------------------------------------
+    def test_t_cr_04_without_timeout_the_runner_is_never_called(self, osr, tmp_path):
+        pathdir = tmp_path / "notimeout"
+        pathdir.mkdir()
+        for entry in Path("/usr/bin").iterdir():
+            if entry.name not in ("timeout", "gtimeout"):
+                (pathdir / entry.name).symlink_to(entry)
+        launcher = osr.copy_launcher(with_lib=True, path_pin=str(pathdir))
+        shutil.copy(_OSR_HELPER, launcher.parent / "lib" / "osr_phase.py")
+        self.approve_all(osr)
+        r = self.cycle(osr, launcher=launcher)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.calls() == []
+        assert self.block()[1:] == [
+            _osr_line(
+                pr,
+                head="-",
+                base="-",
+                tier="-",
+                vendors="-",
+                verdict="pending",
+                reason="runner-unbounded",
+                persisted="-",
+                count="1",
+                last="runner-unbounded",
+            )
+            for pr in (101, 102)
+        ]
+        assert osr.claude_ran()
+
+    # -- T-CR-05 / 06 ---------------------------------------------------------------------
+    def test_t_cr_05_three_failing_cycles_hold_and_label_the_pr(self, osr):
+        self.script(101, rc=1, result=_osr_result(osr.repo, 101))
+        for cycle in (1, 2):
+            r = self.cycle(osr, prs="101")
+            assert r.returncode == 0, r.stdout + r.stderr
+            assert self.block()[1] == _osr_line(
+                101,
+                head="-",
+                base="-",
+                tier="-",
+                vendors="-",
+                verdict="pending",
+                reason="runner-failed",
+                persisted="-",
+                count=str(cycle),
+                last="runner-failed",
+            )
+            assert self.edits() == []
+        r = self.cycle(osr, prs="101")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.block()[1] == _osr_line(
+            101,
+            head="-",
+            base="-",
+            tier="-",
+            vendors="-",
+            verdict="hold",
+            reason="pending-stuck",
+            persisted="false",
+            count="3",
+            last="runner-failed",
+            label="applied",
+        )
+        assert self.edits() == ["--number 101 --add-label needs-human --app overseer"]
+        assert self.strike(osr, 101)["count"] == 3
+
+    def test_t_cr_06_a_runner_past_its_limit_is_killed_and_strikes(self, osr):
+        shim_log = osr.home / "timeout.log"
+        _write_exec(osr.bindir / "timeout", _OSR_TIMEOUT_SHIM.format(log=shim_log))
+        self.script(101, sleep=30, result=_osr_result(osr.repo, 101))
+        r = self.cycle(osr, prs="101")
+        assert r.returncode == 0, r.stdout + r.stderr
+        runner = [ln for ln in shim_log.read_text().splitlines() if "overseer_second_review" in ln]
+        assert runner == [
+            "--kill-after=30 3000 python3 -m scripts.automation.lib.overseer_second_review "
+            "run --pr 101"
+        ]
+        assert self.block()[1] == _osr_line(
+            101,
+            head="-",
+            base="-",
+            tier="-",
+            vendors="-",
+            verdict="pending",
+            reason="runner-failed",
+            persisted="-",
+            count="1",
+            last="runner-failed",
+        )
+        assert "exited 124" in r.stderr
+
+    # -- T-CR-07 --------------------------------------------------------------------------
+    def test_t_cr_07_a_held_pr_is_skipped_and_never_run(self, osr):
+        self.approve_all(osr)
+        r = self.cycle(osr, labels="needs-human")
+        assert r.returncode == 0, r.stdout + r.stderr
+        held = _osr_line(
+            101,
+            head="-",
+            base="-",
+            tier="-",
+            vendors="-",
+            verdict="skipped-held",
+            reason="held-label",
+            persisted="-",
+        )
+        assert self.block()[1:] == [held, held.replace("#101", "#102")]
+        assert self.calls() == [] and self.edits() == []
+
+    # -- T-CR-08 / 09 / 16 ----------------------------------------------------------------
+    def test_t_cr_08_a_failed_label_is_rendered_and_audited(self, osr):
+        self.script(101, _osr_result(osr.repo, 101, "hold"))
+        (self.ctl / "edit.rc").write_text("1")
+        r = self.cycle(osr, prs="101")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.block()[1] == _osr_line(
+            101,
+            verdict="hold",
+            reason="binary-unreviewed",
+            persisted="true",
+            label="failed",
+        )
+        assert "could not apply needs-human to PR #101" in r.stderr
+        assert osr.audit_records("cycle-osr-hold-label-failed")
+        assert not [c for c in self.calls() if c.startswith("mark-hold-label")]
+
+    def test_t_cr_09_mark_hold_label_failure_warns_only_for_a_persisted_hold(self, osr):
+        (self.ctl / "mark.rc").write_text("3")
+        self.script(101, _osr_result(osr.repo, 101, "hold"))
+        r = self.cycle(osr, prs="101")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "osr mark-hold-label for PR #101 exited 3" in r.stderr
+        assert osr.audit_records("cycle-osr-mark-hold-failed")
+        assert self.block()[1].endswith("label=applied")
+
+    def test_t_cr_09b_a_non_persisted_hold_never_calls_mark_hold_label(self, osr):
+        (self.ctl / "mark.rc").write_text("3")
+        self.script(101, rc=1, result=_osr_result(osr.repo, 101))
+        for _ in range(3):
+            r = self.cycle(osr, prs="101")
+            assert r.returncode == 0, r.stdout + r.stderr
+        assert "mark-hold-label" not in r.stderr
+        assert [c for c in self.calls() if c.startswith("mark-hold-label")] == []
+
+    def test_t_cr_16_mark_hold_label_gets_exactly_pr_head_and_applied_true(self, osr):
+        self.script(101, _osr_result(osr.repo, 101, "hold"))
+        r = self.cycle(osr, prs="101")
+        assert r.returncode == 0, r.stdout + r.stderr
+        marks = [c for c in self.calls() if c.startswith("mark-hold-label")]
+        assert marks == [f"mark-hold-label --pr 101 --head {_OSR_H40} --applied true"]
+
+    # -- T-CR-10 / 15: a broken helper ----------------------------------------------------
+    def broken_helper(self, osr, command):
+        """A launcher copy whose helper fails or lies on `command` and is otherwise the real one."""
+        launcher = osr.copy_launcher(with_lib=True)
+        wrapper = (
+            "import runpy, sys\n"
+            f"REAL = {str(_OSR_HELPER)!r}\n"
+            f"if sys.argv[1] == {command!r}:\n"
+            + (
+                "    print('garbage')\n    sys.exit(0)\n"
+                if command == "render"
+                else "    sys.exit(1)\n"
+            )
+            + "sys.argv[0] = REAL\n"
+            "runpy.run_path(REAL, run_name='__main__')\n"
+        )
+        (launcher.parent / "lib" / "osr_phase.py").write_text(wrapper)
+        return launcher
+
+    def test_t_cr_10_a_bad_rendered_line_replaces_the_block_and_labels_every_pr(self, osr):
+        self.approve_all(osr)
+        r = self.cycle(osr, launcher=self.broken_helper(osr, "render"))
+        assert r.returncode == 0, r.stdout + r.stderr
+        phase_error = [
+            _osr_line(
+                pr,
+                head="-",
+                base="-",
+                tier="-",
+                vendors="-",
+                verdict="pending",
+                reason="phase-error",
+                persisted="-",
+            )
+            for pr in (101, 102)
+        ]
+        assert self.block()[1:] == phase_error
+        assert sorted(self.edits()) == [
+            "--number 101 --add-label needs-human --app overseer",
+            "--number 102 --add-label needs-human --app overseer",
+        ]
+        assert osr.audit_records("cycle-osr-render-failed")
+        assert osr.claude_ran()
+
+    def test_t_cr_15_an_aborting_helper_never_stops_the_cycle_and_the_third_abort_labels(self, osr):
+        self.approve_all(osr)
+        launcher = self.broken_helper(osr, "order")
+        line_re = re.compile(
+            r"^OSR pr=#[1-9][0-9]{0,6} head=- base=- tier=- vendors=- verdict=pending "
+            r"reason=phase-error findings_file=- reused=false persisted=- count=- "
+            r"last_reason=- label=-$"
+        )
+        for cycle in (1, 2, 3):
+            r = self.cycle(osr, launcher=launcher)
+            assert r.returncode == 0, r.stdout + r.stderr
+            assert osr.claude_ran(), "the model must still run after a phase abort"
+            osr.claude_log.unlink()
+            block = self.block()
+            assert block[0] == "[hos-cron overseer second review (#2357)]"
+            assert len(block) == 3 and all(line_re.match(ln) for ln in block[1:])
+            assert "osr phase aborted" in r.stderr
+            if cycle < 3:
+                assert self.edits() == []
+        assert sorted(self.edits()) == [
+            "--number 101 --add-label needs-human --app overseer",
+            "--number 102 --add-label needs-human --app overseer",
+        ]
+        assert (osr.state / "osr-phase" / "hos" / "phase-aborts").read_text().strip() == "3"
+        # Same-second cycles write identical records to one file, so count the event, not cycles.
+        assert [r["rc"] for r in osr.audit_records("cycle-osr-phase-error")][:1] == [1]
+        assert self.calls() == []
+
+    # -- T-CR-11 / 13 / 17 ----------------------------------------------------------------
+    def budget_world(self, osr):
+        with (osr.home / ".config" / "hos" / "projects.conf").open("a") as fh:
+            fh.write("hos_overseer_sr_budget=600\n")
+        for pr in (101, 102):
+            self.script(
+                pr,
+                sleep=2,
+                result=_osr_result(osr.repo, pr),
+                cache_only_result=_osr_result(osr.repo, pr, "pending"),
+            )
+
+    def test_t_cr_11_17_budget_spent_after_the_first_review_defers_the_rest_to_the_next_cycle(
+        self, osr
+    ):
+        self.budget_world(osr)
+        env = {"SECOND_REVIEW_VENDOR_TIMEOUT": "100"}
+        r = self.cycle(osr, **env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.calls() == ["run --pr 101", "run --pr 102 --cache-only"]
+        assert self.block()[1:] == [
+            _osr_line(101),
+            _osr_line(
+                102,
+                head=_OSR_H40,
+                base="-",
+                tier="-",
+                vendors="-",
+                verdict="pending",
+                reason="budget",
+                persisted="-",
+            ),
+        ]
+        deferred = json.loads((osr.state / "osr-phase" / "hos" / "deferred.json").read_text())
+        assert deferred["prs"] == [102]
+        # Next cycle: the deferred PR goes first and is the one reviewed uncached; the other, now
+        # served from its cache, renders its approve in the same cycle (AR6).
+        self.script(
+            101,
+            result=_osr_result(osr.repo, 101),
+            cache_only_result=_osr_result(osr.repo, 101, reused=True),
+            sleep=2,
+        )
+        (self.ctl / "calls.log").unlink()
+        r = self.cycle(osr, **env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.calls() == ["run --pr 102", "run --pr 101 --cache-only"]
+        assert self.block()[1:] == [
+            _osr_line(101, reused="true"),
+            _osr_line(102),
+        ]
+
+    def test_t_cr_13_the_lock_is_touched_before_each_runner_call(self, osr):
+        self.approve_all(osr)
+        for pr in (101, 102):
+            self.script(pr, sleep=2, result=_osr_result(osr.repo, pr))
+        r = self.cycle(osr)
+        assert r.returncode == 0, r.stdout + r.stderr
+        seen = [
+            int(ln.split()[1]) for ln in (self.ctl / "lock_mtimes.log").read_text().splitlines()
+        ]
+        assert len(seen) == 2 and seen[1] - seen[0] >= 1_500_000_000
+
+    # -- T-CR-12 / 14 ---------------------------------------------------------------------
+    def test_t_cr_12_an_untrusted_checkout_runs_no_review_and_strikes(self, osr):
+        self.approve_all(osr)
+        validate = osr.repo / "bootstrap" / "validate_setup.sh"
+        validate.write_text(validate.read_text() + "# local edit\n")
+        r = self.cycle(osr)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.calls() == []
+        assert self.block()[1:] == [
+            _osr_line(
+                pr,
+                head="-",
+                base="-",
+                tier="-",
+                vendors="-",
+                verdict="pending",
+                reason="untrusted-checkout",
+                persisted="-",
+                count="1",
+                last="untrusted-checkout",
+            )
+            for pr in (101, 102)
+        ]
+        assert "not a clean main at origin/main" in r.stderr
+        assert osr.audit_records("cycle-osr-untrusted-checkout")
+
+    def test_t_cr_14_the_per_pr_limit_is_clamped_to_the_lock_ceiling(self, osr):
+        shim_log = osr.home / "timeout.log"
+        _write_exec(osr.bindir / "timeout", _OSR_TIMEOUT_SHIM.format(log=shim_log))
+        self.script(101, result=_osr_result(osr.repo, 101))
+        r = self.cycle(osr, prs="101", SECOND_REVIEW_VENDOR_TIMEOUT="1500")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "clamped to 3300s by the lock ceiling" in r.stderr
+        runner = [ln for ln in shim_log.read_text().splitlines() if "overseer_second_review" in ln]
+        assert runner and runner[0].startswith("--kill-after=30 3300 python3 -m ")
+
+    def test_t_cr_14b_an_unusable_vendor_timeout_is_a_config_error_hold(self, osr):
+        self.approve_all(osr)
+        r = self.cycle(osr, prs="101", SECOND_REVIEW_VENDOR_TIMEOUT="abc")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.calls() == []
+        assert self.block()[1] == _osr_line(
+            101,
+            head="-",
+            base="-",
+            tier="-",
+            vendors="-",
+            verdict="hold",
+            reason="config-error",
+            persisted="false",
+            label="applied",
+        )
+        assert self.edits() == ["--number 101 --add-label needs-human --app overseer"]

@@ -65,8 +65,37 @@ VENDORS = ("agy", "codex")
 VENDORSETS = ("none", "agy", "agy+codex")
 MAX_PR_NUMBER = 9_999_999
 COUNTER_LOCK_TIMEOUT_SECONDS = 10.0
+CHECK_MARKER_PREFIX = "<!-- hos-overseer-check"
+FINAL_REASON_FOR_VERDICT = {
+    "approve": "ok",
+    "request_changes": "findings",
+    "not-required": "tier-below-medium",
+}
+# The closed key set of every result line (TD-2357-S1a 5.8, plus the S1b pending-counter keys).
+RESULT_KEYS = frozenset(
+    {
+        "check",
+        "schema",
+        "pr",
+        "head_sha",
+        "base_sha",
+        "range",
+        "tier",
+        "vendors",
+        "verdict",
+        "status",
+        "reason",
+        "reused",
+        "findings_file",
+        "record",
+        "hold_label_applied",
+        "pending_count",
+        "pending_last_reason",
+    }
+)
 
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
+_CREATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _REASON_RE = re.compile(r"^[a-z0-9:-]{1,64}$")
 _INT_FIELD_RE = re.compile(r"^[0-9]{1,7}$")
 _HEADER_LINE_RE = re.compile(r"^([a-z_]+): (.*)$")
@@ -235,9 +264,30 @@ def _sweep_stale_tmp(directory: Path) -> None:
         pass
 
 
+def _private_dir_ok(path: Path) -> bool:
+    """A real directory (not a symlink) owned by this uid with no group or other access."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(st.st_mode)
+        and not stat.S_ISLNK(st.st_mode)
+        and st.st_uid == os.geteuid()
+        and st.st_mode & 0o077 == 0
+    )
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """Create `path` if needed and refuse to write into one that is not private (AR10)."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not _private_dir_ok(path):
+        raise OSError(f"{path.name} directory is not private")
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     parent = path.parent
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ensure_private_dir(parent)
     _sweep_stale_tmp(parent)
     fd, tmp = tempfile.mkstemp(dir=parent, prefix=".tmp-", suffix=".json")
     try:
@@ -264,10 +314,11 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
 _ABSENT = object()
 
 
-def _read_json_dict(path: Path, max_bytes: int) -> Any:
+def _read_json_dict(path: Path, max_bytes: int, *, private: bool = False) -> Any:
     """The parsed dict, `_ABSENT` when the file does not exist, else None (invalid).
 
-    Refuses symlinks, non-regular files and anything over `max_bytes`."""
+    Refuses symlinks, non-regular files and anything over `max_bytes`. With `private`, also
+    refuses a file this uid does not own or that grants group or other access (TD 7.1)."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -277,6 +328,8 @@ def _read_json_dict(path: Path, max_bytes: int) -> Any:
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            return None
+        if private and (st.st_uid != os.geteuid() or st.st_mode & 0o077):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
             data = fh.read(max_bytes + 1)
@@ -329,8 +382,10 @@ def _vendorset_of(vendors: Sequence[str]) -> str:
 # --------------------------------------------------------------------------- #
 # Reading records                                                             #
 # --------------------------------------------------------------------------- #
-def _findings_shape_ok(path: Path, head: str) -> bool:
-    data = _read_json_dict(path, merge_authority.FINDINGS_FILE_MAX_BYTES)
+def _findings_shape_ok(path: Path, head: str, runs: Path) -> bool:
+    if not (_private_dir_ok(runs) and _private_dir_ok(path.parent)):
+        return False
+    data = _read_json_dict(path, merge_authority.FINDINGS_FILE_MAX_BYTES, private=True)
     if data is None or data is _ABSENT:
         return False
     return (
@@ -338,6 +393,49 @@ def _findings_shape_ok(path: Path, head: str) -> bool:
         and data["reviewed_head"] == head
         and isinstance(data["findings"], list)
         and len(data["findings"]) > 0
+    )
+
+
+def _created_at_ok(value: Any) -> bool:
+    if not (isinstance(value, str) and _CREATED_AT_RE.match(value)):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _record_consistent(rec: dict, vendorset: str) -> bool:
+    """The self-consistency rules of TD-2357-S1b 7.2 (the schema and key checks come first)."""
+    status, verdict, reason, tier = (rec.get(k) for k in ("status", "verdict", "reason", "tier"))
+    if not _created_at_ok(rec.get("created_at")):
+        return False
+    if tier is None:
+        if not (status == "hold" and reason == "pending-stuck"):
+            return False
+    elif tier not in TIERS or rec.get("vendors_required") != vendors_list(required_vendorset(tier)):
+        return False
+    hold_label = rec.get("hold_label_applied")
+    if status == "hold":
+        return type(hold_label) is bool
+    if (
+        hold_label is not None
+        or not isinstance(verdict, str)
+        or reason != FINAL_REASON_FOR_VERDICT.get(verdict)
+    ):
+        return False
+    required, ran = rec["vendors_required"], rec.get("vendors_run")
+    if verdict == "not-required":
+        return ran == []
+    if verdict == "approve":
+        return ran == required
+    # A mixed result omits the vendor that failed (ADR A2), so only a subset is required.
+    return (
+        isinstance(ran, list)
+        and len(ran) > 0
+        and all(isinstance(v, str) for v in ran)
+        and [v for v in required if v in ran] == ran
     )
 
 
@@ -351,7 +449,11 @@ def load_record(
     vendorset: str,
 ) -> Optional[dict]:
     """A valid record for the key, or None meaning "treat as absent"."""
-    rec = _read_json_dict(_record_path(repo_root, pr, head_sha, vendorset), RECORD_MAX_BYTES)
+    if not _private_dir_ok(records_dir(repo_root)):
+        return None
+    rec = _read_json_dict(
+        _record_path(repo_root, pr, head_sha, vendorset), RECORD_MAX_BYTES, private=True
+    )
     if rec is None or rec is _ABSENT:
         return None
     if not (
@@ -392,12 +494,14 @@ def load_record(
             runs = runs_dir(repo_root)
             if not candidate.is_absolute() or os.path.normpath(candidate) != str(candidate):
                 return None
-            if runs not in candidate.parents or not _findings_shape_ok(candidate, head_sha):
+            if runs not in candidate.parents or not _findings_shape_ok(candidate, head_sha, runs):
                 return None
     elif status == "hold":
         if verdict != "hold" or rec.get("reason") not in HOLD_REASONS:
             return None
     else:
+        return None
+    if not _record_consistent(rec, vendorset):
         return None
     return rec
 
@@ -463,7 +567,7 @@ def write_raise(repo_root: Path, *, repo: str, pr: int, head_sha: str, tier: str
 # --------------------------------------------------------------------------- #
 def read_raise(repo_root: Path, *, slug: str, pr: int, head: str) -> tuple[Optional[str], bool]:
     """The only reader of the raise file: (tier, False) valid, (None, True) invalid, (None, False) absent."""
-    raw = _read_json_dict(_raise_path(repo_root, pr, head), RECORD_MAX_BYTES)
+    raw = _read_json_dict(_raise_path(repo_root, pr, head), RECORD_MAX_BYTES, private=True)
     if raw is _ABSENT:
         return None, False
     if _raise_valid(raw, slug, pr, head):
@@ -555,6 +659,9 @@ def sanitize(text: Any) -> str:
         if replaced == cleaned:
             break
         cleaned = replaced
+    # GitHub renders these in the bounce comment: defang mentions and link/image syntax.
+    cleaned = re.sub(r"@(?=[A-Za-z0-9_-])", "@\u200d", cleaned)
+    cleaned = cleaned.replace("](", "]\u200d(").replace("![", "!\u200d[")
     if len(cleaned) > DETAIL_MAX_CHARS:
         cleaned = cleaned[: DETAIL_MAX_CHARS - 1] + "…"
     return cleaned
@@ -977,6 +1084,8 @@ class _Ctx:
     tier_sources: Optional[dict] = None
     vendorset: Optional[str] = None
     worktree_created: bool = False
+    pending_count: Optional[int] = None
+    pending_last_reason: Optional[str] = None
 
     @property
     def root(self) -> Path:
@@ -1009,8 +1118,12 @@ def _result(ctx: _Ctx, **over: Any) -> dict:
         "findings_file": None,
         "record": None,
         "hold_label_applied": None,
+        "pending_count": ctx.pending_count,
+        "pending_last_reason": ctx.pending_last_reason,
     }
     result.update(over)
+    if set(result) != RESULT_KEYS:
+        raise RuntimeError("result keys drifted from RESULT_KEYS")
     return result
 
 
@@ -1030,6 +1143,8 @@ def _result_from_record(ctx: _Ctx, rec: dict, *, reused: bool) -> dict:
         findings_file=rec.get("findings_file"),
         record=str(_record_path(ctx.root, ctx.pr, rec["head_sha"], vendorset)),
         hold_label_applied=rec.get("hold_label_applied"),
+        pending_count=None if reused else ctx.pending_count,
+        pending_last_reason=None if reused else ctx.pending_last_reason,
     )
 
 
@@ -1166,6 +1281,7 @@ def _count_pending_locked(ctx: _Ctx, reason: str) -> Optional[dict]:
             "updated_at": ctx.timestamp(),
         },
     )
+    ctx.pending_count, ctx.pending_last_reason = count, reason
     if count < PENDING_STUCK_AT:
         return None
     vendorset = ctx.vendorset
@@ -1348,14 +1464,18 @@ def _review_and_record(ctx: _Ctx, cache_only: bool) -> dict:
     if cache_only:
         return _result(ctx, verdict="pending", reason="budget")
 
+    # Refuse before any fetch or vendor call: a directory that readers will not trust would
+    # make every later cycle re-review at full vendor cost (AR10).
+    _ensure_private_dir(records_dir(ctx.root))
+    runs = runs_dir(ctx.root)
+    _ensure_private_dir(runs)
+
     if not ctx.worktree_created:
         failure = _fetch_head(ctx)
         if failure is not None:
             return _pend(ctx, failure, lock_held=True)
 
     now = ctx.deps.now()
-    runs = runs_dir(ctx.root)
-    runs.mkdir(mode=0o700, parents=True, exist_ok=True)
     run_dir = runs / (
         f"pr{ctx.pr}-{ctx.head[:12]}-{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
     )
@@ -1508,6 +1628,205 @@ def run(
     finally:
         if ctx.worktree_created:
             _cleanup_worktree(ctx)
+
+
+# --------------------------------------------------------------------------- #
+# The approval gate (G1c) and the check marker                                #
+# --------------------------------------------------------------------------- #
+class GateResult(NamedTuple):
+    ok: bool
+    reason: Optional[str]
+    diag: dict
+    record: Optional[dict]
+    raise_written: bool
+
+
+_DIAG_KEYS = (
+    "record_path",
+    "status",
+    "verdict",
+    "reason",
+    "tier",
+    "tier_sources",
+    "required_tier",
+    "required_vendors",
+    "vendors_run",
+    "unresolved_findings",
+    "files_reviewed",
+    "binary_files",
+    "vendor_failures",
+    "outfile",
+    "findings_file",
+    "created_at",
+    "base_sha",
+    "raise_tier",
+    "raise_invalid",
+    "raise_written",
+    "raise_error",
+)
+_DIAG_RECORD_FIELDS = (
+    "status",
+    "verdict",
+    "reason",
+    "tier",
+    "vendors_run",
+    "unresolved_findings",
+    "files_reviewed",
+    "binary_files",
+    "vendor_failures",
+    "outfile",
+    "findings_file",
+    "created_at",
+    "base_sha",
+)
+
+
+def pinned_base(repo_root: Path, base_tip: str, head: str) -> Optional[str]:
+    """`git merge-base <base_tip> <head>`, or None when an input is not a SHA or git fails."""
+    if not (isinstance(base_tip, str) and _HEX40.match(base_tip)):
+        return None
+    if not (isinstance(head, str) and _HEX40.match(head)):
+        return None
+    res = _default_run_cmd(
+        ["git", "-C", str(repo_root), "merge-base", base_tip, head], repo_root, GIT_TIMEOUT, None
+    )
+    base = res.stdout.strip()
+    return base if res.rc == 0 and _HEX40.match(base) else None
+
+
+def _clean_diag_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize(value)
+    if isinstance(value, list):
+        return [_clean_diag_value(item) for item in value]
+    return value
+
+
+def approval_gate(
+    repo_root: Path,
+    *,
+    repo: str,
+    pr: int,
+    head_sha: str,
+    base_tip: str,
+    argv_tier: str,
+    lock_timeout: float = 10.0,
+) -> GateResult:
+    """G1c (TD-2357-S1b 8.2): may the overseer approve this head? Reads only; the one write
+    is the tier raise, and only when the caller's own tier outranks every stored input."""
+    diag: dict = {key: None for key in _DIAG_KEYS}
+    diag["raise_written"] = False
+
+    def refuse(reason: str) -> GateResult:
+        return GateResult(False, reason, diag, None, False)
+
+    base = pinned_base(repo_root, base_tip, head_sha)
+    if base is None:
+        return refuse("second_review_record_missing")
+    argv = "LOW" if argv_tier == "SAFE" else argv_tier
+    try:
+        with head_lock(repo_root, repo, pr, head_sha, lock_timeout):
+            raised, raise_invalid = read_raise(repo_root, slug=repo, pr=pr, head=head_sha)
+            found = {
+                vendorset: rec
+                for vendorset in VENDORSETS
+                if (
+                    rec := load_record(
+                        repo_root,
+                        repo=repo,
+                        pr=pr,
+                        head_sha=head_sha,
+                        base_sha=base,
+                        vendorset=vendorset,
+                    )
+                )
+                is not None
+            }
+    except (KeyedLockTimeout, KeyedLockUnavailable, OSError):
+        return refuse("second_review_record_unverifiable")
+
+    raise_floor = "HIGH" if raise_invalid else raised
+    record_tiers = [r["tier"] for r in found.values() if r["tier"] is not None]
+    stored = [t for t in (raise_floor, *record_tiers) if t is not None]
+    tier = max([argv, *stored], key=TIERS.index)
+    needed = required_vendorset(tier)
+    diag.update(
+        base_sha=base,
+        required_tier=tier,
+        required_vendors=needed,
+        raise_tier=raised,
+        raise_invalid=raise_invalid,
+        tier_sources={
+            "argv": argv,
+            "raise": raised,
+            "records": [
+                {"vendors": vendorset, "tier": r["tier"]} for vendorset, r in found.items()
+            ],
+        },
+    )
+
+    rec = found.get(needed)
+    if rec is not None:
+        diag["record_path"] = str(_record_path(repo_root, pr, head_sha, needed))
+        for key in _DIAG_RECORD_FIELDS:
+            diag[key] = _clean_diag_value(rec.get(key))
+    diag["record_path"] = _clean_diag_value(diag["record_path"])
+
+    reason = _gate_refusal(found, needed, rec)
+
+    # The caller's tier outranks everything stored: a later run must review at that tier.
+    stored_floor = max(stored, key=TIERS.index) if stored else "LOW"
+    if VENDORSETS.index(required_vendorset(argv)) > VENDORSETS.index(
+        required_vendorset(stored_floor)
+    ):
+        try:
+            write_raise(repo_root, repo=repo, pr=pr, head_sha=head_sha, tier=argv)
+            diag["raise_written"] = True
+        except (OSError, ValueError, KeyedLockTimeout, KeyedLockUnavailable) as exc:
+            diag["raise_error"] = type(exc).__name__
+
+    if reason is not None:
+        return GateResult(False, reason, diag, None, diag["raise_written"])
+    return GateResult(True, None, diag, rec, diag["raise_written"])
+
+
+def _gate_refusal(found: dict, needed: str, rec: Optional[dict]) -> Optional[str]:
+    """The refusal reason for the record at the needed vendor set, or None to accept."""
+    if rec is None:
+        lower = VENDORSETS[: VENDORSETS.index(needed)]
+        if any(found[v]["status"] == "final" for v in lower if v in found):
+            return "second_review_tier_raise"
+        return "second_review_record_missing"
+    if rec["status"] != "final":
+        return "second_review_not_approved"
+    if needed == "none":
+        return None if rec["verdict"] == "not-required" else "second_review_not_approved"
+    if rec["verdict"] != "approve":
+        return "second_review_not_approved"
+    if not (
+        rec["unresolved_findings"] == 0
+        and rec["binary_files"] == 0
+        and rec["vendors_run"] == vendors_list(needed)
+    ):
+        return "second_review_not_approved"
+    return None
+
+
+def check_marker(*, pr: int, head_sha: str, record: Optional[dict]) -> str:
+    """The AD-4 marker line. A record with no tier (a hold written before the tier was known)
+    renders `tier=- vendors=-`: its vendor set is a placeholder, not a requirement."""
+    if not (_is_int(pr) and 1 <= pr <= MAX_PR_NUMBER and _HEX40.match(head_sha)):
+        raise ValueError("pr or head_sha is not valid")
+    tier, vendors, verdict = "-", "-", "none"
+    if record is not None:
+        verdict = record["verdict"]
+        if record.get("tier") is not None:
+            tier = record["tier"]
+            vendors = _vendorset_of(record["vendors_required"])
+    return (
+        f"{CHECK_MARKER_PREFIX} v=1 check={CHECK} pr={pr} head={head_sha} tier={tier} "
+        f"vendors={vendors} verdict={verdict} bounced=false -->"
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import scripts.automation.pr_review_cli as cli
+from scripts.automation.lib import overseer_second_review as osr
 from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
@@ -38,6 +39,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PR_REVIEW_SH = REPO_ROOT / "bootstrap" / "pr_review.sh"
 
 DEFAULT_HEAD_SHA = "c" * 40  # real SHAs are 40 hex; the #2174 marker binds to one
+DEFAULT_BASE_SHA = "b" * 40
+DEFAULT_MERGE_BASE = "a" * 40  # what the git stub's `merge-base` prints
 DEFAULT_AUTHOR = "hos-worker-hos[bot]"
 DEFAULT_BOT_LOGIN = "fake-overseer-bot[bot]"
 DEFAULT_HUMAN_REVIEWER = "hos-default-human"
@@ -68,6 +71,9 @@ fi
 if [[ "$is_get_url_origin" == "1" ]]; then
     echo "${GIT_ORIGIN_URL:-https://github.com/test-owner/test-repo.git}"
 fi
+for a in "$@"; do
+    if [[ "$a" == "merge-base" ]]; then echo "${GIT_MERGE_BASE:-}"; fi
+done
 exit 0
 """
 
@@ -176,6 +182,7 @@ import json, os
 reviewers = [r for r in os.environ.get("PR_REQUESTED_REVIEWERS", "").split(" ") if r]
 print(json.dumps({
     "head": {"sha": os.environ.get("PR_HEAD_SHA", "cccccccccccccccccccccccccccccccccccccccc")},
+    "base": {"sha": os.environ.get("PR_BASE_SHA", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")},
     "user": {"login": os.environ.get("PR_AUTHOR", "hos-worker-hos[bot]")},
     "requested_reviewers": [{"login": r} for r in reviewers],
     "review_comments": int(os.environ.get("PR_REVIEW_COMMENTS", "0")),
@@ -264,7 +271,13 @@ class Harness:
 
         lib2_dir = automation_dir / "lib"
         lib2_dir.mkdir()
-        for fname in ("__init__.py", "github.py", "merge_authority.py", "merge_config.py"):
+        for fname in (
+            "__init__.py",
+            "github.py",
+            "merge_authority.py",
+            "merge_config.py",
+            "overseer_second_review.py",
+        ):
             shutil.copy(REPO_ROOT / "scripts" / "automation" / "lib" / fname, lib2_dir / fname)
 
         oversight_dir = scripts_dir / "oversight"
@@ -273,6 +286,8 @@ class Harness:
             REPO_ROOT / "scripts" / "oversight" / "codeowners.py",
             oversight_dir / "codeowners.py",
         )
+        for fname in ("second_review_logic.py", "validation_logic.py"):
+            shutil.copy(REPO_ROOT / "scripts" / "oversight" / fname, oversight_dir / fname)
         oversight_lib_dir = oversight_dir / "lib"
         oversight_lib_dir.mkdir()
         shutil.copy(
@@ -339,13 +354,65 @@ class Harness:
             return [*args, "--disposition", "AUTO_MERGE"]
         return [*args, "--disposition", "PROPOSE_ONLY", "--expected-action", "APPROVE"]
 
+    def osr_record(self, pr, vendorset, *, head=DEFAULT_HEAD_SHA, **over):
+        """Write the overseer's own second-review record G1c reads (#2357 S1b), through the
+        runner's atomic writer so it is private like a real one."""
+        required = osr.vendors_list(vendorset)
+        verdict = "not-required" if vendorset == "none" else "approve"
+        rec = {
+            "schema": 1,
+            "check": osr.CHECK,
+            "repo": "test-owner/test-repo",
+            "pr": int(pr),
+            "head_sha": head,
+            "base_sha": DEFAULT_MERGE_BASE,
+            "range": f"{DEFAULT_MERGE_BASE}..{head}",
+            "tier": {"none": "LOW", "agy": "MEDIUM", "agy+codex": "HIGH"}[vendorset],
+            "tier_sources": None,
+            "vendors_required": required,
+            "vendors_run": [] if vendorset == "none" else list(required),
+            "status": "final",
+            "verdict": verdict,
+            "reason": osr.FINAL_REASON_FOR_VERDICT[verdict],
+            "unresolved_findings": 0,
+            "findings_file": None,
+            "outfile": None,
+            "files_reviewed": None if vendorset == "none" else 3,
+            "binary_files": None if vendorset == "none" else 0,
+            "hold_label_applied": None,
+            "vendor_failures": [],
+            "created_at": "2026-11-18T01:02:03Z",
+        }
+        rec.update(over)
+        osr._atomic_write_json(osr._record_path(self.repo_root, int(pr), head, vendorset), rec)
+        return rec
+
+    def _with_default_osr_record(self, args):
+        """G1c (#2357): an overseer approve needs the second-review record the runner would have
+        written. Existing tests exercise other guards, so supply the record the argv tier needs
+        unless a test opted out with --no-default-osr-record."""
+        if "--no-default-osr-record" in args:
+            return [a for a in args if a != "--no-default-osr-record"]
+        if not (args and args[0] == "submit-verdict" and "overseer" in args):
+            return list(args)
+        if "--event" not in args or args[args.index("--event") + 1] != "approve":
+            return list(args)
+        pr = args[args.index("--pr") + 1]
+        tier = args[args.index("--tier") + 1] if "--tier" in args else "LOW"
+        needed = osr.required_vendorset("LOW" if tier == "SAFE" else tier)
+        self.osr_record(pr, needed)
+        return list(args)
+
     def run(self, args, env_overrides=None):
+        args = self._with_default_osr_record(args)
         args = self._with_default_disposition(args)
         env = {
             "PATH": f"{self.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "CAPTURE_FILE": str(self.capture_file),
             "HOME": str(self.tmp / "home"),
             "PR_HEAD_SHA": DEFAULT_HEAD_SHA,
+            "PR_BASE_SHA": DEFAULT_BASE_SHA,
+            "GIT_MERGE_BASE": DEFAULT_MERGE_BASE,
             "PR_AUTHOR": DEFAULT_AUTHOR,
             "PR_FILES": "README.md",
             "PR_REVIEWS_JSON": "[]",
@@ -1546,7 +1613,10 @@ def test_w18_ambiguous_post_response_recovers_without_duplicate_post(h):
                 "commit_id": DEFAULT_HEAD_SHA,
                 "body": cli._with_interim_signoff(
                     VALID_OVERSEER_BODY, "PROPOSE_ONLY", "APPROVE", DEFAULT_HEAD_SHA
-                ),
+                ).rstrip("\n")
+                + "\n\n"
+                + osr.check_marker(pr=42, head_sha=DEFAULT_HEAD_SHA, record=None)
+                + "\n",
                 "html_url": "https://github.com/test-owner/test-repo/pull/1#pullrequestreview-9001",
             }
         ]
@@ -2066,7 +2136,9 @@ def test_w_hr_2_comment_gets_sentence_and_one_marker(h):
     body = _posted_body(h)
     marker = f"{MARKER_PREFIX} v=1 disposition=HUMAN_REQUIRED action=DO_NOT_MERGE head={HEAD40} -->"
     assert body.count(MARKER_PREFIX) == 1
-    assert body.rstrip("\n").endswith(marker)
+    # The overseer's check marker (#2357) follows the interim sign-off; neither displaces the other.
+    check = osr.check_marker(pr=42, head_sha=HEAD40, record=None)
+    assert body.rstrip("\n").endswith(marker + "\n\n" + check)
     # W-HR-3: the action-aware sentence is the override one, not "waits only on".
     assert "recommends against merging" in body
     assert "waits only on" not in body
@@ -2495,3 +2567,61 @@ def test_w_audit_1_audit_failure_does_not_fail_the_command(h):
     assert record["posted"] is True
     assert record["audit_record"] is None
     assert any("audit write failed" in nv for nv in record["not_verified"])
+
+
+# --------------------------------------------------------------------------- #
+# T-WR-G1c-01 / T-WR-MK-01 — #2357 S1b through the real wrapper
+# --------------------------------------------------------------------------- #
+
+
+def _approve_args(h, tier, *extra):
+    return [
+        "submit-verdict",
+        "--app",
+        "overseer",
+        "--pr",
+        "42",
+        "--event",
+        "approve",
+        "--tier",
+        tier,
+        "--body-file",
+        str(h.body_file),
+        *extra,
+    ]
+
+
+def test_wr_g1c_01_a_missing_record_refuses_with_exit_3_and_the_reason(h):
+    result = h.run(_approve_args(h, "MEDIUM", "--no-default-osr-record"))
+    assert result.returncode == 3, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refused"] is True
+    assert record["refusal_reason"] == "second_review_record_missing"
+    assert record["second_review"]["required_vendors"] == "agy"
+    assert "GH_STDIN_BODY:" not in h.capture()
+
+
+def test_wr_g1c_01b_a_tier_raise_is_written_and_refused(h):
+    h.osr_record(42, "agy")
+    result = h.run(_approve_args(h, "HIGH", "--no-default-osr-record"))
+    assert result.returncode == 3, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "second_review_tier_raise"
+    assert osr.read_raise(
+        h.repo_root, slug="test-owner/test-repo", pr=42, head=DEFAULT_HEAD_SHA
+    ) == ("HIGH", False)
+
+
+def test_wr_mk_01_the_posted_approve_body_carries_the_check_marker(h):
+    result = h.run(_approve_args(h, "MEDIUM"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    stdin_lines = [line for line in h.capture().splitlines() if line.startswith("GH_STDIN_BODY:")]
+    payload = json.loads(stdin_lines[0][len("GH_STDIN_BODY:") :])
+    expected = (
+        "<!-- hos-overseer-check v=1 check=second-review pr=42 "
+        f"head={DEFAULT_HEAD_SHA} tier=MEDIUM vendors=agy verdict=approve bounced=false -->"
+    )
+    assert payload["body"].endswith(expected + "\n")
+    record = _parse_stdout_json(result)
+    assert record["check_marker"] == expected
+    assert record["second_review"]["verdict"] == "approve"

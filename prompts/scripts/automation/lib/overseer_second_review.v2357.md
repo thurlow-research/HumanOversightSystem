@@ -103,3 +103,46 @@ Summary of the required behaviour (the TD governs):
 
 Run scripts/oversight/.venv/bin/python -m pytest tests/automation/test_overseer_second_review.py -q, scripts/oversight/.venv/bin/python -m mypy scripts/automation/lib/overseer_second_review.py (it must be clean, with no casts or type: ignore), and black --check on both files. Keep coverage of overseer_second_review.py at or above 92%. Self-flag per AGENTS.md (RISK / CONFIDENCE / BLAST RADIUS) in your final report.
 ```
+
+## Slice S1b (2026-11-18): cron pre-model wiring + G1c
+
+Generated files: `bin/hos-cron` (M), `bin/lib/osr_phase.py` (A), `scripts/automation/lib/overseer_second_review.py` (M), `scripts/automation/pr_review_cli.py` (M), `bootstrap/overseer-cron-prompt.md` (M), `docs/LABELS.md` (M), and the five test files named in the brief. Risk level: HIGH. Design: `docs/v0.7.0/TD-2357-S1b-overseer-second-review-wiring.md`.
+
+The worker (top-level session) dispatched the `coder` subagent with this brief, verbatim:
+
+~~~~
+Implement slice **S1b of #2357** exactly as specified in `docs/v0.7.0/TD-2357-S1b-overseer-second-review-wiring.md` (architect APPROVED_WITH_CHANGES 2026-11-18; amendments AR1-AR16 in §0.1 are binding and override any earlier text they amend). Governing ADR: `docs/v0.7.0/ADR-2357-overseer-second-review.md` (including the 2026-11-18 correction note). Merged S1a design: `docs/v0.7.0/TD-2357-S1a-overseer-second-review-runner.md`.
+
+Repo: `<worker-clone>`, branch `worker-2357-overseer-second-review-s1b-261118220502-2814304` (already checked out; do NOT create, switch, or stash branches; never run `git stash` or `git checkout`).
+
+**Your files (TD §2.2 S1b list), and only these:**
+- `bin/hos-cron` (M): the overseer pre-model OSR phase, per the TD (§3, §4, §6).
+- `bin/lib/osr_phase.py` (A): stdlib-only, run with `python3 -I`.
+- `scripts/automation/lib/overseer_second_review.py` (M): result-key extension, record integrity (§7.1/§7.2), writer-side mode enforcement (AR10), strike-relevant results.
+- `scripts/automation/pr_review_cli.py` (M): G1c after G2, before G3, with the four reasons incl. `second_review_record_unverifiable` (Q4=A), `max(--tier, current raise via read_raise, record.tier)` with null-safe handling (AR12) and invalid raise ⇒ HIGH; base pin; #2358 marker (§10).
+- `bootstrap/overseer-cron-prompt.md` (M): the one sentence / interim prose per TD §3.5 and §9.3.
+- `docs/LABELS.md` (M): `hos-cron` as a `needs-human` writer.
+- Tests: `tests/automation/test_hos_cron.py` (M), `tests/automation/test_osr_phase.py` (A), `tests/automation/test_overseer_second_review.py` (M), `tests/automation/test_pr_review_resolution.py` (M), `tests/automation/test_pr_review_wrapper.py` (M). Implement every named test in TD §12, including the field-reader tests in §11.3/§11.4 (T-OSR-43..49, T-INT-07, and the Q1=C route-path kills). Each field-drop mutant must be killed by a test that reads the field through a real S1b reader (phase, G1c, marker), per the human ruling, not by a bare assertion added only to kill it.
+
+**Not yours:** `.claude/agents/overseer.md` (the top-level session edits it, per #1347; coder must not write agent definitions); the TD, the ADR, and the prompt artifact; `merge_authority_cli.py` / `lib/merge_authority.py` / `test_merge_authority_cli.py` (S1c). If the design is wrong or ambiguous, stop and report the question; do not improvise.
+
+**Constraints:**
+- Fail closed everywhere. `pending` is the only label-less path and it is bounded. Every runner call in the phase is wrapped in `timeout --kill-after=30`. The phase is isolated so that an abort never kills the cycle (AR7: subshell with `set +e`/`set -e`, never `||`).
+- Never invoke `bin/hos-cron` for real. Tests exercise it only via the existing test harness and fixtures.
+- Bash: one command per call, with no `&&`/`;`/pipes chaining. Redirect long test output to a file under `.claudetmp/2357-s1b/` and read it with Read. Example: `scripts/oversight/.venv/bin/python -m pytest tests/automation/test_osr_phase.py -q -p no:cacheprovider > .claudetmp/2357-s1b/t1.log 2>&1`.
+- Run black/ruff/mypy on changed Python (`bash scripts/oversight/run_gates.sh <changed files>`) and keep it clean.
+- Commit in at most 3 commits. Every message ends with exactly this one contiguous trailer block:
+
+```
+Prompt-Artifact: prompts/scripts/automation/lib/overseer_second_review.v2357.md
+AI-Model: claude-opus-5-5
+AI-Risk: HIGH
+Supervised-by: ScottThurlow
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+```
+
+No closing keywords ("closes/fixes/resolves #N") in commit messages.
+
+**Reply with:** commits (SHA + subject); per-file summary; test results for the five test files plus a full `bash scripts/framework/run_tests_inner_loop.sh` run (redirected to `.claudetmp/2357-s1b/inner.log`), with pass/fail counts; gate results; your self-flag (RISK/CONFIDENCE/BLAST RADIUS per AGENTS.md); every TD deviation or open question; and the list of the TD §11 proofs marked "the coder confirms", with your confirmation result for each.
+~~~~
