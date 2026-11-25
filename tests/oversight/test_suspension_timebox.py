@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts.automation.lib import github, merge_config, pr_readiness
 from scripts.automation.lib.github import ListTruncatedError
@@ -183,6 +184,7 @@ def run_check(**over):
         issue_state=Stub(),
         read_text=lambda p: make_trace(STEP, BASE, HEAD, FILES),
         main_suspension_error=None,
+        human_gate_error=None,
     )
     args.update(over)
     return sm.check_suspended_resolutions(**args)
@@ -608,11 +610,35 @@ def _rev(cwd):
     ).stdout.strip()
 
 
+class _ReclaimingFactory:
+    """tmp_path_factory.mktemp dirs live outside the test's own tmp_path, so pytest's
+    tmp_path_retention_policy never reclaims them for passing tests and they pile up
+    against the suite's tmp budget. Remove them on teardown regardless of outcome
+    (failing-test debuggability is traded for the budget)."""
+
+    def __init__(self, factory):
+        self._factory = factory
+        self.made = []
+
+    def mktemp(self, basename, numbered=True):
+        path = self._factory.mktemp(basename, numbered=numbered)
+        self.made.append(path)
+        return path
+
+
 @pytest.fixture
-def repo(tmp_path, monkeypatch, tmp_path_factory):
+def scratch_factory(tmp_path_factory):
+    factory = _ReclaimingFactory(tmp_path_factory)
+    yield factory
+    for path in factory.made:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch, scratch_factory):
     """base commit has the suspension file and is origin/main of a local bare origin whose
     HEAD is main; head adds scripts/foo.py. No test touches the network."""
-    origin = tmp_path_factory.mktemp("origin") / "origin.git"
+    origin = scratch_factory.mktemp("origin") / "origin.git"
     _git(origin.parent, "init", "-q", "--bare", "-b", "main", str(origin))
     _git(tmp_path, "init", "-q", "-b", "main")
     (tmp_path / "contract").mkdir()
@@ -644,7 +670,44 @@ def repo(tmp_path, monkeypatch, tmp_path_factory):
         head=head,
         oversight=oversight,
         origin=origin,
-        factory=tmp_path_factory,
+        factory=scratch_factory,
+    )
+
+
+MANIFEST_TRUE = f"steps:\n  - id: {STEP}\n    human_gate_required: true\n"
+MANIFEST_FALSE = f"steps:\n  - id: {STEP}\n    human_gate_required: false\n"
+MANIFEST_PATH = "contract/step-manifest.yaml"
+
+
+def regen(repo, base_manifest=None, head_manifest=None):
+    """Rebuild the fixture history with the step manifest committed at base (which is also
+    origin/main) and/or at head (None = absent there), then regenerate the assessment, trace
+    and handoff for the new head. The working tree is left equal to head."""
+    root = repo.root
+    _git(root, "reset", "-q", "--hard", "HEAD~1")
+    _git(root, "rm", "-q", "-f", "--ignore-unmatch", MANIFEST_PATH)
+    (root / "contract").mkdir(exist_ok=True)
+    if base_manifest is not None:
+        (root / MANIFEST_PATH).write_text(base_manifest)
+        _git(root, "add", MANIFEST_PATH)
+    _git(root, "commit", "-q", "--allow-empty", "--amend", "-m", "base")
+    repo.base = _rev(root)
+    _git(root, "push", "-q", "--force", "origin", "main")
+    _git(root, "fetch", "-q", "origin")
+    (root / "scripts").mkdir(exist_ok=True)
+    (root / "scripts/foo.py").write_text("x = 1\n")
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests/test_foo.py").write_text("y = 1\n")
+    if head_manifest is None:
+        _git(root, "rm", "-q", "-f", "--ignore-unmatch", MANIFEST_PATH)
+    else:
+        (root / MANIFEST_PATH).write_text(head_manifest)
+    _git(root, "add", "scripts", "tests", "contract")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "head")
+    repo.head = _rev(root)
+    (repo.oversight / "validators/risk-assessment.md").write_text(make_risk(repo.base, repo.head))
+    (repo.oversight / f"step{STEP}-dep-mapper-trace.md").write_text(
+        make_trace(STEP, repo.base, repo.head, FILES)
     )
 
 
@@ -719,9 +782,7 @@ def test_b8_cli_no_default_branch_blob_exit_4(repo, monkeypatch, capsys):
 
 
 def test_b11_cli_manifest_flag_cannot_be_lowered(repo, monkeypatch, capsys):
-    (repo.root / "contract/step-manifest.yaml").write_text(
-        f"steps:\n  - id: {STEP}\n    human_gate_required: true\n"
-    )
+    regen(repo, base_manifest=MANIFEST_TRUE, head_manifest=MANIFEST_TRUE)
     code, out = cli(monkeypatch, capsys, repo)
     assert code == 4 and "S3: step is behind the human gate" in out
 
@@ -750,9 +811,7 @@ def test_validate_dep_trace_cli(repo, monkeypatch, capsys):
 
 
 def req_w18(repo):
-    return pr_readiness._check_dep_mapper_suspension(
-        repo.root, repo.root / "contract/step-manifest.yaml", STEP, repo.base, repo.head, "HIGH"
-    )
+    return pr_readiness._check_dep_mapper_suspension(repo.root, STEP, repo.base, repo.head, "HIGH")
 
 
 @pytest.fixture
@@ -801,13 +860,12 @@ def test_req_w18_load_failure_fails_closed(repo, monkeypatch):
 
 
 def test_req_w18_manifest_flag_and_tier_floor(repo, use_sm):
-    (repo.root / "contract/step-manifest.yaml").write_text(
-        f"steps:\n  - id: {STEP}\n    human_gate_required: true\n"
-    )
+    regen(repo, base_manifest=MANIFEST_TRUE, head_manifest=MANIFEST_TRUE)
     assert "S3: step is behind the human gate" in req_w18(repo).detail
-    (repo.root / "contract/step-manifest.yaml").unlink()
+    regen(repo)
+    assert req_w18(repo).passed
     res = pr_readiness._check_dep_mapper_suspension(
-        repo.root, repo.root / "contract/step-manifest.yaml", STEP, repo.base, repo.head, "CRITICAL"
+        repo.root, STEP, repo.base, repo.head, "CRITICAL"
     )
     assert not res.passed and "S3: step is behind the human gate" in res.detail
 
@@ -898,7 +956,6 @@ def test_req_w18_no_finding_with_broken_range_passes(repo, use_sm):
     (repo.oversight / "validators/risk-assessment.md").write_text("# R\nblocking_findings: []\n")
     assert pr_readiness._check_dep_mapper_suspension(
         repo.root,
-        repo.root / "contract/step-manifest.yaml",
         STEP,
         "deadbeef" * 5,
         repo.head,
@@ -962,9 +1019,7 @@ def test_symbolic_or_short_sha_fails(base, head):
 
 @pytest.mark.parametrize("head", ["HEAD", "abc1234"])
 def test_req_w18_rejects_non_full_sha(repo, use_sm, head):
-    res = pr_readiness._check_dep_mapper_suspension(
-        repo.root, repo.root / "contract/step-manifest.yaml", STEP, repo.base, head, "HIGH"
-    )
+    res = pr_readiness._check_dep_mapper_suspension(repo.root, STEP, repo.base, head, "HIGH")
     assert not res.passed and "40-hex" in res.detail
 
 
@@ -979,51 +1034,86 @@ def _manifest(tmp_path, body):
     return path
 
 
+M_INLINE_COMMENT = "steps:\n  - id: s1 # note\n    human_gate_required: true\n"
+M_QUOTED_ID = "steps:\n  - id: 's1'\n    human_gate_required: false # ok\n"
+M_ID_AFTER_KEY = (
+    "steps:\n  - name: x\n    human_gate_required: true\n    id: s1\n"
+    "  - name: y\n    id: s2\n    human_gate_required: false\n"
+)
+M_FLAG_LEAK = "steps:\n  - id: s1\n    human_gate_required: true\n  - id: s2\n    name: y\n"
+M_NESTED_LIST = (
+    "steps:\n  - id: s1\n    required_signoffs:\n      - code-review\n"
+    "    human_gate_required: true\n"
+)
+M_STEP_MISSING = "steps:\n  - id: other\n    human_gate_required: false\n"
+M_NO_STEPS = "foo: bar\n"
+M_GARBAGE_FLAG = "steps:\n  - id: s1\n    human_gate_required: maybe\n"
+M_QUOTED_KEY_TRUE = 'steps:\n  - id: s1\n    "human_gate_required": true\n'
+M_QUOTED_KEY_FALSE = "steps:\n  - id: s1\n    'human_gate_required': false\n"
+M_NONCANONICAL = [
+    "base: &b\n  human_gate_required: false\nsteps:\n  - id: s1\n    <<: *b\n",
+    "steps:\n  - id: s1\n    human_gate_required: &g true\n",
+    "steps:\n  - id: s1\n    human_gate_required: *g\n",
+    "steps:\n  - {id: s1, human_gate_required: true}\n",
+    "steps:\n  - id: s1\n    meta: {human_gate_required: true}\n",
+    "steps:\n  - id: s1\n    human_gate_required: false\n    human_gate_required: true\n",
+    "steps:\n  - id: s1\n    gates:\n      human_gate_required: true\n",
+]
+M_FLOW_SIGNOFFS = "steps:\n  - id: s1\n    required_signoffs: [code-review, security]\n"
+# (text, step) for every test_manifest_* fixture; the tests and the T-G19 oracle both read this.
+MANIFEST_FIXTURES = [
+    (M_INLINE_COMMENT, "s1"),
+    (M_QUOTED_ID, "s1"),
+    (M_ID_AFTER_KEY, "s1"),
+    (M_ID_AFTER_KEY, "s2"),
+    (M_FLAG_LEAK, "s2"),
+    (M_NESTED_LIST, "s1"),
+    (M_STEP_MISSING, "s1"),
+    (M_NO_STEPS, "s1"),
+    (M_GARBAGE_FLAG, "s1"),
+    (M_QUOTED_KEY_TRUE, "s1"),
+    (M_QUOTED_KEY_FALSE, "s1"),
+    *[(body, "s1") for body in M_NONCANONICAL],
+    (M_FLOW_SIGNOFFS, "s1"),
+]
+
+
 def test_manifest_inline_comment_on_id_still_matches(tmp_path):
-    m = _manifest(tmp_path, "steps:\n  - id: s1 # note\n    human_gate_required: true\n")
+    m = _manifest(tmp_path, M_INLINE_COMMENT)
     assert sm.manifest_human_gate_required(m, "s1") is True
 
 
 def test_manifest_quoted_id_and_flag_comment(tmp_path):
-    m = _manifest(tmp_path, "steps:\n  - id: 's1'\n    human_gate_required: false # ok\n")
+    m = _manifest(tmp_path, M_QUOTED_ID)
     assert sm.manifest_human_gate_required(m, "s1") is False
 
 
 def test_manifest_id_after_another_key_is_found(tmp_path):
-    body = (
-        "steps:\n  - name: x\n    human_gate_required: true\n    id: s1\n"
-        "  - name: y\n    id: s2\n    human_gate_required: false\n"
-    )
-    m = _manifest(tmp_path, body)
+    m = _manifest(tmp_path, M_ID_AFTER_KEY)
     assert sm.manifest_human_gate_required(m, "s1") is True
     assert sm.manifest_human_gate_required(m, "s2") is False
 
 
 def test_manifest_flag_does_not_leak_to_next_item(tmp_path):
-    body = "steps:\n  - id: s1\n    human_gate_required: true\n  - id: s2\n    name: y\n"
-    m = _manifest(tmp_path, body)
+    m = _manifest(tmp_path, M_FLAG_LEAK)
     assert sm.manifest_human_gate_required(m, "s2") is False
 
 
 def test_manifest_nested_list_does_not_start_a_new_item(tmp_path):
-    body = (
-        "steps:\n  - id: s1\n    required_signoffs:\n      - code-review\n"
-        "    human_gate_required: true\n"
-    )
-    assert sm.manifest_human_gate_required(_manifest(tmp_path, body), "s1") is True
+    assert sm.manifest_human_gate_required(_manifest(tmp_path, M_NESTED_LIST), "s1") is True
 
 
 def test_manifest_step_missing_fails_closed(tmp_path):
-    m = _manifest(tmp_path, "steps:\n  - id: other\n    human_gate_required: false\n")
+    m = _manifest(tmp_path, M_STEP_MISSING)
     assert sm.manifest_human_gate_required(m, "s1") is True
 
 
 def test_manifest_without_steps_block_fails_closed(tmp_path):
-    assert sm.manifest_human_gate_required(_manifest(tmp_path, "foo: bar\n"), "s1") is True
+    assert sm.manifest_human_gate_required(_manifest(tmp_path, M_NO_STEPS), "s1") is True
 
 
 def test_manifest_garbage_flag_fails_closed(tmp_path):
-    m = _manifest(tmp_path, "steps:\n  - id: s1\n    human_gate_required: maybe\n")
+    m = _manifest(tmp_path, M_GARBAGE_FLAG)
     assert sm.manifest_human_gate_required(m, "s1") is True
 
 
@@ -1119,23 +1209,15 @@ def test_quoted_header_values_are_normalised():
 
 
 def test_manifest_quoted_human_gate_key_is_read(tmp_path):
-    m = _manifest(tmp_path, 'steps:\n  - id: s1\n    "human_gate_required": true\n')
+    m = _manifest(tmp_path, M_QUOTED_KEY_TRUE)
     assert sm.manifest_human_gate_required(m, "s1") is True
-    m = _manifest(tmp_path, "steps:\n  - id: s1\n    'human_gate_required': false\n")
+    m = _manifest(tmp_path, M_QUOTED_KEY_FALSE)
     assert sm.manifest_human_gate_required(m, "s1") is False
 
 
 @pytest.mark.parametrize(
     "body",
-    [
-        "base: &b\n  human_gate_required: false\nsteps:\n  - id: s1\n    <<: *b\n",
-        "steps:\n  - id: s1\n    human_gate_required: &g true\n",
-        "steps:\n  - id: s1\n    human_gate_required: *g\n",
-        "steps:\n  - {id: s1, human_gate_required: true}\n",
-        "steps:\n  - id: s1\n    meta: {human_gate_required: true}\n",
-        "steps:\n  - id: s1\n    human_gate_required: false\n    human_gate_required: true\n",
-        "steps:\n  - id: s1\n    gates:\n      human_gate_required: true\n",
-    ],
+    M_NONCANONICAL,
     ids=["merge", "anchor", "alias", "flow-item", "flow-value", "duplicate", "nested"],
 )
 def test_manifest_noncanonical_forms_fail_closed(tmp_path, body):
@@ -1143,8 +1225,7 @@ def test_manifest_noncanonical_forms_fail_closed(tmp_path, body):
 
 
 def test_manifest_flow_sequence_of_signoffs_is_fine(tmp_path):
-    body = "steps:\n  - id: s1\n    required_signoffs: [code-review, security]\n"
-    assert sm.manifest_human_gate_required(_manifest(tmp_path, body), "s1") is False
+    assert sm.manifest_human_gate_required(_manifest(tmp_path, M_FLOW_SIGNOFFS), "s1") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1447,9 +1528,7 @@ def _fake_sm(**over):
 def _w18(tmp_path, monkeypatch, fake, risk_text="risk", base=BASE, head=HEAD):
     monkeypatch.setattr(pr_readiness, "_load_suspension_manager", lambda: fake)
     monkeypatch.setattr(pr_readiness, "_read_text", lambda path: risk_text)
-    return pr_readiness._check_dep_mapper_suspension(
-        tmp_path, tmp_path / "m.yaml", STEP, base, head, "HIGH"
-    )
+    return pr_readiness._check_dep_mapper_suspension(tmp_path, STEP, base, head, "HIGH")
 
 
 def test_req_w18_absent_risk_assessment_is_not_applicable(tmp_path, monkeypatch):
@@ -1487,9 +1566,7 @@ def test_req_w18_load_failure_has_id_and_message(tmp_path, monkeypatch):
         raise ImportError("nope")
 
     monkeypatch.setattr(pr_readiness, "_load_suspension_manager", boom)
-    res = pr_readiness._check_dep_mapper_suspension(
-        tmp_path, tmp_path / "m.yaml", STEP, BASE, HEAD, "HIGH"
-    )
+    res = pr_readiness._check_dep_mapper_suspension(tmp_path, STEP, BASE, HEAD, "HIGH")
     assert res.check_id == "REQ-W-18" and not res.passed
     assert res.detail == "cannot load suspension_manager: nope"
 
@@ -1515,9 +1592,7 @@ def test_load_suspension_manager_loader_exception_propagates_then_check_fails_cl
     with pytest.raises(OSError):
         pr_readiness._load_suspension_manager()
     assert pr_readiness._suspension_manager_module is None
-    res = pr_readiness._check_dep_mapper_suspension(
-        tmp_path, tmp_path / "m.yaml", STEP, BASE, HEAD, "HIGH"
-    )
+    res = pr_readiness._check_dep_mapper_suspension(tmp_path, STEP, BASE, HEAD, "HIGH")
     assert not res.passed and "cannot load suspension_manager" in res.detail
 
 
@@ -3181,3 +3256,1844 @@ def test_table_block_callers_mode_prose_before_a_later_table_is_rejected():
     lines = ["", "prose line", "| A |", "|---|", "| x |", ""]
     out = tbe(lines, [2, 3, 4], mode="callers", s=0, e=6)
     assert (3, _BEFORE_AFTER) in out
+
+
+# ---------------------------------------------------------------------------
+# (i) SHA-pinned human gate (#2392, TD-2214 AM-4)
+# ---------------------------------------------------------------------------
+
+S3_GENERIC = "S3: step is behind the human gate"
+
+
+def _egprefix(repo, detail):
+    return (
+        "S3: contract/step-manifest.yaml in the working tree does not match head "
+        f"{repo.head[:12]} ({detail}); commit or restore it, then re-run"
+    )
+
+
+def _eff(repo, step=STEP, head=None):
+    main = sm.read_default_branch_suspension(repo.root)
+    return sm.effective_manifest_human_gate(step, head or repo.head, main, repo.root)
+
+
+def _write_wt(repo, text):
+    (repo.root / MANIFEST_PATH).write_text(text)
+
+
+@pytest.mark.parametrize(
+    "committed,edited", [(MANIFEST_TRUE, MANIFEST_FALSE), (MANIFEST_FALSE, MANIFEST_TRUE)]
+)
+def test_g1_uncommitted_edit_fails_in_either_direction(
+    repo, use_sm, monkeypatch, capsys, committed, edited
+):
+    regen(repo, base_manifest=committed, head_manifest=committed)
+    _write_wt(repo, edited)
+    res = req_w18(repo)
+    assert not res.passed and _egprefix(repo, "modified") in res.detail
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and f"ERROR=dep-low: {_egprefix(repo, 'modified')}" in out
+
+
+def test_g2_uncommitted_deletion_fails(repo, use_sm, monkeypatch, capsys):
+    regen(repo, base_manifest=MANIFEST_TRUE, head_manifest=MANIFEST_TRUE)
+    (repo.root / MANIFEST_PATH).unlink()
+    assert _egprefix(repo, "deleted") in req_w18(repo).detail
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and f"ERROR=dep-low: {_egprefix(repo, 'deleted')}" in out
+
+
+def test_g2_untracked_manifest_added_but_not_committed(repo, use_sm, monkeypatch, capsys):
+    regen(repo)
+    _write_wt(repo, MANIFEST_FALSE)
+    assert _egprefix(repo, "added but not committed") in req_w18(repo).detail
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and _egprefix(repo, "added but not committed") in out
+
+
+def test_g3_committed_loosening_is_overridden_by_default_branch(repo, use_sm, monkeypatch, capsys):
+    regen(repo, base_manifest=MANIFEST_TRUE, head_manifest=MANIFEST_FALSE)
+    assert S3_GENERIC in req_w18(repo).detail
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and S3_GENERIC in out and "working tree" not in out
+
+
+def test_g4_committed_tightening_takes_effect_and_controls_pass(repo, use_sm, monkeypatch, capsys):
+    for base in (MANIFEST_FALSE, None):
+        regen(repo, base_manifest=base, head_manifest=MANIFEST_TRUE)
+        assert S3_GENERIC in req_w18(repo).detail
+        assert cli(monkeypatch, capsys, repo)[0] == 4
+    for both in (MANIFEST_FALSE, None):
+        regen(repo, base_manifest=both, head_manifest=both)
+        assert req_w18(repo).passed
+        assert cli(monkeypatch, capsys, repo)[0] == 0
+
+
+E_G1 = "S3: human gate not verified: the default-branch read failed (see S4); failing closed"
+
+
+def test_g5_default_read_failure_is_e_g1_before_any_manifest_read(repo, monkeypatch):
+    calls = _fake_git(monkeypatch, lambda args: NotImplemented)
+    for dr in (
+        {"error": "S4: x", "sha": None, "branch": None, "text": None},
+        {"error": None, "sha": None, "branch": "main", "text": None},
+        {"error": None, "sha": "-x", "branch": "main", "text": None},
+    ):
+        assert sm.effective_manifest_human_gate(STEP, repo.head, dr, repo.root) == {
+            "flag": True,
+            "error": E_G1,
+        }
+    assert calls == []
+
+
+def test_g5_cli_prints_both_s4_and_e_g1(repo, monkeypatch, capsys):
+    monkeypatch.setattr(sm, "_default_ls_remote", lambda root=".": (None, None, "x"))
+    calls = _fake_git(monkeypatch, lambda args: NotImplemented)
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4
+    assert f"ERROR=dep-low: {_ef2('x')}" in out and f"ERROR=dep-low: {E_G1}" in out
+    assert not any(MANIFEST_PATH in a for c in calls for a in c)
+
+
+def _commit_symlink(repo, target_text="steps:\n"):
+    (repo.root / "target.yaml").write_text(target_text)
+    (repo.root / MANIFEST_PATH).unlink(missing_ok=True)
+    os.symlink("../target.yaml", repo.root / MANIFEST_PATH)
+    _git(repo.root, "add", "target.yaml", MANIFEST_PATH)
+
+
+def test_g6_symlink_at_head_is_e_g3(repo):
+    regen(repo)
+    _commit_symlink(repo)
+    _git(repo.root, "commit", "-q", "-m", "link")
+    head = _rev(repo.root)
+    res = _eff(repo, head=head)
+    assert res == {
+        "flag": True,
+        "error": f"S3: could not read {MANIFEST_PATH} at head {head[:12]} "
+        "(not a regular file); failing closed, re-run",
+    }
+
+
+def test_g6_symlink_at_default_sha_is_e_g3(repo):
+    regen(repo)
+    _git(repo.root, "reset", "-q", "--hard", "HEAD~1")
+    _commit_symlink(repo)
+    _git(repo.root, "commit", "-q", "--amend", "-m", "base")
+    base = _rev(repo.root)
+    _git(repo.root, "push", "-q", "--force", "origin", "main")
+    _git(repo.root, "fetch", "-q", "origin")
+    _git(repo.root, "rm", "-q", "-f", MANIFEST_PATH)
+    _write_wt(repo, MANIFEST_FALSE)
+    _git(repo.root, "add", MANIFEST_PATH)
+    _git(repo.root, "commit", "-q", "-m", "regular")
+    res = _eff(repo, head=_rev(repo.root))
+    assert res == {
+        "flag": True,
+        "error": f"S3: could not read {MANIFEST_PATH} at origin/main {base[:12]} "
+        "(not a regular file); failing closed, re-run",
+    }
+
+
+def test_g6_working_tree_symlink_with_identical_bytes_fails(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    (repo.root / MANIFEST_PATH).unlink()
+    (repo.root.parent / "same.yaml").write_text(MANIFEST_FALSE)
+    os.symlink(repo.root.parent / "same.yaml", repo.root / MANIFEST_PATH)
+    assert _eff(repo)["error"] == _egprefix(repo, "not a regular file")
+
+
+@pytest.mark.parametrize(
+    "verb,result,why",
+    [
+        ("ls-tree", None, "timeout"),
+        ("show", None, "timeout"),
+        ("show", _cp(128, err=b"fatal: bad object\n"), "exit 128: fatal: bad object"),
+    ],
+)
+def test_g6_git_failures_at_head(repo, monkeypatch, verb, result, why):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    main = sm.read_default_branch_suspension(repo.root)
+
+    def handler(args):
+        hit = args[0] == verb and any(MANIFEST_PATH in x for x in args)
+        return result if hit else NotImplemented
+
+    _fake_git(monkeypatch, handler)
+    res = sm.effective_manifest_human_gate(STEP, repo.head, main, repo.root)
+    assert res == {
+        "flag": True,
+        "error": f"S3: could not read {MANIFEST_PATH} at head {repo.head[:12]} "
+        f"({why}); failing closed, re-run",
+    }
+
+
+def test_g6_short_head_sha_is_e_g4(repo):
+    main = sm.read_default_branch_suspension(repo.root)
+    res = sm.effective_manifest_human_gate(STEP, repo.head[:12], main, repo.root)
+    assert res == {
+        "flag": True,
+        "error": f"S3: head {repo.head[:12]!r} is not a full SHA; cannot pin the step manifest",
+    }
+
+
+def test_g7_absent_everywhere_is_false(repo, use_sm):
+    assert _eff(repo) == {"flag": False, "error": None}
+    assert req_w18(repo).passed
+
+
+def _default_flag(repo, default_manifest, head_manifest=MANIFEST_FALSE):
+    regen(repo, base_manifest=default_manifest, head_manifest=head_manifest)
+    return _eff(repo)
+
+
+def test_g8_default_lists_only_other_step(repo):
+    other = "steps:\n  - id: other-step\n    human_gate_required: true\n"
+    assert _default_flag(repo, other) == {"flag": False, "error": None}
+    assert _default_flag(repo, other, head_manifest=other)["flag"] is True  # head strict rule
+
+
+@pytest.mark.parametrize(
+    "default",
+    [
+        f"x: &a 1\nsteps:\n  - id: {STEP}\n    human_gate_required: false\n",
+        f"steps:\n  - id: {STEP}\n    human_gate_required: maybe\n",
+        "foo: bar\n",
+    ],
+)
+def test_g8_non_canonical_default_is_true(repo, default):
+    assert _default_flag(repo, default)["flag"] is True
+
+
+@pytest.mark.parametrize("unlisted_step", [True, False])
+def test_g8_undecodable_bytes_are_true_without_error(repo, unlisted_step):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    (repo.root / MANIFEST_PATH).write_bytes(b"steps:\n  - id: s1\n\xff\xfe\n")
+    _git(repo.root, "add", MANIFEST_PATH)
+    _git(repo.root, "commit", "-q", "-m", "bad")
+    res = sm.read_manifest_gate_at(_rev(repo.root), STEP, repo.root, unlisted_step=unlisted_step)
+    assert res["flag"] is True and res["error"] is None
+
+
+def test_g9_human_gate_error_is_required_and_replaces_s3():
+    with pytest.raises(TypeError):
+        sm.check_suspended_resolutions(
+            make_risk(BASE, HEAD),
+            STEP,
+            BASE,
+            HEAD,
+            "HIGH",
+            False,
+            FILES,
+            susp_text(),
+            susp_text(),
+            main_suspension_error=None,
+        )
+    res = run_check(human_gate_error="S3: X", human_gate_required=False)
+    errs = errors_of(res)
+    assert not res["ok"] and "S3: X" in errs
+    assert not any("step is behind the human gate" in e for e in errs)
+
+
+def test_g10_scan_matches_path_function_and_none_maps_to_true(tmp_path):
+    bodies = [
+        "steps:\n  - id: s1 # note\n    human_gate_required: true\n",
+        "steps:\n  - id: 's1'\n    human_gate_required: false # ok\n",
+        "steps:\n  - id: other\n    human_gate_required: false\n",
+        "foo: bar\n",
+        "steps:\n  - id: s1\n    human_gate_required: maybe\n",
+        "steps:\n  - id: s1\n    name: y\n",
+    ]
+    for body in bodies:
+        path = _manifest(tmp_path, body)
+        scan = sm._manifest_gate_scan(body, "s1")
+        assert sm.manifest_human_gate_required(path, "s1") is (True if scan is None else scan)
+
+
+def test_g10_manifest_override_does_not_reach_req_w18(repo, use_sm, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_TRUE, head_manifest=MANIFEST_TRUE)
+    other = repo.factory.mktemp("override") / "m.yaml"
+    other.write_text(MANIFEST_FALSE)
+    monkeypatch.setattr(
+        pr_readiness,
+        "_check_inner_loop_tests",
+        lambda root: pr_readiness.CheckResult("REQ-W-01", True, "stub"),
+    )
+    result = pr_readiness.assess_pr_readiness(
+        "cid",
+        repo.base,
+        repo.head,
+        STEP,
+        "HIGH",
+        repo_root=repo.root,
+        step_manifest_path=other,
+        write_state=False,
+    )
+    (w18,) = [c for c in result.checks if c.check_id == "REQ-W-18"]
+    assert not w18.passed and S3_GENERIC in w18.detail
+
+
+def _spy_run(monkeypatch):
+    argvs = []
+    real = subprocess.run
+
+    def spy(argv, *a, **k):
+        argvs.append(list(argv))
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    return argvs
+
+
+def test_g11_no_extra_git_when_no_suspension_applies(repo, use_sm, monkeypatch, capsys):
+    (repo.oversight / "validators/risk-assessment.md").write_text("# R\nblocking_findings: []\n")
+    argvs = _spy_run(monkeypatch)
+    assert cli(monkeypatch, capsys, repo)[0] == 0
+    assert req_w18(repo).passed
+    flat = [a for argv in argvs for a in argv]
+    assert "ls-remote" not in flat and not any(MANIFEST_PATH in a for a in flat)
+
+
+def test_g11_one_ls_remote_and_default_read_by_sha(repo, use_sm, monkeypatch, capsys):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    argvs = _spy_run(monkeypatch)
+    assert cli(monkeypatch, capsys, repo)[0] == 0
+    assert sum("ls-remote" in argv for argv in argvs) == 1
+    trees = [argv[3:] for argv in argvs if "ls-tree" in argv and MANIFEST_PATH in argv]
+    assert ["ls-tree", "--full-tree", "-z", repo.head, "--", MANIFEST_PATH] in trees
+    assert ["ls-tree", "--full-tree", "-z", repo.base, "--", MANIFEST_PATH] in trees
+
+
+def test_g12_cli_floor_is_kept(repo, monkeypatch, capsys):
+    code, out = cli(monkeypatch, capsys, repo, gate=("--human-gate-required", "true"))
+    assert code == 4 and S3_GENERIC in out
+
+
+FOLDED = f"steps:\n  - id: >-\n      {STEP}\n    human_gate_required: true\n"
+
+
+G13_DEFAULTS = [
+    FOLDED,
+    f"  steps:\n    - id: {STEP}\n      human_gate_required: true\n",
+    f"steps:\n  - id: other\n\t- id: {STEP}\n",
+    'steps:\n  - id: "s\\x31"\n    human_gate_required: true\n',
+    f"steps:\n  - id: !!str {STEP}\n    human_gate_required: true\n",
+    f"steps:\n  - id: other\n    id: {STEP}\n    human_gate_required: true\n",
+    f"steps:\n  - id: other\n    human_gate_required: false\n# {STEP} is gated here\n",
+    "foo: bar\n",
+]
+
+
+@pytest.mark.parametrize("default", G13_DEFAULTS)
+def test_g13_non_canonical_default_gates_the_step(repo, default):
+    assert _default_flag(repo, default) == {"flag": True, "error": None}
+
+
+def test_g13_scan_without_steps_line_is_true_not_none():
+    assert sm._manifest_gate_scan("foo: bar\n", STEP) is True
+    assert sm._manifest_gate_scan("steps:\n  - id: other\n", STEP) is None
+
+
+def test_g13_control_unlisted_and_absent_step_is_false(repo):
+    other = "steps:\n  - id: other-step\n    human_gate_required: true\n"
+    assert _default_flag(repo, other) == {"flag": False, "error": None}
+
+
+# --- AM-4 residual branch coverage (unit-test pass, #2392) -------------------
+
+
+def test_scan_flow_style_steps_line_is_true():
+    assert sm._manifest_scan("steps: [a, b]\n", STEP) == (True, [])
+    assert sm._manifest_scan("steps: {a: b}\n", STEP) == (True, [])
+
+
+def test_scan_top_level_key_after_steps_ends_the_block():
+    body = (
+        f"steps:\n  - id: {STEP}\n    human_gate_required: false\n"
+        "other:\n  human_gate_required: true\n"
+    )
+    assert sm._manifest_scan(body, STEP) == (False, [STEP])
+
+
+def test_scan_line_before_the_first_item_is_not_canonical():
+    body = f"steps:\n  human_gate_required: true\n  - id: {STEP}\n"
+    assert sm._manifest_scan(body, STEP) == (True, [])
+
+
+def test_read_manifest_gate_at_rejects_a_non_sha_without_running_git(repo, monkeypatch):
+    calls = _fake_git(monkeypatch, lambda args: NotImplemented)
+    for bad in ("abc123", None, "-x" + "a" * 38):
+        res = sm.read_manifest_gate_at(bad, STEP, repo.root, unlisted_step=True)
+        assert res == {"flag": True, "blob": None, "error": "not a full SHA"}
+    assert calls == []
+
+
+def test_read_manifest_gate_at_ls_tree_nonzero_exit_is_an_error(repo, monkeypatch):
+    _fake_git(
+        monkeypatch,
+        lambda args: _cp(128, err=b"fatal: bad tree\n") if args[0] == "ls-tree" else NotImplemented,
+    )
+    res = sm.read_manifest_gate_at(repo.head, STEP, repo.root, unlisted_step=True)
+    assert res == {"flag": True, "blob": None, "error": "exit 128: fatal: bad tree"}
+
+
+def test_working_tree_lstat_oserror_is_a_mismatch(repo, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    real = os.lstat
+
+    def fake(path, *a, **k):
+        if str(path).endswith(MANIFEST_PATH):
+            raise PermissionError(13, "Permission denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(sm.os, "lstat", fake)
+    assert _eff(repo) == {"flag": True, "error": _egprefix(repo, "unreadable: Permission denied")}
+
+
+def test_working_tree_read_oserror_is_a_mismatch(repo, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    real = sm.Path.read_bytes
+
+    def fake(self):
+        if str(self).endswith(MANIFEST_PATH):
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(sm.Path, "read_bytes", fake)
+    assert _eff(repo) == {"flag": True, "error": _egprefix(repo, "unreadable: Permission denied")}
+
+
+# --- AM-4 security round 1 (#2392): numeric-alias ids, --full-tree -----------
+
+CANONICAL_HEAD = f"steps:\n  - id: {STEP}\n    human_gate_required: false\n"
+
+
+@pytest.mark.parametrize(
+    "alias", ["007", "0x7", "0o7", "0b111", "1_0", "+7", "7.0", "1e1", "-1", ".5", "00"]
+)
+def test_sec_r1_numeric_alias_id_on_default_gates_the_step(repo, alias):
+    default = f"steps:\n  - id: {alias}\n    human_gate_required: false\n"
+    res = _default_flag(repo, default, head_manifest=CANONICAL_HEAD)
+    assert res == {"flag": True, "error": None}
+
+
+@pytest.mark.parametrize("canonical", ["0", "7", "10"])
+def test_sec_r1_canonical_numeric_id_control_stays_false(repo, canonical):
+    default = f"steps:\n  - id: {canonical}\n    human_gate_required: true\n"
+    res = _default_flag(repo, default, head_manifest=CANONICAL_HEAD)
+    assert res == {"flag": False, "error": None}
+
+
+def test_sec_r1_id_is_canonical_letter_start_unaffected():
+    assert sm._id_is_canonical("other-step") and sm._id_is_canonical("v1.2")
+    assert not sm._id_is_canonical("0x7") and not sm._id_is_canonical("a b")
+
+
+def test_sec_r1_manifest_read_from_a_subdirectory_of_the_repo(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    sub = repo.root / "subdir"
+    sub.mkdir()
+    res = sm.read_manifest_gate_at(repo.head, STEP, sub, unlisted_step=True)
+    assert res["error"] is None and res["blob"] is not None and res["flag"] is False
+
+
+def test_cli_prints_whole_file_s0_errors_and_exits_4(repo, monkeypatch, capsys):
+    """Whole-file (S0) failures are printed as bare ERROR= lines (no finding id) and exit 4."""
+    stale = "a" * 40
+    (repo.oversight / "validators/risk-assessment.md").write_text(make_risk(stale, repo.head))
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and "RESULT=fail" in out
+    assert f"ERROR=S0: risk-assessment range {stale!r}.." in out
+
+
+# --- AM-4 SR (#2392): the scanner is never looser than a YAML parser ---------
+
+G_FALSE_ITEM = "  - id: s1\n    human_gate_required: false\n"
+G_TRUE_ITEM = "  - id: s1\n    human_gate_required: true\n"
+
+G14_REPRO = (
+    "steps:\n  - id: s1\n    id: s9\n    human_gate_required: false\n"
+    '  - id: "s\\x31"\n    human_gate_required: true\n'
+)
+G14 = {
+    "repro": G14_REPRO,
+    "duplicate_id_alone": "steps:\n  - id: s1\n    id: s1\n    human_gate_required: false\n",
+    "duplicate_flag_in_non_target_item": (
+        "steps:\n" + G_FALSE_ITEM + "  - id: other\n    human_gate_required: false\n"
+        "    human_gate_required: false\n"
+    ),
+    "separate_items_same_id_one_true": "steps:\n" + G_FALSE_ITEM + G_TRUE_ITEM,
+}
+_BLOCK1 = "steps:\n" + G_FALSE_ITEM + "  - id: other\n"
+G15 = {
+    "second_block_indent4": _BLOCK1
+    + "name: x\nsteps:\n    - id: s1\n      human_gate_required: true\n",
+    "second_block_indent0": _BLOCK1 + "name: x\nsteps:\n- id: s1\n  human_gate_required: true\n",
+    "double_quoted_second": _BLOCK1 + '"steps":\n' + G_TRUE_ITEM,
+    "single_quoted_second": _BLOCK1 + "'steps':\n" + G_TRUE_ITEM,
+    "space_before_colon_second": _BLOCK1 + "steps :\n" + G_TRUE_ITEM,
+    "explicit_key_second": _BLOCK1 + "? steps\n" + G_TRUE_ITEM,
+    "only_quoted_steps": '"steps":\n' + G_FALSE_ITEM,
+    "marker_after_content": "steps:\n" + G_FALSE_ITEM + "---\nname: x\n",
+    "document_end_after_content": "steps:\n" + G_FALSE_ITEM + "...\n",
+}
+G15B = {
+    "adjacent_quoted_steps": _BLOCK1 + '"steps":[a]\n',
+    "adjacent_plain_steps": _BLOCK1 + "steps:[a]\n",
+    "quoted_steps_with_items": "steps:\n" + G_FALSE_ITEM + '"steps":\n' + G_TRUE_ITEM,
+    "leading_tagged_marker": "--- !tag\nsteps:\n" + G_FALSE_ITEM,
+    "leading_marker_with_steps": "--- steps: []\n" + G_FALSE_ITEM,
+    "leading_document_end": "...\nsteps:\n" + G_FALSE_ITEM,
+    "commented_marker_after_content": "steps:\n" + G_FALSE_ITEM + "--- # c\n",
+    "two_leading_markers": "---\n---\nsteps:\n" + G_FALSE_ITEM,
+}
+G15_CONTROLS = {
+    "bare_leading_marker": "---\nsteps:\n" + G_FALSE_ITEM,
+    "commented_leading_marker": "--- # header comment\nsteps:\n" + G_FALSE_ITEM,
+}
+G16 = {
+    "escaped_flag_key": 'steps:\n  - id: s1\n    "human_gate_\\x72equired": true\n',
+    "escaped_flag_key_mid_word": 'steps:\n  - id: s1\n    "human_gate_r\\x65quired": true\n',
+    "escaped_id_key": "steps:\n"
+    + G_FALSE_ITEM
+    + '  - "i\\x64": s1\n    human_gate_required: true\n',
+    "tagged_id_key": "steps:\n"
+    + G_FALSE_ITEM
+    + "  - !!str id: s1\n    human_gate_required: true\n",
+    "explicit_key": "steps:\n  - id: s1\n    ? human_gate_required\n    : true\n",
+    "single_quote_escape_key": "steps:\n  - id: s1\n    'human''gate': x\n",
+}
+G16B = {
+    "adjacent_colon_id": (
+        "steps:\n" + G_FALSE_ITEM + '  - "i\\x64":s1\n    human_gate_required: true\n'
+    ),
+    "adjacent_colon_flag": 'steps:\n  - id: s1\n    "human_gate_\\x72equired":true\n',
+    "unclosed_double": 'steps:\n  - id: s1\n    "human_gate_required: true\n',
+    "unclosed_single": "steps:\n" + G_FALSE_ITEM + "  - 'id: s1\n    human_gate_required: true\n",
+    "single_quote_escape_in_target": "steps:\n  - id: s1\n    'human''gate': x\n",
+}
+G17 = {
+    "escaped_id_next_to_canonical": (
+        "steps:\n" + G_FALSE_ITEM + '  - id: "s\\x31"\n    human_gate_required: true\n'
+    ),
+    "id_on_next_line": (
+        "steps:\n" + G_FALSE_ITEM + "  - id:\n      s1\n    human_gate_required: true\n"
+    ),
+    "numeric_id_007": "steps:\n" + G_FALSE_ITEM + "  - id: 007\n    human_gate_required: true\n",
+    "item_without_id": "steps:\n  - name: x\n" + G_FALSE_ITEM,
+}
+G20_TRUE = [
+    '"false"',
+    "'false'",
+    "'no'",
+    "fAlSe",
+    "no",
+    "No",
+    "NO",
+    "off",
+    "n",
+    "null",
+    "~",
+    "",
+    "!!bool false",
+    "0x0",
+    "00",
+    "0.0",
+]
+G20_FALSE = ["false", "False", "FALSE", "0", "false # comment", "0 # comment"]
+G20 = {f"flag={v!r}": f"steps:\n  - id: s1\n    human_gate_required: {v}\n" for v in G20_TRUE}
+G20_CONTROLS = {
+    f"flag={v!r}": f"steps:\n  - id: s1\n    human_gate_required: {v}\n" for v in G20_FALSE
+}
+G19_SEVEN = {
+    "007": "steps:\n  - id: 7\n    human_gate_required: false\n"
+    "  - id: 007\n    human_gate_required: true\n",
+    "0x7": "steps:\n  - id: 7\n    human_gate_required: false\n"
+    "  - id: 0x7\n    human_gate_required: true\n",
+}
+
+
+def _sr_pinned(repo, text, step=STEP):
+    regen(repo, base_manifest=text, head_manifest=text)
+    return [
+        sm.read_manifest_gate_at(sha, step, repo.root, unlisted_step=u)
+        for sha, u in ((repo.head, True), (repo.base, False))
+    ]
+
+
+def _sr_path(repo, text, step=STEP):
+    if not hasattr(repo, "sr_dir"):
+        repo.sr_dir = repo.factory.mktemp("sr")
+    return sm.manifest_human_gate_required(_manifest(repo.sr_dir, text), step)
+
+
+def _assert_gated(repo, text, step=STEP):
+    assert sm._manifest_gate_scan(text, step) is True
+    assert _sr_path(repo, text, step) is True
+    for read in _sr_pinned(repo, text, step):
+        assert read["error"] is None and read["flag"] is True
+
+
+def _assert_default_gates(repo, default):
+    """The default branch has `default`; head lists s1 canonically false: effective True."""
+    regen(repo, base_manifest=default, head_manifest=MANIFEST_FALSE)
+    assert _eff(repo) == {"flag": True, "error": None}
+    assert S3_GENERIC in req_w18_detail(repo)
+
+
+def req_w18_detail(repo):
+    return req_w18(repo).detail
+
+
+@pytest.mark.parametrize("text", list(G14.values()), ids=list(G14))
+def test_g14_duplicate_key_in_one_item_is_true(repo, text):
+    _assert_gated(repo, text)
+
+
+def test_g14_end_to_end_default_branch_repro(repo, use_sm, monkeypatch, capsys):
+    _assert_default_gates(repo, G14_REPRO)
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and S3_GENERIC in out
+
+
+@pytest.mark.parametrize("text", list(G15.values()), ids=list(G15))
+def test_g15_second_or_noncanonical_steps_key_is_true(repo, text):
+    _assert_gated(repo, text)
+
+
+@pytest.mark.parametrize("text", list(G15B.values()), ids=list(G15B))
+def test_g15b_colon_independent_steps_key_and_document_markers_are_true(repo, text):
+    _assert_gated(repo, text)
+
+
+@pytest.mark.parametrize("text", list(G15_CONTROLS.values()), ids=list(G15_CONTROLS))
+def test_g15_control_single_leading_marker_stays_false(repo, text):
+    assert sm._manifest_gate_scan(text, STEP) is False
+    assert _sr_path(repo, text) is False
+
+
+@pytest.mark.parametrize("text", list(G16.values()), ids=list(G16))
+def test_g16_escaped_tagged_or_explicit_keys_are_true(repo, text):
+    _assert_gated(repo, text)
+
+
+@pytest.mark.parametrize("text", list(G16B.values()), ids=list(G16B))
+def test_g16b_quoted_span_at_the_start_of_the_body_is_true(repo, text):
+    _assert_gated(repo, text)
+
+
+@pytest.mark.parametrize(
+    "text", [G16["escaped_flag_key"], G16["tagged_id_key"], G16B["unclosed_double"]]
+)
+def test_g16_end_to_end_default_read_is_true(repo, text):
+    _assert_default_gates(repo, text)
+
+
+def test_g16_controls_quoted_keys_without_escapes_are_unchanged(repo):
+    assert (
+        sm._manifest_gate_scan('steps:\n  - id: s1\n    "human_gate_required": true\n', STEP)
+        is True
+    )
+    adjacent = 'steps:\n  - id: s1\n    "human_gate_required":true\n'
+    assert sm._manifest_gate_scan(adjacent, STEP) is True
+    false = "steps:\n  - id: s1\n    'human_gate_required': false\n"
+    assert sm._manifest_gate_scan(false, STEP) is False
+    assert _sr_path(repo, false) is False
+
+
+@pytest.mark.parametrize("text", list(G17.values()), ids=list(G17))
+def test_g17_noncanonical_id_or_missing_id_is_true(repo, text):
+    _assert_gated(repo, text)
+
+
+def test_g17_repro_scans_true_not_false():
+    assert sm._manifest_scan(G17["escaped_id_next_to_canonical"], STEP) == (True, [])
+
+
+def test_g17_control_quoted_id_with_false_is_false(repo):
+    text = "steps:\n  - id: 's1'\n    human_gate_required: false\n"
+    assert sm._manifest_gate_scan(text, STEP) is False
+    assert _sr_path(repo, text) is False
+    assert [r["flag"] for r in _sr_pinned(repo, text)] == [False, False]
+
+
+def _g18_setup(repo, committed=MANIFEST_TRUE):
+    regen(repo, base_manifest=committed, head_manifest=committed)
+    sub = repo.root / "sub"
+    (sub / "contract").mkdir(parents=True)
+    return sub
+
+
+def _eff_at(repo, root):
+    main = sm.read_default_branch_suspension(root)
+    return sm.effective_manifest_human_gate(STEP, repo.head, main, root)
+
+
+def _g18_modified(repo):
+    sub = _g18_setup(repo)
+    _write_wt(repo, MANIFEST_FALSE)
+    (sub / MANIFEST_PATH).write_text(MANIFEST_TRUE)
+    return sub
+
+
+def test_g18_subdirectory_repo_root_compares_the_toplevel_manifest(repo):
+    sub = _g18_modified(repo)
+    assert _eff_at(repo, sub) == {"flag": True, "error": _egprefix(repo, "modified")}
+
+
+def test_g18_cli_from_a_subdirectory_compares_the_toplevel_manifest(repo, monkeypatch, capsys):
+    sub = _g18_modified(repo)
+    shutil.copytree(repo.root / ".claudetmp", sub / ".claudetmp")
+    monkeypatch.chdir(sub)
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and f"ERROR=dep-low: {_egprefix(repo, 'modified')}" in out
+
+
+def test_g18_control_clean_toplevel_reads_the_toplevel_file_not_sub(repo):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    (sub / MANIFEST_PATH).write_text(MANIFEST_TRUE)  # differs from head; must be ignored
+    assert _eff_at(repo, sub) == {"flag": False, "error": None}
+
+
+def _e_g5(sub, why):
+    return (
+        f"S3: could not resolve the git toplevel from {str(sub)!r} ({why}); failing closed, re-run"
+    )
+
+
+def test_g18_rev_parse_timeout_is_e_g5(repo, monkeypatch):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    _fake_git(
+        monkeypatch,
+        lambda args: (
+            None if args[0] == "rev-parse" and "--show-toplevel" in args else NotImplemented
+        ),
+    )
+    assert _eff_at(repo, sub) == {
+        "flag": True,
+        "error": _e_g5(sub, "timeout or git could not start"),
+    }
+
+
+@pytest.mark.parametrize(
+    "stub,why",
+    [
+        (b"relative/dir\n", "not an absolute directory"),
+        (b"/nonexistent-g18-dir\n", "not an absolute directory"),
+        (b"\n", "not an absolute directory"),
+        (b"\xff\xfe\n", "not an absolute directory"),
+    ],
+)
+def test_g18_unusable_rev_parse_output_is_e_g5(repo, monkeypatch, stub, why):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    _fake_git(
+        monkeypatch,
+        lambda args: (
+            _cp(0, stub) if args[0] == "rev-parse" and "--show-toplevel" in args else NotImplemented
+        ),
+    )
+    assert _eff_at(repo, sub) == {"flag": True, "error": _e_g5(sub, why)}
+
+
+def test_g18_outside_any_repo_head_read_error_fires_first(repo, scratch_factory):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    main = sm.read_default_branch_suspension(repo.root)
+    outside = scratch_factory.mktemp("outside")
+    res = sm.effective_manifest_human_gate(STEP, repo.head, main, outside)
+    assert res["flag"] is True
+    # the head read fails first when the manifest cannot be read outside a repo
+    assert res["error"].startswith("S3: could not read")
+
+
+def test_g18_bare_repo_is_e_g5_exit_128(repo, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    main = sm.read_default_branch_suspension(repo.root)
+    bare = repo.origin
+    real = sm._git
+
+    def wrapper(args, repo_root, env=None):
+        # head and default reads still use the working repo; only G4 addresses the bare one
+        return real(args, bare if args[0] == "rev-parse" else repo_root, env)
+
+    monkeypatch.setattr(sm, "_git", wrapper)
+    res = sm.effective_manifest_human_gate(STEP, repo.head, main, repo.root)
+    assert res["flag"] is True
+    assert res["error"].startswith(
+        f"S3: could not resolve the git toplevel from {str(repo.root)!r} (exit 128: "
+    )
+
+
+def test_g18_rev_parse_runs_after_the_head_read_and_before_lstat(repo, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    main = sm.read_default_branch_suspension(repo.root)
+    events = []
+    real_run, real_lstat = subprocess.run, os.lstat
+
+    def spy_run(argv, *a, **k):
+        events.append(("git", list(argv)[3:]))
+        return real_run(argv, *a, **k)
+
+    def spy_lstat(path, *a, **k):
+        if str(path).endswith(MANIFEST_PATH):
+            events.append(("lstat", str(path)))
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    monkeypatch.setattr(sm.os, "lstat", spy_lstat)
+    assert sm.effective_manifest_human_gate(STEP, repo.head, main, repo.root)["error"] is None
+    kinds = [
+        (
+            "tree"
+            if e[0] == "git" and e[1][:1] == ["ls-tree"] and repo.head in e[1]
+            else (
+                "show"
+                if e[0] == "git" and e[1][:1] == ["show"] and repo.head in e[1][1]
+                else (
+                    "toplevel"
+                    if e[0] == "git" and e[1] == ["rev-parse", "--show-toplevel"]
+                    else "lstat" if e[0] == "lstat" else None
+                )
+            )
+        )
+        for e in events
+    ]
+    order = [k for k in kinds if k]
+    assert order == ["tree", "show", "toplevel", "lstat"]
+
+
+@pytest.mark.parametrize("v", G20_TRUE, ids=[f"flag={v!r}" for v in G20_TRUE])
+def test_g20_non_canonical_false_spellings_are_true(repo, v):
+    _assert_gated(repo, G20[f"flag={v!r}"])
+
+
+@pytest.mark.parametrize("v", G20_FALSE, ids=[f"flag={v!r}" for v in G20_FALSE])
+def test_g20_canonical_false_spellings_are_false(repo, v):
+    text = G20_CONTROLS[f"flag={v!r}"]
+    assert sm._manifest_gate_scan(text, STEP) is False
+    assert _sr_path(repo, text) is False
+    assert [(r["error"], r["flag"]) for r in _sr_pinned(repo, text)] == [(None, False)] * 2
+
+
+def test_g20_end_to_end_quoted_false_on_default_gates(repo, use_sm, monkeypatch, capsys):
+    _assert_default_gates(repo, G20["flag='\"false\"'"])
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and S3_GENERIC in out
+
+
+# --- AM-4 SR-AL (#2392): the canonical-line allowlist -------------------------------------
+
+UNICODE_WS = [" ", "　", " ", " ", " ", " "]
+_HGR = "    human_gate_required: "
+_ID_LINE = "  - id: s1\n"
+
+
+def _g22_fixtures():
+    """{name: text}: a Unicode space in each position of an otherwise canonical `false` item."""
+    out = {}
+    for c in UNICODE_WS:
+        tag = f"U+{ord(c):04X}"
+        out[f"after_false-{tag}"] = f"steps:\n{_ID_LINE}{_HGR}false{c}\n"
+        out[f"after_zero-{tag}"] = f"steps:\n{_ID_LINE}{_HGR}0{c}\n"
+        out[f"before_value-{tag}"] = f"steps:\n{_ID_LINE}{_HGR}{c}false\n"
+        out[f"before_comment-{tag}"] = f"steps:\n{_ID_LINE}{_HGR}false{c} # c\n"
+        out[f"replacing_space-{tag}"] = f"steps:\n{_ID_LINE}{_HGR}false{c}# c\n"
+        out[f"in_indent-{tag}"] = f"steps:\n{_ID_LINE}{c}  human_gate_required: false\n"
+        out[f"after_dash-{tag}"] = f"steps:\n  -{c}id: s1\n{_HGR}false\n"
+        out[f"before_colon-{tag}"] = f"steps:\n{_ID_LINE}    human_gate_required{c}: false\n"
+        out[f"after_id-{tag}"] = f"steps:\n  - id: s1{c}\n{_HGR}false\n"
+        out[f"only_char_line-{tag}"] = f"steps:\n{_ID_LINE}{c}\n{_HGR}false\n"
+    return out
+
+
+G22 = _g22_fixtures()
+G22_CONTROLS = {
+    "comment_non_ascii": f"steps:\n{_ID_LINE}{_HGR}false # — note\n",
+    "quoted_non_ascii_name": f'steps:\n{_ID_LINE}    name: "a — b"\n{_HGR}false\n',
+}
+_ITEM_F = f"{_ID_LINE}{_HGR}false\n"
+G23 = {
+    "flag_continuation_true": f"steps:\n{_ID_LINE}{_HGR}false\n      true\n",
+    "flag_continuation_digit": f"steps:\n{_ID_LINE}{_HGR}false\n      5\n",
+    "flag_continuation_quote": f'steps:\n{_ID_LINE}{_HGR}false\n      b"\n',
+    "id_continuation_s1": f"steps:\n  - id: s1\n      x\n{_HGR}false\n",
+    "tier_continuation": f"steps:\n{_ID_LINE}    risk_tier: LOW\n      HIGH\n{_HGR}false\n",
+    "nested_signoffs": (
+        f"steps:\n{_ID_LINE}    required_signoffs:\n      - code-review\n{_HGR}false\n"
+    ),
+    "indent_between_item_and_key": f"steps:\n{_ID_LINE}   x: y\n{_HGR}false\n",
+    "key_before_first_item": f"steps:\n{_HGR}false\n{_ID_LINE}",
+}
+G23_ID5 = "steps:\n  - id: 5\n      x\n    human_gate_required: false\n"
+G23_CONTROL = f"steps:\n{_ID_LINE}    required_signoffs: [code-review]\n{_HGR}false\n"
+_B21 = f"steps:\n{_ITEM_F}"
+_S1_TRUE = f"{_ID_LINE}{_HGR}true\n"
+G21B = {
+    "column0_comment": f"{_B21}# c\n{_S1_TRUE}",
+    "column0_blank": f"{_B21}\n{_S1_TRUE}",
+    "column0_tab_only": f"{_B21}\t\n{_S1_TRUE}",
+    "line_starting_with_nbsp": f"{_B21} foo\n{_S1_TRUE}",
+    "line_starting_with_tab": f"{_B21}\tfoo\n{_S1_TRUE}",
+    "line_starting_with_ideographic_space": f"{_B21}　foo\n{_S1_TRUE}",
+}
+G21B_CONTROL = f"{_B21}# c\n\n  - id: other\n    human_gate_required: false\n"
+_G25B_HEAD = f"{_B21}"
+G25B = {
+    "escaped_steps_key": f'{_G25B_HEAD}"st\\x65ps":\n{_S1_TRUE}',
+    "tagged_steps_key": f"{_G25B_HEAD}!!str steps:\n{_S1_TRUE}",
+    "explicit_steps_key": f"{_G25B_HEAD}? steps\n{_S1_TRUE}",
+    "unclosed_steps_key": f'{_G25B_HEAD}"steps\n{_S1_TRUE}',
+}
+G25B_CONTROL = f'{_G25B_HEAD}"name": x\n'
+# T-G26 (AR-AL-4): characters YAML loaders disagree on as line breaks; the whole text is True.
+G26_CHARS = ["\u000b", "\u000c", "\u001c", "\u001d", "\u001e", "\u0085", "\u2028", "\u2029"]
+G26 = {}
+for _c in G26_CHARS:
+    _tag = f"U+{ord(_c):04X}"
+    G26[f"after_false-{_tag}"] = f"steps:\n{_ID_LINE}{_HGR}false{_c}\n"
+    G26[f"in_comment-{_tag}"] = f"steps:\n{_ID_LINE}{_HGR}false # a{_c}b\n"
+    G26[f"in_dq_value-{_tag}"] = f'steps:\n{_ID_LINE}    name: "a{_c}b"\n{_HGR}false\n'
+G26_CONTROLS = {
+    "dq_value_nbsp": f'steps:\n{_ID_LINE}    name: "a\u00a0b"\n{_HGR}false\n',
+}
+_TEMPLATE_PATH = REPO / "contract/step-manifest.template.yaml"
+TEMPLATE = _TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+G22_POSITIONS = sorted({name.split("-")[0] for name in G22})
+
+
+@pytest.mark.parametrize("position", G22_POSITIONS)
+def test_g22_unicode_whitespace_in_any_position_is_true(repo, position):
+    names = [name for name in G22 if name.split("-")[0] == position]
+    assert len(names) == len(UNICODE_WS)
+    for name in names:
+        _assert_gated(repo, G22[name])
+
+
+def test_g22_end_to_end_nbsp_padded_default_gates(repo, use_sm, monkeypatch, capsys):
+    _assert_default_gates(repo, G22["after_false-U+00A0"])
+    code, out = cli(monkeypatch, capsys, repo)
+    assert code == 4 and S3_GENERIC in out
+
+
+@pytest.mark.parametrize("name", list(G22_CONTROLS), ids=list(G22_CONTROLS))
+def test_g22_control_non_ascii_in_a_comment_or_quoted_value_is_false(repo, name):
+    text = G22_CONTROLS[name]
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+    assert _sr_path(repo, text) is False
+
+
+@pytest.mark.parametrize("name", list(G23), ids=list(G23))
+def test_g23_continuation_and_nesting_is_true(repo, name):
+    _assert_gated(repo, G23[name])
+
+
+def test_g23_numeric_id_continuation_is_true_for_step_5(repo):
+    assert sm._manifest_gate_scan(G23_ID5, "5") is True
+    assert _yaml_says_gated(G23_ID5, "5") is False  # PyYAML reads the id '5 x': no match
+    assert sm._manifest_gate_scan(G23_ID5, "5 x") is True
+
+
+def test_g23_control_flow_list_of_signoffs_is_false(repo):
+    assert sm._manifest_scan(G23_CONTROL, STEP) == (False, [STEP])
+    assert _sr_path(repo, G23_CONTROL) is False
+
+
+@pytest.mark.parametrize("name", list(G21B), ids=list(G21B))
+def test_g21b_block_does_not_end_at_column0_noise(repo, name):
+    _assert_gated(repo, G21B[name])
+
+
+def test_g21b_control_column0_comment_and_blank_between_different_items(repo):
+    assert sm._manifest_scan(G21B_CONTROL, STEP) == (False, [STEP, "other"])
+    assert _sr_path(repo, G21B_CONTROL) is False
+
+
+def test_g21b_a_column0_key_ends_the_block_without_changing_the_result():
+    base = sm._manifest_scan(MANIFEST_FALSE, STEP)
+    assert base == (False, [STEP])
+    assert sm._manifest_scan(MANIFEST_FALSE + "x: 1\n", STEP) == base
+
+
+@pytest.mark.parametrize("name", list(G25B), ids=list(G25B))
+def test_g25b_outside_block_quoted_or_tagged_second_steps_key_is_true(repo, name):
+    _assert_gated(repo, G25B[name])
+
+
+def test_g25b_control_later_plain_quoted_key_has_no_effect(repo):
+    assert sm._manifest_scan(G25B_CONTROL, STEP) == (False, [STEP])
+    assert _sr_path(repo, G25B_CONTROL) is False
+
+
+@pytest.mark.parametrize("name", list(G26), ids=list(G26))
+def test_g26_line_break_ambiguous_character_scans_true(name):
+    assert sm._manifest_scan(G26[name], STEP) == (True, [])
+
+
+@pytest.mark.parametrize("placement", ["after_false", "in_comment", "in_dq_value"])
+def test_g26_path_function_and_both_pinned_reads_are_true(repo, placement):
+    # One repo per placement keeps the temp footprint inside the #2054 budget.
+    for char in G26_CHARS:
+        _assert_gated(repo, G26[f"{placement}-U+{ord(char):04X}"])
+
+
+def test_g26_u2028_default_with_canonical_head_is_effective_true(repo):
+    regen(repo, base_manifest=G26["after_false-U+2028"], head_manifest=MANIFEST_FALSE)
+    assert _eff(repo) == {"flag": True, "error": None}
+
+
+def test_g26_control_nbsp_in_a_closed_dq_value_is_false(repo):
+    text = G26_CONTROLS["dq_value_nbsp"]
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+    assert _sr_path(repo, text) is False
+
+
+def test_g26_control_template_with_u2014_still_scans_false_false_true():
+    assert "\u2014" in TEMPLATE
+    assert [sm._manifest_gate_scan(TEMPLATE, s) for s in ("1", "2", "3")] == [False, False, True]
+
+
+def test_g24_template_scans_steps_1_2_3_as_false_false_true():
+    assert [sm._manifest_gate_scan(TEMPLATE, s) for s in ("1", "2", "3")] == [False, False, True]
+
+
+def test_g24_template_committed_as_default_and_head(repo):
+    regen(repo, base_manifest=TEMPLATE, head_manifest=TEMPLATE)
+    assert _eff(repo, step="3") == {"flag": True, "error": None}
+    assert _eff(repo, step="1") == {"flag": False, "error": None}
+
+
+def test_g24_template_comment_above_steps_names_the_remedy():
+    lines = TEMPLATE.splitlines()
+    comment = lines[lines.index("steps:") - 1]
+    assert comment.startswith("#") and "[a, b]" in comment and "single-line values" in comment
+
+
+def test_g24_real_manifest_if_present_is_never_looser_than_yaml():
+    path = REPO / "contract/step-manifest.yaml"
+    if not path.exists():
+        return
+    _assert_never_looser(path.read_text(encoding="utf-8"))
+
+
+# --- T-G21: the grammar, one case per form and per rejection -----------------------------
+
+_BLANK = ("blank", 0, None, None)
+_ACCEPT = [
+    ("", _BLANK),
+    ("  \t", ("blank", 3, None, None)),
+    ("  # x — y", ("comment", 2, None, None)),
+    ("\t# tab comment", ("comment", 1, None, None)),
+    ("- id: s1", ("item", 0, "id", "s1")),
+    ("  - id: s1", ("item", 2, "id", "s1")),
+    ("  -   id: s1", ("item", 2, "id", "s1")),
+    ("    name: x", ("key", 4, "name", "x")),
+    ("    Xname: x", ("key", 4, "Xname", "x")),
+    ("    name: a b-c/d.e", ("key", 4, "name", "a b-c/d.e")),
+    ('    name: "a — b"', ("key", 4, "name", "a — b")),
+    ('    name: ""', ("key", 4, "name", "")),
+    ("    name: 'it''s'", ("key", 4, "name", "it''s")),
+    ("    list: []", ("key", 4, "list", "[]")),
+    ("    list: [ ]", ("key", 4, "list", "[ ]")),
+    ("    list: [a, b-c, d.e]", ("key", 4, "list", "[a, b-c, d.e]")),
+    ('    "name": x', ("key", 4, "name", "x")),
+    ("    'name': x", ("key", 4, "name", "x")),
+    ('    "id": s1', ("key", 4, "id", "s1")),
+    ("    'id': s1", ("key", 4, "id", "s1")),
+    ("    id: 7", ("key", 4, "id", "7")),
+    ("    id: 's1'", ("key", 4, "id", "s1")),
+    ('    id: "7"', ("key", 4, "id", "7")),
+    ("    id: 'yes'", ("key", 4, "id", "yes")),
+    ("    id: s1 # c", ("key", 4, "id", "s1")),
+    ("    id: s1\t# c", ("key", 4, "id", "s1")),
+    ("    id: s1   ", ("key", 4, "id", "s1")),
+    ("    name: x  # —", ("key", 4, "name", "x")),
+    *[
+        (f"    human_gate_required: {v}", ("key", 4, "human_gate_required", v))
+        for v in ("false", "False", "FALSE", "0", "true", "True", "TRUE", "1")
+    ],
+    ("  - human_gate_required: false", ("item", 2, "human_gate_required", "false")),
+]
+_REJECT = [
+    "\tid: s1",
+    "  -\tid: s1",
+    "  -",
+    "  - ",
+    "  - x",
+    "  - id:",
+    "    id:",
+    "    name:",
+    "    name: # c",
+    "    name:x",
+    "    name:\tx",
+    '    "na\\x6de": x',
+    "    'na''me': x",
+    "    'a b': x",
+    '    "a b": x',
+    "    näme: x",
+    "    !!str name: x",
+    "    !tag name: x",
+    "    ? name",
+    "    id: yes",
+    "    id: null",
+    "    id: On",
+    "    id: NO",
+    "    id: 007",
+    "    id: s1 x",
+    "    id: 's1",
+    "    id: 's1\"",
+    "    id:  s1",
+    "    id: s1 ",
+    "    name: a  b",
+    "    name: a:b",
+    "    name: a#b",
+    "    name: 'a",
+    '    name: "a',
+    "    name: [a",
+    '    name: "a\\nb"',
+    '    name: "a\x07b"',
+    "    name: |",
+    "    name: >",
+    "    name: &a x",
+    "    name: *a",
+    "    name: !!str x",
+    "    name: {a: b}",
+    "    name: -x",
+    "    name: x ",
+    "    human_gate_required: false#x",
+    '    human_gate_required: "false"',
+    "    human_gate_required: fAlSe",
+    "    human_gate_required: no",
+    "    human_gate_required: 00",
+    "    human_gate_required: false ",
+    "    human_gate_required: !!bool false",
+    "    name: x",
+    " ",
+    "　# c",
+]
+
+
+@pytest.mark.parametrize("line,expected", _ACCEPT, ids=[repr(a[0]) for a in _ACCEPT])
+def test_g21_classify_accepts_each_canonical_form(line, expected):
+    assert sm._classify_steps_line(line) == expected
+
+
+@pytest.mark.parametrize("line", _REJECT, ids=[repr(r) for r in _REJECT])
+def test_g21_classify_rejects_each_non_canonical_form(line):
+    assert sm._classify_steps_line(line) is None
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('"clean": x', False),
+        ('"a b"', False),
+        ('"unclosed', True),
+        ("'unclosed", True),
+        ('"\\x41"', True),
+        ('"a\\"b"', True),
+        ("'a''b'", True),
+        ("'lone'", False),
+        ("''", False),
+        ('""', False),
+        ("'a' ''", False),
+        ("plain", False),
+        ("", False),
+        ('"', True),
+        ("'", True),
+    ],
+)
+def test_g21_bad_quoted_span(body, expected):
+    assert sm._bad_quoted_span(body) is expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("steps:", True),
+        ("steps: # c", True),
+        ('"steps":', True),
+        ("'steps' :", True),
+        ("steps :", True),
+        ("? steps", True),
+        ("? steps\t", True),
+        ("steps:[a:b]", True),
+        ("steps:[a]", True),
+        ("steps", True),
+        ("stepsx:", False),
+        ("xsteps:", False),
+        ("other: steps", False),
+        ("- id: steps", False),
+        ("?x steps", False),
+        ("name: x", False),
+    ],
+)
+def test_g21_is_steps_key_line(line, expected):
+    assert sm._is_steps_key_line(line) is expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (MANIFEST_FALSE, (False, [STEP])),
+        (MANIFEST_TRUE, (True, [STEP])),
+        ("steps:\n  - id: other\n", (None, ["other"])),
+        ("steps:\n", (None, [])),
+        ("foo: bar\n", (True, [])),
+        ("steps:\n  - name: x\n", (True, [])),
+        ("steps:\n  - id: s1\n    human_gate_required: false\n    - id: s2\n", (True, [])),
+        ("steps:\n  - id: s1\n  - id: s2\n   - id: s3\n", (True, [])),
+        ("steps:\n  - id: s1\n    name: human_gate_required\n", (True, [STEP])),
+        ("steps:\n  - id: s1\n    name: a\n    name: b\n", (True, [])),
+        ("steps:\n  - id: s1\n    human_gate_required: 1\n", (True, [STEP])),
+        ("steps:\n  - id: s1\n    human_gate_required: TRUE\n", (True, [STEP])),
+        ("steps:\n  - id: s1\n    human_gate_required: 0\n", (False, [STEP])),
+        ("steps: # c\n  - id: s1\n", (False, [STEP])),
+        ("steps:\t# c\n  - id: s1\n", (False, [STEP])),
+        ("steps:\n\n  # c\n  - id: s1\n", (False, [STEP])),
+        ("a: 1\nsteps:\n  - id: s1\nb: 2\n", (False, [STEP])),
+        ("steps:\n  -   id: s1\n      name: x\n", (False, [STEP])),
+        (
+            "steps:\n  - id: s1\n    name: x\n  - id: s2\n    human_gate_required: true\n",
+            (False, ["s1", "s2"]),
+        ),
+        ("steps:\n  - id: s2\n    name: x\n  - id: s1\n", (False, ["s2", STEP])),
+        ("steps:\n- id: s1\n  human_gate_required: false\n", (False, [STEP])),
+        ("steps:\n- id: s1\n  human_gate_required: false\n- id: s2\n", (False, [STEP, "s2"])),
+        ("steps:\n  - id: s1\n -\n", (True, [])),
+    ],
+)
+def test_g21_manifest_scan_exact_results(text, expected):
+    assert sm._manifest_scan(text, STEP) == expected
+
+
+def test_g21_scan_accepts_integer_step_and_string_step_alike():
+    assert sm._manifest_scan("steps:\n  - id: 5\n", 5) == (False, ["5"])
+    assert sm._manifest_scan("steps:\n  - id: 5\n", "5") == (False, ["5"])
+
+
+def test_g21_every_target_item_is_checked_not_just_the_first():
+    text = f"steps:\n{_ITEM_F}  - id: s1\n    name: x\n{_ID_LINE}{_HGR}true\n"
+    assert sm._manifest_scan(text, STEP) == (True, [STEP, STEP, STEP])
+
+
+def test_g21_a_target_with_a_stray_flag_token_is_true():
+    text = "steps:\n  - id: s1\n    name: human_gate_required\n"
+    assert sm._manifest_scan(text, STEP) == (True, [STEP])
+    text = "steps:\n  - id: s2\n    name: human_gate_required\n  - id: s1\n"
+    assert sm._manifest_scan(text, STEP) == (False, ["s2", STEP])
+
+
+def test_g21_non_target_flag_token_is_ignored_only_when_grammar_allows():
+    text = "steps:\n  - id: s2\n    human_gate_required: true\n  - id: s1\n"
+    assert sm._manifest_scan(text, STEP) == (False, ["s2", STEP])
+    text = "steps:\n  - id: s2\n    human_gate_required: maybe\n  - id: s1\n"
+    assert sm._manifest_scan(text, STEP) == (True, [])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "---\n---\nsteps:\n  - id: s1\n",
+        "--- steps: []\n",
+        "--- !t\nsteps:\n",
+        "...\nsteps:\n",
+        "steps:\n  - id: s1\n---\n",
+        "steps:\n  - id: s1\n...\n",
+        "a: 1\n---\nsteps:\n  - id: s1\n",
+        "a: &x 1\nsteps:\n  - id: s1\n",
+        "a: *x\nsteps:\n  - id: s1\n",
+        "<<: x\nsteps:\n  - id: s1\n",
+        "!!map\nsteps:\n  - id: s1\n",
+        "? a\nsteps:\n  - id: s1\n",
+        '"a\\x41": 1\nsteps:\n  - id: s1\n',
+        "'a''b': 1\nsteps:\n  - id: s1\n",
+        '"a: 1\nsteps:\n  - id: s1\n',
+        "'a: 1\nsteps:\n  - id: s1\n",
+        "steps:\n  - id: s1\nsteps:\n",
+        'steps:\n  - id: s1\n"steps":\n',
+    ],
+)
+def test_g21_outside_block_rules_gate_the_whole_scan(text):
+    assert sm._manifest_scan(text, STEP)[0] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["---\nsteps:\n  - id: s1\n", "--- # c\nsteps:\n  - id: s1\n", "---\t\nsteps:\n  - id: s1\n"],
+)
+def test_g21_one_bare_or_commented_leading_marker_is_allowed(text):
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+
+
+def test_g21_marker_check_is_ascii_whitespace_only():
+    assert sm._DOC_MARKER_RE.match("--- ") is None
+    assert sm._DOC_MARKER_RE.match("---\t") is not None
+    assert sm._DOC_MARKER_RE.match("...") is not None
+    assert sm._DOC_MARKER_RE.match("--x") is None
+
+
+@pytest.mark.parametrize("first", ["X", "z", "A", "_"])
+def test_g21_block_ends_at_every_ascii_printable_first_char_except_dash_and_hash(first):
+    # Boundary of the AR-AL-1 end-of-block range ("!".."~" minus "-" and "#"): a plain
+    # top-level key after the block must end it, not make the block non-canonical.
+    base = sm._manifest_scan(MANIFEST_FALSE, STEP)
+    assert base == (False, [STEP])
+    assert sm._manifest_scan(MANIFEST_FALSE + f"{first}: 1\n", STEP) == base
+
+
+@pytest.mark.parametrize("first", ["~", "}"])
+def test_g21_block_ending_line_is_held_to_the_outside_allowlist(first):
+    # AL-WD: the line that ends the block is an outside line; `~`/`}` are not KEY characters.
+    assert sm._manifest_scan(MANIFEST_FALSE + f"{first}: 1\n", STEP) == (True, [])
+
+
+def test_g21_a_trailing_comment_naming_the_flag_key_is_ignored_by_the_raw_net():
+    text = "steps:\n  - id: s1\n    name: x # human_gate_required\n"
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+
+
+def test_g21_raw_net_counts_every_flag_token_not_just_one():
+    # `name: human_gate_required` is a second token next to the real key: stricter than YAML, True.
+    text = "steps:\n  - id: s1\n    name: human_gate_required\n    human_gate_required: false\n"
+    assert sm._manifest_scan(text, STEP) == (True, [STEP])
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["- !x\n", "- ? a\n", "a:\n  ? x\n", "a:\n  !x y\n", "--- \u00a0\n", "--- X\n"],
+)
+def test_g21_outside_block_tag_or_explicit_key_in_nested_or_dash_body_gates(prefix):
+    assert sm._manifest_scan(prefix + MANIFEST_FALSE, STEP)[0] is True
+
+
+def test_g21_an_indented_steps_word_outside_the_block_is_not_a_second_steps_key():
+    text = "a:\n  steps: 1\n" + MANIFEST_FALSE
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+
+
+@pytest.mark.parametrize("comment", ["&x", "*x", "<<: x"])
+def test_g21_outside_block_anchor_text_in_a_trailing_comment_is_ignored(comment):
+    text = f"a: 1 # {comment}\n" + MANIFEST_FALSE
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+
+
+# --- T-G25 (AL-6): E-G5 wording ------------------------------------------------------------
+
+
+def test_g25_rev_parse_oserror_is_e_g5_could_not_start(repo, monkeypatch):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    real = subprocess.run
+
+    def run(argv, *a, **k):
+        if "rev-parse" in argv and "--show-toplevel" in argv:
+            raise FileNotFoundError("git")
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _eff_at(repo, sub) == {
+        "flag": True,
+        "error": _e_g5(sub, "timeout or git could not start"),
+    }
+
+
+def test_g25_exit_128_with_empty_stderr_has_no_trailing_colon(repo, monkeypatch):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    _fake_git(
+        monkeypatch,
+        lambda args: (
+            _cp(128) if args[0] == "rev-parse" and "--show-toplevel" in args else NotImplemented
+        ),
+    )
+    assert _eff_at(repo, sub) == {"flag": True, "error": _e_g5(sub, "exit 128")}
+
+
+def test_g25_exit_nonzero_with_stderr_keeps_the_first_line(repo, monkeypatch):
+    sub = _g18_setup(repo, MANIFEST_FALSE)
+    _fake_git(
+        monkeypatch,
+        lambda args: (
+            _cp(1, err=b"boom\nmore\n")
+            if args[0] == "rev-parse" and "--show-toplevel" in args
+            else NotImplemented
+        ),
+    )
+    assert _eff_at(repo, sub) == {"flag": True, "error": _e_g5(sub, "exit 1: boom")}
+
+
+def test_g25_e_g3_timeout_wording_is_unchanged(repo, monkeypatch):
+    _fake_git(monkeypatch, lambda args: None if args[0] == "ls-tree" else NotImplemented)
+    res = sm.read_manifest_gate_at(repo.head, STEP, repo.root, unlisted_step=True)
+    assert res == {"flag": True, "blob": None, "error": "timeout"}
+
+
+def test_g18_real_rev_parse_outside_any_repo_is_e_g5_with_real_stderr(
+    repo, monkeypatch, scratch_factory
+):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    main = sm.read_default_branch_suspension(repo.root)
+    outside = scratch_factory.mktemp("outside_repo")
+    real = sm._git
+
+    def wrapper(args, repo_root, env=None):
+        return real(args, outside if args[0] == "rev-parse" else repo_root, env)
+
+    monkeypatch.setattr(sm, "_git", wrapper)
+    res = sm.effective_manifest_human_gate(STEP, repo.head, main, repo.root)
+    assert res["flag"] is True
+    assert res["error"].startswith(
+        f"S3: could not resolve the git toplevel from {str(repo.root)!r} "
+        "(exit 128: fatal: not a git repository"
+    )
+    assert res["error"].endswith("); failing closed, re-run")
+
+
+# --- AM-4 AL-WD (#2392): the whole-document canonical-line allowlist ---------------------------
+
+G27_F1 = (
+    '  foo: "x\nsteps:\n  - id: s1\n    human_gate_required: false\nx"\n'
+    "  steps:\n    - id: s1\n      human_gate_required: true\n"
+)
+G27_F2 = (
+    "\ufeffsteps:\n  - id: s1\n    human_gate_required: true\n"
+    'foo: "x\nsteps:\n  - id: s1\n    human_gate_required: false\nx"\n'
+)
+G27 = {"f1_indented_document": G27_F1, "f2_bom": G27_F2}
+
+
+def _indent_all(text, n=2):
+    return "".join(" " * n + line for line in text.splitlines(keepends=True))
+
+
+G28_TRUE = {
+    "bom_first": "\ufeff" + MANIFEST_FALSE,
+    "bom_in_comment": "# a\ufeffb\n" + MANIFEST_FALSE,
+    "bom_in_dq_value": 'steps:\n  - id: s1\n    name: "a\ufeffb"\n    human_gate_required: false\n',
+    "bom_end_of_line": "foo: 1\ufeff\n" + MANIFEST_FALSE,
+    "indent_2": _indent_all(MANIFEST_FALSE, 2),
+    "indent_4": _indent_all(MANIFEST_FALSE, 4),
+    "tab_first_line": "\tfoo: 1\n" + MANIFEST_FALSE,
+    "indented_after_marker": "---\n" + _indent_all(MANIFEST_FALSE),
+    "indented_after_comment_and_blank": "# c\n\n" + _indent_all(MANIFEST_FALSE),
+}
+G28_CONTROLS = {
+    "leading_marker": "---\n" + MANIFEST_FALSE,
+    "content_after_indented_comments": "  # c\n  # d\n" + MANIFEST_FALSE,
+}
+
+G29_FRAGMENTS = {
+    "block_scalar_literal": "foo: |\n  text\n",
+    "block_scalar_folded": "foo: >-\n  text\n",
+    "dq_multiline": 'foo: "a\nb"\n',
+    "sq_multiline": "foo: 'a\nb'\n",
+    "plain_continuation": "foo: a\n  b\n",
+    "nested_block_list": "foo:\n  - a\n",
+    "two_level_nesting": "foo:\n  a:\n    b: c\n",
+    "sibling_indent_mismatch": "foo:\n  a: 1\n   b: 2\n",
+    "indented_under_top": "foo: 1\n  a: 2\n",
+    "flow_mapping": "foo: {a: 1}\n",
+    "unclosed_flow": "foo: [a, b\n",
+    "url_value": "url: https://x.example\n",
+    "no_space_after_colon": "foo:bar\n",
+    "digit_key": "1: x\n",
+    "dotted_key": "a.b: x\n",
+    "tilde_key": "~: 1\n",
+    "brace_key": "}: 1\n",
+    "top_level_sequence": "- x\n",
+    "directive": "%YAML 1.2\n",
+    "tab_indented_nested": "foo:\n\ta: 1\n",
+    "nbsp_indented_nested": "foo:\n\u00a0\u00a0a: 1\n",
+    "nbsp_led_key": "\u00a0foo: 1\n",
+    "dq_with_backslash": 'foo: "a\\b"\n',
+    "tagged_value": "foo: !x y\n",
+}
+G29 = {}
+for _name, _frag in G29_FRAGMENTS.items():
+    G29[f"before-{_name}"] = _frag + MANIFEST_FALSE
+    G29[f"after-{_name}"] = MANIFEST_FALSE + _frag
+
+_G30_NESTED = "role_mappings:\n  k: v\n  j: w\n"
+G30 = {
+    "nested_before": _G30_NESTED + MANIFEST_FALSE,
+    "nested_after": MANIFEST_FALSE + _G30_NESTED,
+    "open_without_nested_before": "role_mappings:\n" + MANIFEST_FALSE,
+    "open_without_nested_after": MANIFEST_FALSE + "role_mappings:\n",
+    "nested_with_interleaved_comment_and_blank": (
+        "role_mappings:\n  k: v\n# c\n\n  j: w\n" + MANIFEST_FALSE
+    ),
+    "nested_steps_word": "a:\n  steps: 1\n" + MANIFEST_FALSE,
+    "dq_non_ascii": 'name: "a \u2014 b"\n' + MANIFEST_FALSE,
+    "sq_escaped_quote": "name: 'it''s'\n" + MANIFEST_FALSE,
+    "flow_list": "list: [a, b]\n" + MANIFEST_FALSE,
+    "trailing_comment_net": "x: 1 # &x *x <<: y\n" + MANIFEST_FALSE,
+    "open_with_trailing_spaces": "foo: \n" + MANIFEST_FALSE,
+}
+
+
+def _oracle_step_ids(text):
+    """Step ids as a real YAML parser reads them (independent of the scanner under test)."""
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return set()
+    steps = doc.get("steps") if isinstance(doc, dict) else None
+    if not isinstance(steps, list):
+        return set()
+    return {str(item.get("id")) for item in steps if isinstance(item, dict) and "id" in item}
+
+
+def _assert_never_looser(text):
+    for step in _oracle_step_ids(text) | set(sm._manifest_scan(text, STEP)[1]):
+        if _yaml_says_gated(text, step):
+            assert sm._manifest_gate_scan(text, step) is True
+
+
+@pytest.mark.parametrize("name", list(G27), ids=list(G27))
+def test_g27_f1_and_f2_regressions_scan_true(repo, name):
+    text = G27[name]
+    assert _yaml_says_gated(text, "s1") is True
+    assert sm._manifest_scan(text, "s1") == (True, [])
+    assert _sr_path(repo, text, "s1") is True
+    head, default = _sr_pinned(repo, text, "s1")
+    assert head["error"] is None and head["flag"] is True
+    assert default["error"] is None and default["flag"] is True
+
+
+@pytest.mark.parametrize("name", list(G27), ids=list(G27))
+def test_g27_default_branch_decoy_with_canonical_head_is_effective_true(repo, name):
+    regen(repo, base_manifest=G27[name], head_manifest=MANIFEST_FALSE)
+    assert _eff(repo) == {"flag": True, "error": None}
+
+
+@pytest.mark.parametrize("name", list(G28_TRUE), ids=list(G28_TRUE))
+def test_g28_bom_and_indented_first_line_scan_true(name):
+    assert sm._manifest_scan(G28_TRUE[name], STEP) == (True, [])
+
+
+def test_g28_path_function_and_pinned_reads_are_true(repo):
+    for text in (G28_TRUE["bom_first"], G28_TRUE["indent_2"]):
+        _assert_gated(repo, text)
+
+
+@pytest.mark.parametrize("name", list(G28_CONTROLS), ids=list(G28_CONTROLS))
+def test_g28_controls_stay_false(name):
+    assert sm._manifest_scan(G28_CONTROLS[name], STEP) == (False, [STEP])
+
+
+def test_g28_decode_is_strict_utf8_so_a_bom_reaches_the_scan(tmp_path):
+    path = tmp_path / "step-manifest.yaml"
+    path.write_bytes(b"\xef\xbb\xbf" + MANIFEST_FALSE.encode())
+    assert sm.manifest_human_gate_required(path, STEP) is True
+
+
+@pytest.mark.parametrize("name", list(G29), ids=list(G29))
+def test_g29_outside_constructs_scan_exactly_true_empty(name):
+    assert sm._manifest_scan(G29[name], STEP) == (True, [])
+
+
+def test_g29_path_function_and_pinned_reads_are_true(repo):
+    for name in ("before-block_scalar_literal", "after-dq_multiline", "before-nested_block_list"):
+        _assert_gated(repo, G29[name])
+
+
+@pytest.mark.parametrize("name", list(G30), ids=list(G30))
+def test_g30_controls_stay_false(repo, name):
+    assert sm._manifest_scan(G30[name], STEP) == (False, [STEP])
+    assert _sr_path(repo, G30[name]) is False
+
+
+def test_g30_template_scans_false_false_true_through_both_pinned_reads(repo):
+    assert [sm._manifest_gate_scan(TEMPLATE, s) for s in ("1", "2", "3")] == [False, False, True]
+    assert [sm._manifest_scan(TEMPLATE, s)[1] for s in ("1", "2", "3")] == [["1", "2", "3"]] * 3
+    regen(repo, base_manifest=TEMPLATE, head_manifest=TEMPLATE)
+    assert _eff(repo, step="2") == {"flag": False, "error": None}
+    assert _eff(repo, step="3") == {"flag": True, "error": None}
+    for step, expected in (("1", False), ("2", False), ("3", True)):
+        for read in _sr_pinned(repo, TEMPLATE, step):
+            assert read["error"] is None and read["flag"] is expected
+
+
+def test_g30_an_indented_line_under_the_steps_key_stays_in_the_block():
+    # `steps:` is never an O-open parent: an indented line after it is governed by the block rules.
+    text = "steps:\n  - id: s1\n    human_gate_required: false\n    name: x\n"
+    assert sm._manifest_scan(text, STEP) == (False, [STEP])
+
+
+def _symlink_contract(repo):
+    real = repo.root.parent / "contract_real"
+    os.rename(repo.root / "contract", real)
+    os.symlink(real, repo.root / "contract")
+
+
+def _contract_as_file(repo):
+    shutil.rmtree(repo.root / "contract")
+    (repo.root / "contract").write_text(MANIFEST_FALSE)
+
+
+@pytest.mark.parametrize("how", [_symlink_contract, _contract_as_file])
+def test_g32_contract_not_a_real_directory_is_not_a_regular_file(repo, how):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    how(repo)
+    assert _eff(repo) == {"flag": True, "error": _egprefix(repo, "not a regular file")}
+
+
+def test_g32_lstat_oserror_on_the_contract_component_is_unreadable(repo, monkeypatch):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    real = os.lstat
+    seen = []
+
+    def fake(path, *a, **k):
+        seen.append(str(path))
+        if str(path) == str(repo.root / "contract"):
+            raise PermissionError(13, "Permission denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(sm.os, "lstat", fake)
+    assert _eff(repo) == {"flag": True, "error": _egprefix(repo, "unreadable: Permission denied")}
+    assert str(repo.root / MANIFEST_PATH) not in seen  # the first failing prefix decides
+
+
+def test_g32_contract_removed_while_head_has_the_manifest_is_deleted(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    shutil.rmtree(repo.root / "contract")
+    assert _eff(repo) == {"flag": True, "error": _egprefix(repo, "deleted")}
+
+
+def test_g32_contract_removed_with_no_manifest_at_either_sha_is_false(repo):
+    regen(repo)
+    shutil.rmtree(repo.root / "contract")
+    assert _eff(repo) == {"flag": False, "error": None}
+
+
+def test_g32_control_real_directory_with_a_matching_file_is_unchanged(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    assert _eff(repo) == {"flag": False, "error": None}
+
+
+def test_g33_oracle_ids_are_independent_of_the_scanner():
+    assert _oracle_step_ids(G27_F1) == {"s1"}
+    assert sm._manifest_scan(G27_F1, "s1")[1] == []
+    assert _oracle_step_ids("a: [") == set()
+    assert _oracle_step_ids("steps: 1\n") == set()
+
+
+@pytest.mark.parametrize("text", [G27_F1, G27_F2, TEMPLATE], ids=["f1", "f2", "template"])
+def test_g33_assert_never_looser_passes_on_the_fixed_scanner(text):
+    _assert_never_looser(text)
+
+
+def test_g33_assert_never_looser_catches_a_scanner_that_drops_the_id(monkeypatch):
+    monkeypatch.setattr(sm, "_manifest_scan", lambda text, step: (False, []))
+    with pytest.raises(AssertionError):
+        _assert_never_looser(G27_F1)
+
+
+def _wd_family():
+    """T-G34: decoy / indent / BOM transforms of a gated real block, as (text, step)."""
+    out = []
+    bases = [(MANIFEST_FALSE, STEP), (G21B["column0_comment"], STEP), (TEMPLATE, "3")]
+    for base, step in bases:
+        decoy = f"steps:\n  - id: {step}\n    human_gate_required: false\n"
+        before_steps = re.sub(r"(?m)^steps:\n", lambda _: "@@\nsteps:\n", base, count=1)
+        out += [
+            (_indent_all(base), step),
+            ("\ufeff" + base, step),
+            (before_steps.replace("@@\n", f'foo: "x\n{decoy}x"\n'), step),
+            (base + "foo: |\n" + _indent_all(decoy), step),
+            (base + "foo: x\n" + _indent_all(decoy), step),
+        ]
+    return out
+
+
+G34_FAMILY = _wd_family()
+G34_FAMILY_FLOOR = 8
+
+# T-G35: AL-WD-2 / AL-WD-3 forms the inlined outside-line classification must reject or accept.
+G35_TRUE = {
+    "nested_list_of_maps": "foo:\n  - a: 1\n",
+    "top_level_sequence_of_maps": "- a: 1\n",
+    "shallower_sibling_by_one": "foo:\n   a: 1\n  b: 2\n",
+    "shallower_sibling_to_one": "foo:\n  a: 1\n b: 2\n",
+    "indented_after_closed_parent": "foo:\n  a: 1\nbar: 1\n  b: 2\n",
+}
+G35_CONTROLS = {
+    "indent_reset_per_parent": "a:\n  k: 1\nb:\n    j: 2\n",
+    "dq_open_key": '"role":\n  k: v\n',
+    "sq_open_key": "'role':\n  k: v\n",
+}
+
+
+def _before_and_after(fragments):
+    out = {}
+    for name, frag in fragments.items():
+        out[f"before-{name}"] = frag + MANIFEST_FALSE
+        out[f"after-{name}"] = MANIFEST_FALSE + frag
+    return out
+
+
+G35_CASES = _before_and_after(G35_TRUE)
+G35_CONTROL_CASES = _before_and_after(G35_CONTROLS)
+
+
+@pytest.mark.parametrize("name", list(G35_CASES), ids=list(G35_CASES))
+def test_g35_outside_forms_scan_exactly_true_empty(name):
+    assert sm._manifest_scan(G35_CASES[name], STEP) == (True, [])
+
+
+@pytest.mark.parametrize("name", list(G35_CONTROL_CASES), ids=list(G35_CONTROL_CASES))
+def test_g35_controls_stay_false(name):
+    assert sm._manifest_scan(G35_CONTROL_CASES[name], STEP) == (False, [STEP])
+
+
+def test_g36_prefix_is_addressed_from_the_toplevel_not_repo_root(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    sub = repo.root / "subnc"
+    sub.mkdir()
+    assert _eff_at(repo, sub) == {"flag": False, "error": None}
+
+
+def test_g36_symlinked_toplevel_contract_is_seen_from_a_subdirectory_root(repo):
+    regen(repo, base_manifest=MANIFEST_FALSE, head_manifest=MANIFEST_FALSE)
+    sub = repo.root / "subreal"
+    (sub / "contract").mkdir(parents=True)
+    real = repo.root.parent / "contract_real_g36"
+    os.rename(repo.root / "contract", real)
+    os.symlink(real, repo.root / "contract")
+    assert _eff_at(repo, sub) == {"flag": True, "error": _egprefix(repo, "not a regular file")}
+
+
+def test_g37_each_cumulative_prefix_is_checked_outermost_first(repo, monkeypatch):
+    monkeypatch.setattr(sm, "_STEP_MANIFEST_PATH", "contract/nested/step-manifest.yaml")
+    regen(repo)
+    real = repo.root / "contract/real_nested"
+    real.mkdir()
+    os.symlink(real, repo.root / "contract/nested")
+    assert _eff(repo) == {
+        "flag": True,
+        "error": (
+            "S3: contract/nested/step-manifest.yaml in the working tree does not match head "
+            f"{repo.head[:12]} (not a regular file); commit or restore it, then re-run"
+        ),
+    }
+
+
+def test_g37_control_real_nested_directory_is_unchanged(repo, monkeypatch):
+    monkeypatch.setattr(sm, "_STEP_MANIFEST_PATH", "contract/nested/step-manifest.yaml")
+    regen(repo)
+    (repo.root / "contract/nested").mkdir()
+    assert _eff(repo) == {"flag": False, "error": None}
+
+
+# --- T-G19 (round 3): the differential oracle over every fixture -----------------------------
+
+
+def _yaml_says_gated(text, step):
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    steps = doc.get("steps") if isinstance(doc, dict) else None
+    if not isinstance(steps, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("id")) == str(step)
+        and bool(item.get("human_gate_required"))
+        for item in steps
+    )
+
+
+def _yaml_accepts(text):
+    try:
+        yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return True
+
+
+_G19_TEXTS = [
+    *MANIFEST_FIXTURES,
+    *[(text, STEP) for text in G13_DEFAULTS],
+    *[
+        (text, STEP)
+        for group in (
+            G14,
+            G15,
+            G15B,
+            G15_CONTROLS,
+            G16,
+            G16B,
+            G17,
+            G20,
+            G20_CONTROLS,
+            G21B,
+            G22,
+            G22_CONTROLS,
+            G23,
+            G25B,
+            G26,
+            G26_CONTROLS,
+            G27,
+            G28_TRUE,
+            G28_CONTROLS,
+            G29,
+            G30,
+        )
+        for text in group.values()
+    ],
+    (G21B_CONTROL, STEP),
+    (G23_CONTROL, STEP),
+    (G25B_CONTROL, STEP),
+    (G23_ID5, "5"),
+    *[(TEMPLATE, s) for s in ("1", "2", "3")],
+    *G34_FAMILY,
+    *[(t, "7") for t in G19_SEVEN.values()],
+    ("steps:\n  - s1\n", STEP),
+]
+G19_ACCEPTED_FLOOR = 214
+G19_GATED_FLOOR = 83
+
+
+@pytest.mark.parametrize("text,step", _G19_TEXTS)
+def test_g19_scan_is_never_looser_than_a_yaml_parser(text, step):
+    if _yaml_says_gated(text, step):
+        assert sm._manifest_gate_scan(text, step) is True
+
+
+@pytest.mark.parametrize("text,step", _G19_TEXTS)
+def test_g19_path_function_equals_scan_with_none_as_true(tmp_path, text, step):
+    scan = sm._manifest_gate_scan(text, step)
+    assert sm.manifest_human_gate_required(_manifest(tmp_path, text), step) is (
+        True if scan is None else scan
+    )
+
+
+@pytest.mark.parametrize("text,step", _G19_TEXTS)
+def test_g34_every_oracle_step_id_is_never_looser(text, step):
+    _assert_never_looser(text)
+
+
+def test_g34_family_transforms_gate_and_the_oracle_is_not_vacuous():
+    assert len(G34_FAMILY) == 15
+    live = [(t, s) for t, s in G34_FAMILY if _yaml_accepts(t) and _yaml_says_gated(t, s)]
+    assert len(live) >= G34_FAMILY_FLOOR
+    for text, step in live:
+        assert sm._manifest_gate_scan(text, step) is True
+
+
+def test_g19_oracle_is_not_vacuous():
+    accepted = sum(_yaml_accepts(text) for text, _ in _G19_TEXTS)
+    gated = sum(_yaml_says_gated(text, step) for text, step in _G19_TEXTS)
+    assert accepted >= G19_ACCEPTED_FLOOR
+    assert gated >= G19_GATED_FLOOR
+
+
+@pytest.mark.parametrize("text", list(G19_SEVEN.values()), ids=list(G19_SEVEN))
+def test_g19_numeric_alias_ids_scan_true_for_step_7(text):
+    assert _yaml_says_gated(text, "7")
+    assert sm._manifest_gate_scan(text, "7") is True
+
+
+def test_g19_oracle_skips_non_dict_items():
+    assert _yaml_says_gated("steps:\n  - s1\n", STEP) is False
+    assert sm._manifest_gate_scan("steps:\n  - s1\n", STEP) is True

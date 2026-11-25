@@ -701,7 +701,6 @@ def _load_suspension_manager():
 
 def _check_dep_mapper_suspension(
     repo_root: Path,
-    manifest_path: Path,
     step: Union[str, int],
     base_sha: str,
     head_sha: str,
@@ -710,7 +709,9 @@ def _check_dep_mapper_suspension(
     """REQ-W-18 (#2214): a `suspended:` dep-mapper LOW resolution must be fully valid.
 
     Calls check_suspended_resolutions with NO today / issue_state / read_text
-    override, so the production clock and live GitHub read are the only path.
+    override, so the production clock and live GitHub read are the only path. The step
+    manifest's human gate is read at pinned SHAs from the fixed path (#2392); the
+    `--manifest` override does not reach it.
     """
     try:
         sm = _load_suspension_manager()
@@ -733,13 +734,14 @@ def _check_dep_mapper_suspension(
     if changed is None:
         return CheckResult("REQ-W-18", False, f"git diff --name-only {base_sha}..{head_sha} failed")
     main = sm.read_default_branch_suspension(repo_root)
+    eff = sm.effective_manifest_human_gate(str(step), head_sha, main, repo_root)
     res = sm.check_suspended_resolutions(
         risk_text,
         str(step),
         base_sha,
         head_sha,
         risk_tier,
-        sm.manifest_human_gate_required(manifest_path, step),
+        eff["flag"],
         changed,
         main["text"],
         sm.read_exact_text(repo_root / sm.SUSPENSION_FILE),
@@ -747,6 +749,7 @@ def _check_dep_mapper_suspension(
         require_disclosure=True,
         repo_root=repo_root,
         main_suspension_error=main["error"],
+        human_gate_error=eff["error"],
     )
     if res["ok"]:
         if not any(
@@ -836,7 +839,7 @@ def assess_pr_readiness(
         _check_system_tests(entries, register_present, system_test_applicable),
         _check_evaluator_verdict(root, step),
         _check_handoff_artifacts(root, step),
-        _check_dep_mapper_suspension(root, manifest_path, step, base_sha, head_sha, risk_tier),
+        _check_dep_mapper_suspension(root, step, base_sha, head_sha, risk_tier),
     ]
 
     result = ReadinessResult(cid=cid, step=step, checks=checks)
