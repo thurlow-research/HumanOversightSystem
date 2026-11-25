@@ -647,15 +647,124 @@ CO_FILES = [
 ]
 
 
-@pytest.mark.parametrize("lines", CO_CASES)
-def test_t_co_1_humans_set_matches_requester_trust(lines, tmp_path):
-    from scripts.framework import requester_trust
+# Expected strict (R-A7) humans set per CO_CASES entry, pinned as literals so the
+# test cannot pass by computing both sides through the function under test.
+CO_HUMANS = [
+    {"carol"},
+    set(),
+    set(),
+    set(),
+    {"carol"},
+    {"carol", "dave"},
+    {"dave", "erin"},
+    {"dave"},
+    {"dave", "erin"},
+    {"frank"},
+    set(),
+    {"dave"},
+    {"dave", "erin"},
+    set(),
+]
 
+# Owner tokens the old merge-path parser accepted but the strict R-A7 parser
+# rejects. The resolver still resolves them, so the drift guard fires:
+# CodeownersDriftError is the DELIBERATE fail-closed outcome (escalate).
+CO_DIVERGENCE_CASES = [
+    (["/a/** alice"], "alice"),
+    (["/a/** @a#x"], "a"),
+    (["/a/** @-bad"], "-bad"),
+    (["/a/** @" + "b" * 40], "b" * 40),
+]
+
+
+def test_t_co_1_pins_cover_every_case():
+    assert len(CO_HUMANS) == len(CO_CASES)
+
+
+@pytest.mark.parametrize("lines,expected", list(zip(CO_CASES, CO_HUMANS)))
+def test_t_co_1_humans_set_is_strict_r_a7_literal(lines, expected):
     text = "\n".join(lines) + "\n"
-    (tmp_path / ".github").mkdir()
-    (tmp_path / ".github" / "CODEOWNERS").write_text(text)
-    assert ma._codeowners_humans_from_text(text) == requester_trust.codeowners_humans(str(tmp_path))
+    assert ma._codeowners_humans_from_text(text) == expected
     assert ma._codeowners_humans_from_text(None) == set()
+
+
+@pytest.mark.parametrize("lines,resolved", CO_DIVERGENCE_CASES)
+def test_t_co_1b_strict_divergence_fails_closed_with_drift_error(lines, resolved):
+    text = "\n".join(lines) + "\n"
+    assert ma._codeowners_humans_from_text(text) == set()
+    got = ma.resolve_reviewer_from_text(
+        text, ["a/f.py"], bot_accounts=BOT_ACCOUNTS, human_reviewer="default-human"
+    )
+    assert (got.login, got.source) == (resolved, "codeowners")
+    with pytest.raises(ma.CodeownersDriftError):
+        ma.check_resolution_consistent(got, text)
+
+
+# TD-2101 §10.5.1 (R-A7b): a `#` in a path token (escaped or not) gives the line no owners.
+HASH_PATH_LINES = [
+    ("docs/a#b.md @alice", "alice"),
+    (r"docs/a\#b.md @alice", "alice"),
+    (r"\#notes.md @bob", "bob"),
+]
+
+
+# Literal loop of origin/main 582bcd87f requester_trust.py:284-295, applied to text.
+def _main_rule(text):
+    humans = set()
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        for owner in line.split()[1:]:
+            owner = owner.lstrip("@")
+            if "/" in owner:
+                continue
+            humans.add(owner.lower())
+    return humans
+
+
+@pytest.mark.parametrize("line,login", HASH_PATH_LINES)
+def test_t_co_1c_hash_in_path_token_yields_no_owner(line, login):
+    # R-A7b (TD-2101 §10.5.1): the line contributes no owners, so the set is empty;
+    # the resolver (cuts at the first '#') falls through to the default human and
+    # the drift guard stays silent.
+    text = line + "\n"
+    assert ma._codeowners_humans_from_text(text) == set()
+    got = ma.resolve_reviewer_from_text(
+        text, ["docs/a#b.md"], bot_accounts=BOT_ACCOUNTS, human_reviewer="default-human"
+    )
+    assert got.login != login
+    assert got.source == "machine-accounts.env"
+    assert got.login == "default-human"
+    ma.check_resolution_consistent(got, text)
+
+
+@pytest.mark.parametrize("line,login", HASH_PATH_LINES)
+def test_t_co_1d_hash_path_owner_cannot_pass_the_drift_guard(line, login):
+    # The merge-path caller: the hash-path line is dropped per line, so a later
+    # `* @carol` still counts, and a resolution naming the hash-path owner now
+    # raises (before R-A7b it passed).
+    text = line + "\n* @carol\n"
+    assert ma._codeowners_humans_from_text(text) == {"carol"}
+    got = ma.resolve_reviewer_from_text(
+        text,
+        ["docs/a#b.md", "#notes.md"],
+        bot_accounts=BOT_ACCOUNTS,
+        human_reviewer="default-human",
+    )
+    assert (got.login, got.source) == ("carol", "codeowners")
+    ma.check_resolution_consistent(got, text)
+    # Each line's own login (architect advisory A2), never a shared one.
+    with pytest.raises(ma.CodeownersDriftError):
+        ma.check_resolution_consistent(ma.ReviewerResolution(login, "codeowners", (), None), text)
+
+
+def test_t_co_1d_subset_of_main_over_cases_and_hash_path_lines():
+    texts = ["\n".join(lines) + "\n" for lines in CO_CASES]
+    texts += [line + "\n" for line, _ in HASH_PATH_LINES]
+    texts += [line + "\n* @carol\n" for line, _ in HASH_PATH_LINES]
+    for t in texts:
+        assert ma._codeowners_humans_from_text(t) <= _main_rule(t), repr(t)
 
 
 @pytest.mark.parametrize("lines", CO_CASES)

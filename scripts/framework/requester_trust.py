@@ -13,6 +13,8 @@ Binding constraints (AD-1, §1.1 of TECHNICAL-DESIGN-1540):
     the gate's dependencies without a human-approval gate on the change.
     Permitted imports: the standard library, and
     scripts.framework.require_human_approval.is_bot_reviewer.
+    human_authorization.py (#2101) is a delegating reader: it imports only the
+    public parse_codeowners_humans / bot_baseline_from_env_text / loaders.
   - No predicate performs network I/O or reads the environment (except the
     union-only BOT_ACCOUNTS read in load_bot_accounts). The one fetch wrapper
     (fetch_collaborators) is the module's only network call, and it returns
@@ -246,9 +248,12 @@ def _diagnostic(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
+def parse_env_text(text: str) -> dict[str, str]:
+    """Pure line parser for `.env` text (never `source`d). Public so a caller
+    holding the file as text (e.g. the default-branch copy from the contents
+    API) shares this one parser rather than growing a second."""
     result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -262,37 +267,74 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
+def _parse_env_file(path: Path) -> dict[str, str]:
+    return parse_env_text(path.read_text(encoding="utf-8"))
+
+
 # ---------------------------------------------------------------------------
 # 1.3 Loaders
 # ---------------------------------------------------------------------------
 
 
-def codeowners_humans(repo_root: str = ".") -> set[str]:
-    """Individual human logins (lowercased, '@' stripped) named anywhere in
-    .github/CODEOWNERS. Team patterns (org/team) are not individual humans
-    and are skipped (AF-2). Empty if the file is missing. Originally promoted
-    verbatim from probe.py:_codeowners_humans (AD-1); since #2202 it also
-    strips inline comments.
+OWNER_LOGIN_RE = re.compile(r"@[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 
-    GitHub treats '#' as the start of a comment anywhere on a line, so each
-    line is truncated at the first '#' before tokenising (#2202). '\\#'
-    escapes are not supported: they are treated as a comment start, the
-    fail-safe direction (it can only drop owners, never add them)."""
+
+def _codeowners_rest(line: str) -> str:
+    """The text after a CODEOWNERS line's path token. A backslash escapes the
+    next character (so `\\ ` and `\\#` belong to the path); the path ends at the
+    first unescaped whitespace character."""
+    i = 0
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i].isspace():
+            return line[i:]
+        i += 1
+    return ""
+
+
+def parse_codeowners_humans(text: str) -> set[str]:
+    """Individual human logins (lowercased, '@' stripped) named in CODEOWNERS
+    `text` (R-A7). Pure: the text arrives from the caller.
+
+    Strict: only `@login` tokens that fullmatch OWNER_LOGIN_RE count; team
+    handles (org/team), emails and bare words are skipped, an owner token
+    containing `#` starts an inline comment that ends the owner list (that
+    token is not accepted), and an escaped space or `#` stays inside the path
+    token.
+
+    R-A7b (TD-2101 §10.5.1): a line whose path token contains `#`, escaped or
+    not, contributes no owners, so the result is always a subset of a
+    first-`#`-cut parse."""
+    humans: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        rest = _codeowners_rest(line)
+        if "#" in line[: len(line) - len(rest)]:
+            continue
+        for token in rest.split():
+            if "#" in token:
+                break
+            if "/" in token or not OWNER_LOGIN_RE.fullmatch(token):
+                continue
+            humans.add(token[1:].lower())
+    return humans
+
+
+def codeowners_humans(repo_root: str = ".") -> set[str]:
+    """Individual human logins (lowercased, '@' stripped) named in
+    .github/CODEOWNERS, parsed by parse_codeowners_humans (strict since R-A7:
+    only `@login` tokens count, inline `#` comments are cut and a `#` in the
+    path token drops the line). Team patterns
+    (org/team) are not individual humans and are skipped (AF-2). Empty if the
+    file is missing; a present but unreadable file raises."""
     path = _codeowners_path(repo_root)
     if not path.is_file():
         return set()
-    humans: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        parts = line.split()
-        for owner in parts[1:]:
-            owner = owner.lstrip("@")
-            if "/" in owner:
-                continue  # team pattern, not an individual human
-            humans.add(owner.lower())
-    return humans
+    return parse_codeowners_humans(path.read_text(encoding="utf-8"))
 
 
 def load_trusted_apps(repo_root: str = ".") -> set[str]:
@@ -311,6 +353,24 @@ def load_trusted_apps(repo_root: str = ".") -> set[str]:
     return apps
 
 
+def bot_baseline_from_env_text(text: str) -> set[str]:
+    """The four machine-account logins (worker, overseer, human App, Copilot)
+    named in `.env` text: non-empty values, stripped and lowercased. Pure; it
+    does NOT read BOT_ACCOUNTS from the environment."""
+    env = parse_env_text(text)
+    baseline: set[str] = set()
+    for key in (
+        "BOT_WORKER_USERNAME",
+        "BOT_OVERSEER_USERNAME",
+        "BOT_HUMAN_USERNAME",
+        "COPILOT_BOT_LOGIN",
+    ):
+        val = env.get(key, "").strip()
+        if val:
+            baseline.add(val.lower())
+    return baseline
+
+
 def load_bot_accounts(repo_root: str = ".") -> set[str]:
     """The exclusion input for is_bot_reviewer. Baseline = the four logins in
     machine-accounts.env; if BOT_ACCOUNTS is non-empty, the result is the
@@ -319,18 +379,9 @@ def load_bot_accounts(repo_root: str = ".") -> set[str]:
     let a compromised cron environment shrink the denylist and promote a bot
     to "human"."""
     path = _machine_accounts_path(repo_root)
-    baseline: set[str] = set()
-    if path.is_file():
-        env = _parse_env_file(path)
-        for key in (
-            "BOT_WORKER_USERNAME",
-            "BOT_OVERSEER_USERNAME",
-            "BOT_HUMAN_USERNAME",
-            "COPILOT_BOT_LOGIN",
-        ):
-            val = env.get(key, "").strip()
-            if val:
-                baseline.add(val.lower())
+    baseline = (
+        bot_baseline_from_env_text(path.read_text(encoding="utf-8")) if path.is_file() else set()
+    )
     env_accounts = {b.lower() for b in os.environ.get("BOT_ACCOUNTS", "").split() if b}
     return baseline | env_accounts
 

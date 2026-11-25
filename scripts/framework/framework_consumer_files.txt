@@ -106,6 +106,12 @@ scripts/framework/requester_trust.py
 scripts/framework/select_work_candidates.py
 scripts/framework/trusted-requesters.txt.example
 
+# ── scripts/framework/ — GitHub-native human-authorization verifier (#2101 S1) ──
+# Inert until S2 wires its consumers. Imports only require_human_approval.py and
+# requester_trust.py (both shipped above); reaches scripts/oversight/lib/audit_log
+# solely as a subprocess.
+scripts/framework/human_authorization.py
+
 # ── contract/dimensions/ — review-dimension registry data (#1643 W5, §C.2.11 item 1) ──
 contract/dimensions/core.yaml
 contract/dimensions/postures/review-read-only-gh-read.hos.json

@@ -381,9 +381,9 @@ def _load_configuration(repo_root: str, repo: str, budget: _Budget) -> _Configur
     if not codeowners:
         raise _ConfigFailure(
             "codeowners-no-individual-human",
-            "this file is valid but lists only team handles; team handles "
-            "do not confer authorization authority. Add at least one "
-            "individual user handle.",
+            "this file names no individual `@user` handle (team handles, "
+            "emails and bare names do not confer authorization authority). "
+            "Add at least one individual user handle.",
         )
 
     # B3 — apps.
