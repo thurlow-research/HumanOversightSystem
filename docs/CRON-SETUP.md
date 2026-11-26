@@ -315,11 +315,37 @@ does (#2405). After an unshallow the reap re-runs only when the 24 h stamp
 forces an immediate re-check. The shallow-escalated marker clears itself on the next run that
 reports a full clone.
 
+The reap runs at most once per 24 h per project. The stamp is
+`branch-reap/overseer-<project>.last` under the HOS state dir. It is written after every
+dry-run or `on` attempt, failures included. Mode `off` never runs it. Any overseer cycle that
+exits before the reap block skips it and does not stamp: for example a suspended or halted
+project, a held overlap lock, a usage pause, a preflight, auth, identity or config failure, or
+no open (or no actionable) PRs. Deleting the stamp makes the next qualifying cycle re-run it.
+
 **Enable procedure.** (1) Leave the default `dry-run` and review the first dry run in the
 cycle log and the `cycle-branch-reap-dry-run` event (`would_reap`, `items=<branch>:<reason>,...`).
-(2) Make one attended real run: `hos-suspend` the project so no scheduled cycle overlaps,
-set `HOS_OVERSEER_BRANCH_REAP=on` for a single manual run, and inspect the result. (3) Only
-then set `<project>_overseer_branch_reap=on` in `projects.conf` and resume.
+(2) Make one attended real run. A human runs the engine command in their own terminal, never
+an agent session, from the Overseer clone after `git fetch origin` (the engine's base is the
+remote-tracking `origin/main`, not local `main`; a stale `origin/main` only makes the reap more
+conservative):
+`python3 -m scripts.automation.readopt --repo <Overseer clone> reap-orphans --local-only --max-deletions 100 2>&1 | tee <file>`.
+The command, like the scheduled reap, needs `scripts/automation/readopt.py` in the Overseer clone. Today that means the HOS repo's own clone, because `scripts/automation/` is not shipped to consumer installs. In a consumer project hos-cron skips the overseer reap silently, with no log line or audit event.
+Here `<file>` is a persistent file outside the clone, such as `~/reap-<project>-<date>.log`, so the output is not committed by accident and survives temp reaping; it is the only recovery record, so keep it until the reaped branches are confirmed unneeded.
+`hos-suspend --project <p>` first so no scheduled overseer cycle runs alongside it; the direct
+command does not read the suspend marker, so suspension does not block it. A manual
+`bin/hos-cron` run is not the attended run: it exits at the suspend check when suspended, and
+when not suspended a fresh stamp or an early exit skips the reap. Save the output, because
+this run writes no audit events. The recovery handles are in that output: each `REAPED` line's
+`tip=<sha>`. A delete whose tip is neither on `main` nor inside a PR head (today rule D2
+`issue-closed`) first writes an `ARCHIVED` line and the ref `refs/archive/reap/<branch>@<tip12>`
+(#2314). PR-head deletes recover from the PR head (`pr=#N`): run `git fetch origin pull/N/head:refs/pull/N/head` first, so the `REAPED` `tip=<sha>` object and a local `refs/pull/N/head` exist.
+Recover with `git branch <name> <tip>` or `git branch <name> refs/archive/reap/<name>@<tip12>`.
+The direct run needs GitHub read access (`gh` authenticated, or `GH_TOKEN` set) because it lists
+PRs; without it the run aborts with `aborted=1` (listing failed) and deletes nothing.
+Compare the `REAPED` lines with the dry run's `WOULD-REAP` set, then
+`hos-suspend --project <p> --clear`. (3) Only then set `<project>_overseer_branch_reap=on` in
+`projects.conf`. The first audited deleting run is the next scheduled overseer cycle that
+reaches the reap; verify it from its `cycle-branch-reap` / `cycle-branch-reap-summary` events.
 
 Related audit events (role `overseer`):
 

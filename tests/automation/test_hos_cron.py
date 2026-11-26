@@ -4286,6 +4286,54 @@ class TestOverseerBranchHygiene:
         assert "readopt reap-orphans (overseer) failed (rc=2)" in r.stdout
         assert self.stamp(cron).exists()
 
+    def test_h3_suspended_project_never_reaches_the_reap(self, cron):
+        """#2396: a manual `on` run on a suspended project exits at the suspend check."""
+        import json
+
+        self._stubs(cron)
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[SUSPENDED]" in r.stdout
+        assert self._invocations(cron) == []
+        assert not self.stamp(cron).exists()
+
+    def test_h3_no_open_prs_skips_the_reap_and_does_not_stamp(self, cron):
+        """#2396: an overseer cycle with no open PRs exits before the reap."""
+        self._stubs(cron)
+        r = self._run(cron, HOS_OVERSEER_BRANCH_REAP="on", HOS_TEST_OPEN_PR_NUMS="")
+        assert "no open PRs" in r.stdout
+        assert self._invocations(cron) == []
+        assert not self.stamp(cron).exists()
+
+    def test_h3_dry_run_stamp_blocks_a_following_on_run_until_removed(self, cron):
+        """#2396: the 24 h stamp is shared by dry-run and on."""
+        self._stubs(cron)
+        self._run(cron)
+        assert self.stamp(cron).exists()
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self._invocations(cron) == [
+            "reap-orphans --local-only --max-deletions 100 --dry-run"
+        ]
+        self.stamp(cron).unlink()
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        assert self._invocations(cron)[-1] == "reap-orphans --local-only --max-deletions 100"
+
+    def test_h8_enable_procedure_documents_the_engine_command(self):
+        """#2396: the enable procedure is the TD-2287 6.4 engine command, not a manual hos-cron run."""
+        text = (HOS_CRON.parent.parent / "docs" / "CRON-SETUP.md").read_text()
+        section = text[text.index("### Overseer branch hygiene") :]
+        start = section.index("**Enable procedure.**")
+        para = section[start:].split("\n\n", 1)[0]
+        assert "reap-orphans --local-only --max-deletions 100" in para
+        assert "HOS_OVERSEER_BRANCH_REAP=on" not in para
+        cadence_start = section.index("The reap runs at most once per 24 h")
+        cadence = section[cadence_start:start]
+        assert "branch-reap/overseer-<project>.last" in cadence
+        assert "does not stamp" in cadence
+        assert "Mode `off` never runs it" in cadence
+
     def test_h4_worker_role_never_runs_the_overseer_block(self, cron):
         self._stubs(cron)
         r = cron.run(role="worker")
