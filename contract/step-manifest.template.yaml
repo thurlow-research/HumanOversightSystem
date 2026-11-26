@@ -32,6 +32,7 @@ role_mappings:
 # required_signoffs: list of role keys that must have APPROVED entries
 # system_test_applicable: true if functional spec flows exist for this step
 # human_gate_required: true forces ESCALATE before PR opens (use for CRITICAL)
+# Use single-line values only and write lists in flow form ([a, b]); nested or multi-line values make every step count as human-gated for the dep-mapper LOW suspension.
 steps:
   - id: 1
     name: "Scaffold"
