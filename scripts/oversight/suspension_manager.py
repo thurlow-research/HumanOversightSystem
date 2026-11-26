@@ -29,6 +29,10 @@ Levers:
                  --human-gate-required true|false [--require-disclosure]
                  Re-derive whether a `suspended:` blocking-finding resolution
                  is valid (#2214). Exit 0 ok/not applicable, 4 fail, 2 error.
+                 The step manifest's human gate is read at the default-branch SHA
+                 and at the range HEAD, never from the working tree alone, and the
+                 working-tree manifest must equal the HEAD blob (#2392).
+                 --human-gate-required is only a floor.
 
 Time-boxed suspensions (#2214): a SUSPENDED line may carry `expires: YYYY-MM-DD`
 (inclusive, UTC) and/or `until-closed: #N` (ends once the issue closes as
@@ -51,6 +55,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -852,7 +857,7 @@ def read_default_branch_suspension(repo_root=".", ls_remote=None) -> dict:
         )
         return out
 
-    tree = _git(["ls-tree", "-z", remote_sha, "--", SUSPENSION_FILE], repo_root)
+    tree = _git(["ls-tree", "--full-tree", "-z", remote_sha, "--", SUSPENSION_FILE], repo_root)
     if tree is None:
         return read_failed("timeout")
     if tree.returncode != 0:
@@ -893,16 +898,41 @@ def manifest_human_gate_required(manifest_path, step) -> bool:
     """Is `step` behind the human gate per step-manifest.yaml? Fails closed.
 
     Canonical form or fail closed: an absent manifest -> False (TD D-17), but a
-    manifest that exists and is anything other than plainly parsed -> True. That
-    covers: unreadable / undecodable, no `steps:` block, `step` not listed, a
-    `human_gate_required` value other than true/false/yes/no/1/0, YAML merge keys
-    (`<<:`), anchors or aliases, a flow-style step item or flow collection
-    mentioning `id` / `human_gate_required`, and any `human_gate_required` token
-    inside the target step that was not consumed as a canonical key (duplicate,
-    nested or mis-indented). A step that omits the key -> False. Keys and values
-    are normalised (quotes, inline comments); step items are recognised by the
-    indent of the first `- ` under `steps:`, and `id:` may appear anywhere in the
-    item. Same line-scan approach as gate_compliance.gates_required (stdlib only).
+    manifest that exists and is anything other than plainly parsed -> True. The
+    scanner may be stricter than a YAML parser, never looser. True covers:
+      - unreadable / undecodable text, no `steps:` block, or `step` not listed;
+      - inside the `steps:` block, any line that is not one canonical form
+        (SR-AL allowlist, see `_manifest_scan`): nested or multi-line values,
+        continuation lines, empty values, Unicode whitespace, tags, anchors,
+        explicit keys, flow items, escaped or unclosed quoted keys, items at
+        another indent, a key before the first item;
+      - a `human_gate_required` value other than a plain `false`, `False`,
+        `FALSE`, `0`, `true`, `True`, `TRUE` or `1` (a target's `true`/`1` is True);
+      - an `id` that is not canonical, or an item with no `id`;
+      - a duplicate key in one item, and any `human_gate_required` token on a
+        line that is not the item's one canonical key;
+      - a second or non-canonical top-level `steps` key (`"steps":`, `steps :`,
+        `? steps`, `steps:[`), and any document marker other than one bare or
+        comment-only leading `---`;
+      - outside the block (AL-WD, whole-document allowlist): merge keys, anchors or
+        aliases, and any line that is not a column-0 `key: value` pair (single-line
+        value), a `key:` with a one-level nested mapping of such pairs at one indent,
+        a comment, a blank line or the one leading `---`; an indented first content
+        line; a multi-line, block-scalar or quoted-spanning value anywhere in the file.
+    A step that omits the key -> False. Blank and comment lines never end the
+    block; it ends at a line starting with an ASCII printable other than space,
+    `-` and `#`. A line starting with a tab or non-ASCII is a bad line in the block.
+      - text containing U+000B, U+000C, U+001C-U+001E, U+0085, U+2028, U+2029 or U+FEFF
+        (a BOM) anywhere (AR-AL-4, AL-WD-1; YAML 1.1 and 1.2 disagree on them). Callers
+        must decode with strict "utf-8", never "utf-8-sig", so a BOM reaches this check.
+
+    Remedy: write single-line values everywhere in the file, lists in flow form
+    (`[a, b]`), and keep top-level nesting to at most one level. A manifest that uses a
+    nested block list, a block scalar or a multi-line value anywhere makes every step
+    count as human-gated for the dep-mapper LOW suspension (fail-closed by rule, AL-WD-8).
+
+    This reads a working-tree path. The S3 human gate does not use it (#2392): it
+    reads the manifest at pinned SHAs through effective_manifest_human_gate.
     """
     path = Path(manifest_path)
     if not path.exists():
@@ -911,61 +941,459 @@ def manifest_human_gate_required(manifest_path, step) -> bool:
         text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return True
-    in_steps = False
-    item_indent: int | None = None
-    key_indent: int | None = None
-    items: list[dict] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        code = re.sub(r"(^|\s)#.*$", "", line)
-        if _MERGE_KEY_RE.search(code) or _ANCHOR_RE.search(code):
-            return True
-        indent = len(line) - len(line.lstrip())
-        if not in_steps:
-            if re.match(r"steps:(\s|$)", line):
-                in_steps = True
-                if re.match(r"steps:\s*[\[{]", line):
-                    return True
-            continue
-        if indent == 0 and not stripped.startswith("-"):
-            in_steps = False
-            continue
-        if stripped.startswith("-") and (item_indent is None or indent == item_indent):
-            item_indent = indent
-            items.append({"raw_hgr": 0})
-            body = stripped[1:].lstrip()
-            key_indent = len(line) - len(body)
-            stripped = body
-            indent = key_indent
-            if body.startswith(("{", "[")):
+    flag = _manifest_gate_scan(text, step)
+    return True if flag is None else flag
+
+
+def _manifest_gate_scan(text: str, step) -> bool | None:
+    """The line scan behind manifest_human_gate_required, on decoded manifest text.
+
+    True/False as documented there, except None: a `steps:` block was found and no
+    item has `id == step` (AR-AM4-1). No `steps:` block at all is True, not None.
+    """
+    return _manifest_scan(text, step)[0]
+
+
+_DOC_MARKER_RE = re.compile(r"(?:---|\.\.\.)(?:[ \t]|$)", re.ASCII)
+_COLON_BREAK_RE = re.compile(r":(\s|$)")
+_FALSE_FLAGS = ("false", "False", "FALSE", "0")
+
+# The canonical-line allowlist for the `steps:` block (TD-2214 SR-AL). Every pattern is matched
+# with `fullmatch` on the raw line and compiled with re.ASCII: no strip, split, `\s`, `\w` or
+# `\d`, because YAML whitespace is U+0020 and tab only.
+_END = r"(?:[ \t]+(?:#.*)?)?"
+_STEPS_LINE_RE = re.compile(r"steps:" + _END, re.ASCII)
+_BLANK_RE = re.compile(r"[ \t]*", re.ASCII)
+_COMMENT_RE = re.compile(r"[ \t]*#.*", re.ASCII)
+_NAME = r"[A-Za-z_][A-Za-z0-9_-]*"
+_KEY = r"(?:(?P<plain>" + _NAME + r")|\"(?P<dq>" + _NAME + r")\"|'(?P<sq>" + _NAME + r")')"
+_KV_RE = re.compile(_KEY + r": +(?P<rest>.*)", re.ASCII)
+_ITEM_RE = re.compile(r"( *)-( +)(.*)", re.ASCII)
+_ID_VALUE_RE = re.compile(r"(?P<q>[\"']?)(?P<v>[A-Za-z0-9._/-]+)(?P=q)" + _END, re.ASCII)
+_FLAG_VALUE_RE = re.compile(r"(?P<v>false|False|FALSE|0|true|True|TRUE|1)" + _END, re.ASCII)
+_TOK = r"[A-Za-z0-9_][A-Za-z0-9_./-]*"
+_OTHER_VALUE_RE = re.compile(
+    r"(?:(?P<plain>[A-Za-z0-9_.][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)*)"
+    r"|\"(?P<dq>[^\"\\\x00-\x1f\x7f]*)\""
+    r"|'(?P<sq>(?:[^'\x00-\x1f\x7f]|'')*)'"
+    r"|(?P<flow>\[ *(?:" + _TOK + r"(?: *, *" + _TOK + r")*)? *\]))" + _END,
+    re.ASCII,
+)
+# Characters YAML 1.1 and 1.2 loaders disagree on, or that only str.splitlines() treats as line
+# breaks (AR-AL-4), plus U+FEFF (AL-WD-1: PyYAML strips one leading BOM, a YAML 1.2 loader may
+# keep a mid-text one as content): a manifest containing any of them is True before any line
+# is read.
+_PRESCAN_REJECT = frozenset("\u000b\u000c\u001c\u001d\u001e\u0085\u2028\u2029\ufeff")
+_OPEN_RE = re.compile(_KEY + ":" + _END, re.ASCII)
+_YAML11_WORD_RE = re.compile(r"y|yes|n|no|true|false|on|off|null", re.ASCII | re.IGNORECASE)
+
+
+def _bad_quoted_span(body: str) -> bool:
+    """True if `body` starts with a quoted span that has an escape or is unclosed on the line.
+
+    A double-quoted span closes at the first `"` not preceded by an unescaped `\\`; any `\\`
+    inside it is an escape. A single-quoted span closes at the first lone `'`; a `''` pair is
+    an escape.
+    """
+    if body.startswith('"'):
+        i = 1
+        while i < len(body):
+            if body[i] == "\\":
                 return True
-        if re.search(r"\{", code) and re.search(r"human_gate_required|\bid\b", code):
-            return True
-        if not items:
-            continue
-        if "human_gate_required" in code:
-            items[-1]["raw_hgr"] += 1
-        if indent != key_indent or ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        key = _yaml_scalar(key)
-        if key in ("id", "human_gate_required"):
-            items[-1].setdefault(key, _yaml_scalar(value))
-    target = [it for it in items if it.get("id") == str(step)]
-    if not target:
+            if body[i] == '"':
+                return False
+            i += 1
         return True
-    for it in target:
-        flag = it.get("human_gate_required")
-        if it["raw_hgr"] != (0 if flag is None else 1):
-            return True
-        if flag is None:
-            continue
-        if flag.lower() in ("false", "no", "0"):
-            continue
+    if body.startswith("'"):
+        i = 1
+        while i < len(body):
+            if body[i] == "'":
+                return body[i + 1 : i + 2] == "'"
+            i += 1
         return True
     return False
+
+
+def _is_steps_key_line(line: str) -> bool:
+    """Does an indent-0 line read as a `steps` key under either colon definition (SR-2)?"""
+    rest = line[2:] if re.match(r"\?\s", line) else line
+    first = rest.split(":", 1)[0]
+    m = _COLON_BREAK_RE.search(rest)
+    spaced = rest[: m.start()] if m else rest
+    return any(_yaml_scalar(c).rstrip() == "steps" for c in (first, spaced))
+
+
+def _classify_steps_line(line: str) -> tuple[str, int, str | None, str | None] | None:
+    """Classify one line of the `steps:` block against the canonical allowlist (SR-AL, AL-1/2).
+
+    Returns (kind, indent, key, value), or None when the line is not canonical. `kind` is
+    `blank`, `comment`, `item` (`- KEY: VALUE`; `indent` is the dash column) or `key`
+    (`indent` is the count of leading spaces). `key` and `value` are the normalised inner text.
+    Only ASCII space and tab count as whitespace; a tab is allowed only before a comment and in
+    blank or comment lines. A value may not be empty, and no value can start a multi-line
+    construct, so nested or continued content never matches. A `id` is a canonical id (plain
+    ids may not be a YAML 1.1 bool/null word); `human_gate_required` is a plain
+    false/False/FALSE/0/true/True/TRUE/1; any other key is a plain scalar of single-spaced
+    words, a closed `"..."` without a backslash, a closed `'...'`, or a one-line flow list of
+    plain tokens. Non-ASCII is accepted only in comments and in quoted values of other keys.
+    """
+    if _BLANK_RE.fullmatch(line):
+        return "blank", len(line), None, None
+    if _COMMENT_RE.fullmatch(line):
+        return "comment", len(line) - len(line.lstrip(" \t")), None, None
+    item = _ITEM_RE.fullmatch(line)
+    if item:
+        kind, indent, body = "item", len(item.group(1)), item.group(3)
+    else:
+        body = line.lstrip(" ")
+        kind, indent = "key", len(line) - len(body)
+    kv = _KV_RE.fullmatch(body)
+    if not kv:
+        return None
+    key = kv.group("plain") or kv.group("dq") or kv.group("sq")
+    rest = kv.group("rest")
+    if key == "id":
+        m = _ID_VALUE_RE.fullmatch(rest)
+        if not m or not _id_is_canonical(m.group("v")):
+            return None
+        if not m.group("q") and _YAML11_WORD_RE.fullmatch(m.group("v")):
+            return None
+        return kind, indent, key, m.group("v")
+    if key == "human_gate_required":
+        m = _FLAG_VALUE_RE.fullmatch(rest)
+        return (kind, indent, key, m.group("v")) if m else None
+    m = _OTHER_VALUE_RE.fullmatch(rest)
+    if not m:
+        return None
+    value = next(m.group(g) for g in ("plain", "dq", "sq", "flow") if m.group(g) is not None)
+    return kind, indent, key, value
+
+
+def _manifest_scan(text: str, step) -> tuple[bool | None, list[str]]:
+    """(result, ids): `_manifest_gate_scan`'s result plus every parsed item `id` value.
+
+    The scanner may be stricter than a YAML parser, never looser: if a last-key-wins or a
+    duplicate-rejecting parser could see `step` as gated, the result is True. A True ends the
+    whole scan at once (it is unclear which item is which step). An in-block failure and the
+    line-break rule return no ids; a True from a cross-line rule after the block returns the
+    ids parsed.
+
+    A text containing U+000B, U+000C, U+001C, U+001D, U+001E, U+0085, U+2028, U+2029 or
+    U+FEFF anywhere, comments and quoted spans included, is `(True, [])` before any line is
+    read (AR-AL-4, AL-WD-1): YAML 1.1 and 1.2 loaders disagree on whether these break a line
+    or are content, so no reading of them can be proven never looser. This supersedes any
+    allowance for them inside a closed quoted span. The decode must be strict "utf-8", never
+    "utf-8-sig" (a BOM must survive to this check).
+
+    Inside the `steps:` block (the canonical line `steps:` plus an optional comment) every line
+    must match `_classify_steps_line`, an allowlist of canonical forms; any other line is True.
+    That covers nested or multi-line values, plain-scalar continuation lines, items at another
+    indent, a key before the first item, tags, anchors, explicit keys, flow items, escaped or
+    unclosed quoted keys, Unicode whitespace, empty values, and a `human_gate_required` value
+    other than a plain false/False/FALSE/0/true/True/TRUE/1. Blank and comment lines (at any
+    indent, even column 0) never end the block. The block ends at a line whose first character
+    is ASCII printable other than space, `-` and `#`; a line that starts with a tab or a
+    non-ASCII character is a non-canonical line in the block, not a top-level line.
+
+    Cross-line rules: a duplicate normalised key in one item (SR-1); an item with no `id`
+    (SR-3 f); a `human_gate_required` token on a line that is not the item's one canonical
+    key (the `raw_hgr` net); no `steps:` block at all.
+
+    Outside the block (AL-WD, a closed whole-document allowlist; the line that ends the block
+    is held to it too): a global merge-key or anchor/alias check; more than one top-level
+    `steps` key, a `steps` key not written `steps:` (`"steps":`, `steps :`, `? steps`,
+    `steps:[`), or a document marker other than one bare or comment-only leading `---`
+    (SR-2); a body that starts with an escaped or unclosed quoted span, a `!` tag or an
+    explicit `? ` key (SR-3 a-d, now redundant). Every other non-blank, non-comment line
+    must be one of: the canonical `steps:` line; `KEY:` (O-open, empty value); or
+    `KEY: VALUE` at column 0 (O-top: `_classify_steps_line` kind `key`, indent 0, so the
+    per-key value grammar applies). An indented line is allowed only as O-nested: a one-level
+    `KEY: VALUE` mapping line directly under an O-open parent, all at one indent. The first
+    content line may not be indented (AL-WD-5). Anything else (a multi-line, block-scalar or
+    quoted-spanning value, a plain continuation, a nested list, two-level nesting, a
+    directive, a top-level sequence, an unusual key) is `(True, [])`.
+
+    Remedy: write single-line values everywhere in the file, lists in flow form (`[a, b]`),
+    and keep top-level nesting to at most one level. A manifest that uses a nested block
+    list, a block scalar or a multi-line value anywhere in the file makes every step count as
+    human-gated for the dep-mapper LOW suspension.
+    """
+    if not _PRESCAN_REJECT.isdisjoint(text):
+        return True, []
+    in_steps = False
+    steps_seen = False
+    content_seen = False
+    marker_seen = False
+    parent_open = False
+    nested_indent: int | None = None
+    steps_keys = 0
+    item_indent: int | None = None
+    key_indent = 0
+    items: list[dict[str, str]] = []
+    hgr_lines: list[int] = []
+    for line in text.splitlines():
+        cls = _classify_steps_line(line)
+        if cls is not None and cls[0] in ("blank", "comment"):
+            continue
+        if in_steps:
+            first = line[0]
+            if "!" <= first <= "~" and first not in "-#":
+                in_steps = False
+            else:
+                if cls is None:
+                    return True, []
+                kind, indent, key, value = cls
+                if key is None or value is None:
+                    return True, []
+                if kind == "item":
+                    if item_indent is None:
+                        item_indent = indent
+                    elif indent != item_indent:
+                        return True, []
+                    items.append({})
+                    hgr_lines.append(0)
+                    key_indent = len(line) - len(line.lstrip(" -"))
+                elif not items or indent != key_indent:
+                    return True, []
+                if "human_gate_required" in re.sub(r"(^|\s)#.*$", "", line):
+                    hgr_lines[-1] += 1
+                if key in items[-1]:
+                    return True, []
+                items[-1][key] = value
+                continue
+        code = re.sub(r"(^|\s)#.*$", "", line)
+        if _MERGE_KEY_RE.search(code) or _ANCHOR_RE.search(code):
+            return True, []
+        body = re.sub(r"^(?:-(?:[ \t]+|$))+", "", line.lstrip(" \t"))
+        if body.startswith("!") or re.match(r"\?(\s|$)", body) or _bad_quoted_span(body):
+            return True, []
+        if line.startswith((" ", "\t")):
+            # AL-WD-5: an indented first content line; AL-WD-3: the one nested-mapping form.
+            if not content_seen:
+                return True, []
+            if not parent_open:
+                return True, []
+            if cls is None or cls[0] != "key":
+                return True, []
+            if nested_indent is None:
+                nested_indent = cls[1]
+            elif cls[1] != nested_indent:
+                return True, []
+            continue
+        if _DOC_MARKER_RE.match(line):
+            rest = line[3:].strip(" \t")
+            if (
+                content_seen
+                or marker_seen
+                or line.startswith("...")
+                or (rest and not rest.startswith("#"))
+            ):
+                return True, []
+            marker_seen = True
+            continue
+        content_seen = True
+        parent_open = False
+        nested_indent = None
+        if _is_steps_key_line(line):
+            steps_keys += 1
+            if steps_keys > 1 or not _STEPS_LINE_RE.fullmatch(line):
+                return True, []
+            in_steps = True
+            steps_seen = True
+            continue
+        if _OPEN_RE.fullmatch(line):
+            parent_open = True
+        elif cls is None or cls[0] != "key" or cls[1] != 0:
+            return True, []
+    ids = [it["id"] for it in items if "id" in it]
+    if not steps_seen:
+        return True, ids
+    if any("id" not in it for it in items):
+        return True, ids
+    target = [i for i, it in enumerate(items) if it["id"] == str(step)]
+    if not target:
+        return None, ids
+    for i in target:
+        flag = items[i].get("human_gate_required")
+        if hgr_lines[i] != (0 if flag is None else 1):
+            return True, ids
+        if flag is None or flag in _FALSE_FLAGS:
+            continue
+        return True, ids
+    return False, ids
+
+
+_ID_CHARS_RE = re.compile(r"[A-Za-z0-9._/-]+")
+_CANONICAL_INT_RE = re.compile(r"0|[1-9][0-9]*")
+
+
+def _id_is_canonical(step_id: str) -> bool:
+    """A numeric-looking id must be a canonical integer: a YAML parser could otherwise read
+    `007`, `0x7`, `1_0`, `+7`, `7.0` or `1e1` as another step's numeric id (CWE-1286)."""
+    if not _ID_CHARS_RE.fullmatch(step_id):
+        return False
+    if step_id[0].isdigit() or step_id[0] in "+-.":
+        return _CANONICAL_INT_RE.fullmatch(step_id) is not None
+    return True
+
+
+def _step_token_re(step) -> re.Pattern:
+    return re.compile(r"(?<![A-Za-z0-9._/-])" + re.escape(str(step)) + r"(?![A-Za-z0-9._/-])")
+
+
+def read_manifest_gate_at(sha: str, step, repo_root=".", *, unlisted_step: bool) -> dict:
+    """The step-manifest human gate at one commit (TD-2214 §5.2.2, #2392).
+
+    Returns {flag, blob, error}. `blob` is the raw manifest bytes (None when the file is
+    absent at `sha`), kept for the working-tree byte comparison. Every error path sets
+    flag=True. An absent file is False (D-17). `unlisted_step` is what a manifest that
+    lists other steps but not this one contributes (D-22): True for the head read; False
+    for the default-branch read, and then only if the text is canonical for this step
+    (AR-AM4-2), because the line scanner is only safe while "not found" means True.
+    """
+    out: dict = {"flag": True, "blob": None, "error": None}
+    if not isinstance(sha, str) or not _HEX_SHA_RE.match(sha):
+        out["error"] = "not a full SHA"
+        return out
+    tree = _git(["ls-tree", "--full-tree", "-z", sha, "--", _STEP_MANIFEST_PATH], repo_root)
+    if tree is None:
+        out["error"] = "timeout"
+        return out
+    if tree.returncode != 0:
+        out["error"] = f"exit {tree.returncode}: {_stderr_line(tree)}"
+        return out
+    entries = [e for e in tree.stdout.decode("utf-8", "replace").split("\0") if e]
+    if not entries:
+        out["flag"] = False
+        return out
+    if len(entries) != 1 or not re.fullmatch(
+        r"100644 blob [0-9a-f]{40,64}\t" + re.escape(_STEP_MANIFEST_PATH), entries[0]
+    ):
+        out["error"] = "not a regular file"
+        return out
+    shown = _git(["show", f"{sha}:{_STEP_MANIFEST_PATH}"], repo_root)
+    if shown is None:
+        out["error"] = "timeout"
+        return out
+    if shown.returncode != 0:
+        out["error"] = f"exit {shown.returncode}: {_stderr_line(shown)}"
+        return out
+    out["blob"] = shown.stdout
+    try:
+        text = shown.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return out
+    flag, ids = _manifest_scan(text, step)
+    if flag is None:
+        flag = unlisted_step or bool(
+            _step_token_re(step).search(text) or not all(_id_is_canonical(i) for i in ids)
+        )
+    out["flag"] = flag
+    return out
+
+
+def effective_manifest_human_gate(step, head_sha: str, default_read: dict, repo_root=".") -> dict:
+    """{flag, error}: the manifest human gate at the default-branch SHA OR at `head_sha`.
+
+    `default_read` is what read_default_branch_suspension returned to the same caller, so
+    there is no second origin lookup and the manifest is read at exactly the SHA the
+    suspension was read at. The working-tree manifest must equal the head blob byte for
+    byte (an uncommitted change in either direction fails); that file is addressed from
+    the git toplevel, not `repo_root` (SR-4), and every intermediate path component
+    (`contract/`) must be a real directory, not a symlink (AL-WD-10). Any error returns
+    flag=True with an S3-prefixed message (§5.2.2 E-G1..E-G5).
+    """
+
+    def fail(msg: str) -> dict:
+        return {"flag": True, "error": msg}
+
+    default_sha = default_read.get("sha")
+    if default_read.get("error") is not None or not (
+        isinstance(default_sha, str) and _HEX_SHA_RE.match(default_sha)
+    ):
+        return fail(
+            "S3: human gate not verified: the default-branch read failed (see S4); failing closed"
+        )
+    if not (isinstance(head_sha, str) and _HEX_SHA_RE.match(head_sha)):
+        return fail(f"S3: head {head_sha!r} is not a full SHA; cannot pin the step manifest")
+    head = read_manifest_gate_at(head_sha, step, repo_root, unlisted_step=True)
+    if head["error"] is not None:
+        return fail(
+            f"S3: could not read {_STEP_MANIFEST_PATH} at head {head_sha[:12]} "
+            f"({head['error']}); failing closed, re-run"
+        )
+
+    def mismatch(detail: str) -> dict:
+        return fail(
+            f"S3: {_STEP_MANIFEST_PATH} in the working tree does not match head "
+            f"{head_sha[:12]} ({detail}); commit or restore it, then re-run"
+        )
+
+    def no_toplevel(why: str) -> dict:
+        return fail(
+            f"S3: could not resolve the git toplevel from {str(repo_root)!r} ({why}); "
+            "failing closed, re-run"
+        )
+
+    top = _git(["rev-parse", "--show-toplevel"], repo_root)
+    if top is None:
+        return no_toplevel("timeout or git could not start")
+    if top.returncode != 0:
+        detail = _stderr_line(top)
+        return no_toplevel(
+            f"exit {top.returncode}: {detail}" if detail else f"exit {top.returncode}"
+        )
+    try:
+        toplevel = top.stdout.decode("utf-8").removesuffix("\n")
+    except UnicodeDecodeError:
+        toplevel = ""
+    if not toplevel or not os.path.isabs(toplevel) or not os.path.isdir(toplevel):
+        return no_toplevel("not an absolute directory")
+
+    work = Path(toplevel) / _STEP_MANIFEST_PATH
+    work_bytes: bytes | None = None
+    # AL-WD-10 / AR-WD-1: every cumulative prefix of the manifest's directory, outermost
+    # first, must be a real directory (not a symlink); the first failing prefix decides.
+    prefix = Path(toplevel)
+    parent_absent = False
+    for part in Path(_STEP_MANIFEST_PATH).parent.parts:
+        prefix = prefix / part
+        try:
+            prefix_mode = os.lstat(prefix).st_mode
+        except FileNotFoundError:
+            parent_absent = True
+            break
+        except OSError as e:
+            return mismatch(f"unreadable: {e.strerror}")
+        if not stat.S_ISDIR(prefix_mode):
+            return mismatch("not a regular file")
+    if not parent_absent:
+        try:
+            mode = os.lstat(work).st_mode
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            return mismatch(f"unreadable: {e.strerror}")
+        else:
+            if not stat.S_ISREG(mode):
+                return mismatch("not a regular file")
+            try:
+                work_bytes = work.read_bytes()
+            except OSError as e:
+                return mismatch(f"unreadable: {e.strerror}")
+    if work_bytes != head["blob"]:
+        if work_bytes is None:
+            return mismatch("deleted")
+        return mismatch("added but not committed" if head["blob"] is None else "modified")
+
+    default = read_manifest_gate_at(default_sha, step, repo_root, unlisted_step=False)
+    if default["error"] is not None:
+        where = f"origin/{default_read.get('branch')}"
+        return fail(
+            f"S3: could not read {_STEP_MANIFEST_PATH} at {where} {default_sha[:12]} "
+            f"({default['error']}); failing closed, re-run"
+        )
+    return {"flag": head["flag"] or default["flag"], "error": None}
 
 
 def _split_lines(text: str | None) -> list[str]:
@@ -1698,12 +2126,16 @@ def check_suspended_resolutions(
     repo_root=".",
     *,
     main_suspension_error: str | None,
+    human_gate_error: str | None,
 ) -> dict:
     """Decide whether `suspended:` blocking-finding resolutions are valid (S0-S7).
 
     `main_suspension_error` is required: it is the reader's `error` for the default-branch
     suspension (§5.2.1). When set, S4 fails with that message, so a caller cannot skip
-    the freshness check. This function never makes the network call itself.
+    the freshness check. `human_gate_error` is required likewise (§5.2.2): the error from
+    effective_manifest_human_gate, which replaces the S3 message when set. The caller
+    passes the effective flag in `human_gate_required`. This function never makes the
+    network call or reads the manifest itself.
 
     Returns {applies, ok, findings: [{id, ok, errors}], errors}. `errors` holds
     whole-file (S0) failures. Everything is re-derived: the tier is raised to the
@@ -1776,7 +2208,9 @@ def check_suspended_resolutions(
                 errs.append(f"S2: trace path {m.group('path')!r} != {dep_trace_path(step)!r}")
         if f.get("source") != DEP_MAPPER_GATE:
             errs.append(f"S1: source {f.get('source')!r} may not use a suspended resolution")
-        if behind_human_gate:
+        if human_gate_error is not None:
+            errs.append(human_gate_error)
+        elif behind_human_gate:
             errs.append("S3: step is behind the human gate (CRITICAL or human_gate_required)")
         if main_suspension_error is not None:
             errs.append(main_suspension_error)
@@ -1893,15 +2327,16 @@ def cmd_check_suspended_resolutions(
     if changed is None:
         print(f"git diff --name-only {base}..{head} failed", file=sys.stderr)
         return 2
-    gate_flag = human_gate_required == "true" or manifest_human_gate_required(
-        _STEP_MANIFEST_PATH, step
-    )
-    # No origin lookup unless a suspension applies (as REQ-W-18 does): no network otherwise.
-    main = (
-        read_default_branch_suspension()
-        if suspension_applies(risk_text)
-        else {"text": None, "error": None}
-    )
+    gate_flag = human_gate_required == "true"
+    gate_error: str | None = None
+    # No origin lookup and no manifest read unless a suspension applies (as REQ-W-18
+    # does): check_suspended_resolutions returns applies=False before S3 otherwise.
+    main: dict = {"text": None, "error": None}
+    if suspension_applies(risk_text):
+        main = read_default_branch_suspension()
+        eff = effective_manifest_human_gate(step, head, main)
+        gate_flag = gate_flag or eff["flag"]
+        gate_error = eff["error"]
     res = check_suspended_resolutions(
         risk_text,
         step,
@@ -1915,6 +2350,7 @@ def cmd_check_suspended_resolutions(
         handoff_text=read_exact_text(Path(f".claudetmp/oversight/step{step}-handoff.md")),
         require_disclosure=require_disclosure,
         main_suspension_error=main["error"],
+        human_gate_error=gate_error,
     )
     print(f"APPLIES={'yes' if res['applies'] else 'no'}")
     print(f"RESULT={'ok' if res['ok'] else 'fail'}")
