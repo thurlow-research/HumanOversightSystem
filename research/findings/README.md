@@ -109,7 +109,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | File | Role | One-line description |
 |---|---|---|
 | `a-blocked-gate-redirects-autonomous-work-instead-of-stopping-it.md` | oversight-mechanism | An environment-scoped gate red on every code PR did not stop the worker; it substituted design work (12 of 13 merged PRs were documents, ~45 code branches parked) and raised human escalation load while merged code was zero. |
-| `a-clean-first-pass-is-the-cheapest-answer.md` | oversight-mechanism | On Seriatim #119, codex answered "no blockers" to an open question, then confirmed all three of agy's defects when asked to confirm or refute each with evidence. A clean verdict is the cheapest answer; targeted, source-tied questions make a reviewer dig. Response: a confirm-or-refute round (#1471), clean verdicts carry a coverage map (#2481), artifacts trace to their source with claims read after an independent pass (#2482). External evidence: traceability lowers defects (Rempel & Mäder); unaided self-correction is unreliable (Huang et al.); explanations help when they cut verification cost (Vasconcelos et al.). |
+| `a-clean-first-pass-is-the-cheapest-answer.md` | oversight-mechanism | On Seriatim #119, codex answered "no blockers" to an open question, then confirmed all three of agy's defects when a second run was given those claims and their evidence pointers. Single incident; the change of question and the new information are confounded. Hypothesis: a clean verdict can be the cheapest answer, and specific, source-tied questions draw deeper checking. Response: a confirm-or-refute round (#1471, in use), clean verdicts carry a coverage map (#2481, proposed), artifacts trace to their source with claims read after an independent pass (#2482, proposed). External evidence: traceability completeness is associated with fewer defects (Rempel & Mäder); unaided self-correction is unreliable on reasoning (Huang et al.); author framing anchors LLM reviewers (Mitropoulos et al.). |
 | `a-confidently-wrong-error-message-costs-more-than-no-message.md` | diagnostic-surface | A Confidently Wrong Error Message Costs More Than No Message |
 | `a-decision-records-intent-not-enforcement.md` | oversight-mechanism | A Decision Records Intent, Not Enforcement |
 | `a-gate-must-not-confuse-unreadable-with-unsafe.md` | oversight-mechanism | A gate has four outcomes (approve/request-changes/unparseable/error); collapsing "unparseable" into "fail-closed" discards real independent judgment (a Postgres NULL-sort bug). |
@@ -128,6 +128,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | `aira-deterministic-scanner-for-ai-code-failures.md` | *(none)* | AIRA: Deterministic Scanner for AI-Code Failure Patterns |
 | `an-enabled-control-can-still-not-cover-its-target.md` | oversight-mechanism | An Enabled Control Can Still Not Cover Its Target |
 | `an-escalation-channel-shared-with-parking-loses-its-meaning.md` | oversight-mechanism | `needs-human` meant both "answer this" and "do not work this"; it passed 100 items, notified nobody, and hid a 9-day idle worker. Split parking into its own label, then summon by tiers (assignee, re-ping, narrow push). |
+| `an-outside-contribution-implements-the-examples-not-the-class.md` | oversight-mechanism | An outside contributor implements an issue's listed examples literally: every example passes, its own tests (written from the same list) pass, and the class the examples stand for still breaks (#2301, PR #2303, closed unmerged). Independent review that checks the class, not the examples, catches it. |
 | `an-override-must-expire-or-it-becomes-the-policy.md` | oversight-mechanism | A human-authorized gate override must expire — a permanent override silently becomes the policy |
 | `api-field-shape-verification.md` | oversight-mechanism | API Field Shapes Must Be Verified Against Live Responses — Documentation Assumptions Cause Silent Correctness Failures |
 | `attention-guarantees-not-fix-mandates.md` | oversight-mechanism | The Countermeasure for AI-Authored Code Is an Attention Guarantee, Not a Fix Mandate |
@@ -223,12 +224,13 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-64 of 109 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+68 of 109 findings are not cited under any observation above or under the lens. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
-- `a-clean-first-pass-is-the-cheapest-answer.md` (candidate: O1, since a reviewer's clean verdict is not self-certifying, or O3, since the deeper check happens only when forced)
+- `a-clean-first-pass-is-the-cheapest-answer.md` (candidate: O3, since the deeper check came only when the second run was given specific claims, or O4, since a clean verdict with no coverage evidence is indistinguishable from not having checked)
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
 - `a-guard-that-doesnt-halt-is-not-a-guard.md`
+- `a-quality-target-no-code-executes-decays-silently.md`
 - `a-suspension-conditioned-on-external-state-never-lifts.md`
 - `a-textual-grep-clears-the-pattern-not-the-class.md`
 - `adversarial-framing-attack-on-reviewer-agents.md`
@@ -238,6 +240,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `aira-deterministic-scanner-for-ai-code-failures.md`
 - `an-enabled-control-can-still-not-cover-its-target.md`
 - `an-escalation-channel-shared-with-parking-loses-its-meaning.md`
+- `an-outside-contribution-implements-the-examples-not-the-class.md`
 - `an-override-must-expire-or-it-becomes-the-policy.md`
 - `api-field-shape-verification.md`
 - `attention-guarantees-not-fix-mandates.md`
@@ -268,8 +271,10 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `jidoka-reactive-pipeline.md`
 - `llm-reviewer-can-mask-deterministic-scanner-failures.md`
 - `llms-belong-inside-deterministic-orchestration.md` (candidate: O3, since the cheap independent check gets skipped unless forced, or O4)
+- `local-models-fail-toward-approval.md`
 - `maintenance-class-changes-carry-higher-agentic-risk-than-generation.md`
 - `more-context-makes-llm-review-worse-not-better.md`
+- `more-rules-more-skipped-rules.md`
 - `post-pr-behavior-gap-in-agent-specs.md`
 - `prompt-resident-governance-is-unattributable.md`
 - `real-data-not-reviewer-diversity-caught-the-bug.md` (candidate: O2, since the pipeline had no layer that put real environment data in front of a reviewer; it also qualifies O1/O8's reliance on decorrelation)

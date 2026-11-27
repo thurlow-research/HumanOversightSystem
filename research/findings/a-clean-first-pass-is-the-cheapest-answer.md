@@ -1,71 +1,82 @@
-# Finding: A Clean First Pass Is the Cheapest Answer — Targeted, Source-Tied Verification Is What Makes a Reviewer Dig
+# Finding: A Clean First Pass May Be the Cheapest Answer — A Reviewer Confirmed Defects It Had Passed Once Given Specific Claims to Check
 
-**Role:** oversight-mechanism. A reviewer's first answer to an open question ("any issues?") is often shallow, and a clean verdict is the cheapest answer it can give. The same reviewer, asked a specific, falsifiable question tied to a source ("is this claim right? show me the file and line"), does much deeper work. Asking better questions is an oversight control in its own right: confirm-or-refute rounds between reviewers, clean verdicts that must show what they covered, and artifacts traced to their sources. People show the same pattern.
+**Role:** oversight-mechanism. In one review, a reviewer's answer to an open question ("any blockers?") was clean. A second run of the same reviewer was given another reviewer's specific claims, with pointers to where to look, and it confirmed every one. The hypothesis this raises is that a clean verdict to an open question can be the cheapest answer available, and that specific, falsifiable questions tied to a source draw out deeper checking. The incident cannot separate the question's shape from the new information the second prompt carried. Both are candidate oversight variables.
 
-**First observed:** 2026-11-27, in the human-proxy's review of Seriatim PR #119. The principle comes from the human (ScottThurlow): "many times the initial work by claude (or any LLM) is shallow. You push on it and it digs in, does more thinking/research, adding details and corrects. … people have the same characteristic." Issues: #1471 (evidence comment), #2481, #2482.
+**Evidence strength:** a single observed incident (n = 1 per condition). All three claims given to the second run were true, so it says nothing about whether a reviewer asked to confirm or refute will also reject false claims rather than agree with them. The human parallel is the human's informal observation, not a measurement.
+
+**First observed:** 2026-11-27, in the human-proxy's pre-review of thurlow-research/seriatim PR #119. The principle comes from the human (ScottThurlow): "many times the initial work by claude (or any LLM) is shallow. You push on it and it digs in, does more thinking/research, adding details and corrects. … people have the same characteristic." Issues: #1471 (evidence comment), #2481, #2482.
 
 ---
 
 ## What happened
 
-1. **Independent pass.** Seriatim PR #119 (S2-5, head `a9ef61ed9`) went to codex and agy with the same question: "any blockers or significant issues against the spec and TD?"
+1. **Independent pass.** Seriatim PR #119 (S2-5, head `a9ef61ed9`) went to codex and agy, each with the same request to review it against the spec and technical design for blockers or significant issues.
    - **codex:** "No blockers or significant issues." It gave no list of what it had checked.
    - **agy:** three test defects.
-     - A slot-release race. Two requests that each take the one slot are sent back to back on new connections. This is the race TD-slice-1 §8.6 records as having already failed PR #92's CI.
-     - float64 epoch subtraction that breaks the test's own 1 ms tolerance. The human-proxy measured it: 504 of 1000 exact 199 ms pairs fail.
-     - An import form that `conftest.py` explicitly forbids.
-2. **Verification.** The human-proxy checked each claim against the code and found all three real. Under the convergence rule then in force (send back only when both reviewers agree), the PR would have gone to the human as ready, because the reviewers disagreed.
-3. **Confirm-or-refute round.** codex was given agy's three claims with their evidence pointers and asked to CONFIRM or REFUTE each one adversarially. It **confirmed all three**, with file:line evidence, and judged each one fix-in-this-PR. The PR went back to its author with one REQUEST_CHANGES review.
+     - A slot-release race. Two requests that each take the one slot are sent back to back on new connections. TD-slice-1 §8.6 records this race as having already failed PR #92's CI.
+     - float64 epoch subtraction that breaks the test's own 1 ms tolerance. The human-proxy measured it by subtracting 1000 exact 199 ms pairs at current epoch magnitudes: 504 fell outside the tolerance.
+     - An import form (`import seriatim_node.app as app_module`) that `conftest.py:23-25` explicitly forbids.
+2. **Verification.** The human-proxy checked each claim against the code and found all three real. Under the convergence rule then in force (send back only when both reviewers agree), the PR would have gone to the human as ready, because the reviewers disagreed. That is an inference from the rule, not an observed outcome.
+3. **Confirm-or-refute round.** codex was given agy's three claims with their evidence pointers and asked to confirm or refute each one adversarially. It **confirmed all three**, with file:line evidence, and judged each one fix-in-this-PR. The PR went back to its author as one REQUEST_CHANGES review (2026-11-27).
 
-The model and the code were the same in both codex runs. Only the question changed.
+The model and the code were the same in both codex runs. The second prompt differed in two ways at once: it asked targeted, falsifiable questions instead of an open one, and it supplied new information (another reviewer's claims and where to look). It was also a separate run. This incident cannot say which of these produced the deeper check.
 
-## Why it happens
+## Candidate explanations
 
-- **An open question invites a satisficing answer.** "Any issues?" can be answered cheaply: a reviewer that finds nothing quickly can stop. A specific claim can't be answered without opening the file and checking.
-- **A clean verdict carries no evidence of effort.** An empty findings list from a careful reviewer looks exactly like one from a reviewer who barely looked. The pipeline counts both as discharged.
-- **Self-review without new evidence doesn't fix this.** Asking the same reviewer "are you sure?" mostly rephrases the first answer. The second pass worked here because it carried outside evidence: another reviewer's specific claims.
+These are hypotheses for #1471 and #2481 to test, not established mechanisms.
+
+- **An open question may invite a satisficing answer.** "Any issues?" can be answered cheaply: a reviewer that finds nothing quickly can stop. A specific claim is harder to dismiss without opening the file, though a reviewer can still assert an answer without checking.
+- **A clean verdict carries no evidence of effort.** An empty findings list from a careful reviewer looks exactly like one from a reviewer who barely looked. The pipeline counts both as discharged. This one is a property of the record, not a guess about the reviewer.
+- **New evidence, not the re-ask, may be what helped.** The second pass carried another reviewer's specific claims. The literature on self-correction (below) suggests that asking the same model "are you sure?" without new evidence is unreliable on reasoning tasks.
+
+The incident did not reveal which happened inside codex's first run: whether it looked at the test files and missed the defects, or did not look at them.
 
 ## External evidence
 
-Checked against OpenAlex and Semantic Scholar on 2026-11-27. The Zotero status is given for each source.
+Bibliographic details, and abstracts where available, were checked against OpenAlex and Semantic Scholar on 2026-11-27. This is a targeted lookup, not a systematic search. Each row states what the source studied; its bearing on HOS is an analogy or hypothesis unless it says otherwise.
 
 | Practice | Evidence | Bearing | In Zotero |
 |---|---|---|---|
-| **Re-ask with outside evidence, not bare self-review** | Huang et al., "Large Language Models Cannot Self-Correct Reasoning Yet", ICLR 2024 (arXiv:2310.01798): without external feedback, self-correction doesn't reliably help and can hurt | qualifies self-critique; supports the confirm-or-refute round | yes (`CXQFKT3S`) |
-| | Madaan et al., "Self-Refine", NeurIPS 2023 (arXiv:2303.17651): iterative self-feedback improves output | supports, with feedback | yes (`XBRTG9KD`) |
-| **Targeted verification questions** | Dhuliawala et al., "Chain-of-Verification Reduces Hallucination in LLMs", ACL Findings 2024 (arXiv:2309.11495): answering planned verification questions independently cuts errors | supports | no |
-| | Du et al., "Improving Factuality and Reasoning in Language Models through Multiagent Debate", ICML 2024 (arXiv:2305.14325) | supports | yes (`GGKFBJKH`) |
-| **Explaining your own work surfaces errors** | Chi et al., "Eliciting Self-Explanations Improves Understanding", Cognitive Science 1994 (doi:10.1207/s15516709cog1803_3) | supports, in people | no |
-| **Tracing artifacts to their source** | Rempel & Mäder, "Preventing Defects: The Impact of Requirements Traceability Completeness on Software Quality", IEEE TSE 2017 (doi:10.1109/TSE.2016.2622264). Across 24 projects, "more complete traceability decreases the expected defect rate", the first empirical evidence of this | supports | no |
-| | Gotel & Finkelstein, "An analysis of the requirements traceability problem", 1994; Ramesh & Jarke, "Toward reference models of requirements traceability", 2001 | background | yes (`FUIU35NM`, `32FJP5WQ`) |
-| **Design rationale** | Tang et al., "A Survey of the Use and Documentation of Architecture Design Rationale", WICSA 2005/06 (doi:10.1109/wicsa.2005.7): practitioners value rationale but rarely record it; Burge, SEURAT (dissertation, WPI 2005): rationale pays only when tools check it for completeness and consistency | qualifies, on adoption cost; supports checked tables over prose | no |
-| **Author explanations can mislead** | Turpin et al., "Language Models Don't Always Say What They Think", NeurIPS 2023 (arXiv:2305.04388): explanations can be unfaithful to the actual reasoning | supports treating claims as inputs to verify | no |
-| | Buçinca et al., "To Trust or to Think: Cognitive Forcing Functions Can Reduce Overreliance on AI", CSCW 2021 (doi:10.1145/3449287): explanations alone don't reduce overreliance; making people engage before seeing the AI's answer does | supports "independent pass first" | yes (`UTTJ5N93`) |
-| | Vasconcelos et al., "Explanations Can Reduce Overreliance on AI Systems During Decision-Making", PACM HCI 2023 (doi:10.1145/3579605): explanations reduce overreliance when they **lower the cost of verifying** the AI | supports source-tied, checkable claims | no |
-| **Anchoring in code review** | Spadini et al., "Primers or Reminders? The Effects of Existing Review Comments on Code Review", ICSE 2020 (doi:10.1145/3377811.3380385): visible review comments acted as positive reminders for bug types reviewers don't usually consider, not as negative primers | qualifies; it concerns reviewer comments, not author rationale | no |
-| | Several 2024–26 papers on anchoring in LLMs and AI assistance (e.g. "Stuck on suggestions", "Anchoring bias in large language models") | background | yes (`D62FTR38`, `TMSMG2G9`, others) |
-| **Failure framing** | Klein, "Performing a Project Premortem" (HBR 2007; IEEE EMR reprint 2008, doi:10.1109/EMR.2008.4534313) | supports | no |
+| **New evidence, not bare self-review** | Huang et al., "Large Language Models Cannot Self-Correct Reasoning Yet", ICLR 2024 (arXiv:2310.01798). On reasoning benchmarks, intrinsic self-correction, without external feedback, did not reliably improve answers and sometimes made them worse. | qualifies the "are you sure?" re-ask; consistent with giving the second pass outside claims | yes (`CXQFKT3S`) |
+| | Madaan et al., "Self-Refine: Iterative Refinement with Self-Feedback", NeurIPS 2023 (arXiv:2303.17651). The same model generates, critiques and refines its own output, which improved generation and optimization tasks. | counterpoint and scope boundary: self-feedback helped there; Huang et al. found it unreliable for reasoning | yes (`XBRTG9KD`) |
+| **Targeted verification questions** | Dhuliawala et al., "Chain-of-Verification Reduces Hallucination in Large Language Models", Findings of ACL 2024 (arXiv:2309.11495). The model plans its own verification questions, answers them independently of its draft, and revises; this reduced hallucination. | analogous: the questions are model-generated, not supplied by a second reviewer | no |
+| **Reviewers exchanging claims** | Du et al., "Improving Factuality and Reasoning in Language Models through Multiagent Debate", ICML 2024 (arXiv:2305.14325). Several model instances exchange answers over rounds; this improved factuality and reasoning on the tasks tested. Huang et al. report that ungrounded debate does not reliably beat self-consistency at equal cost. | analogous to the confirm-or-refute round, which is grounded in file:line checks | yes (`GGKFBJKH`) |
+| **Self-explanation** | Chi et al., "Eliciting Self-Explanations Improves Understanding", Cognitive Science 1994 (doi:10.1207/s15516709cog1803_3). Eighth-grade students prompted to explain a biology text to themselves as they read it understood it better. | analogous mechanism in human learning (reading, not authoring or defect-finding) | no |
+| **Tracing artifacts to their source** | Rempel & Mäder, "Preventing Defects: The Impact of Requirements Traceability Completeness on Software Quality", IEEE TSE 43(8), 2017 (online 2016; doi:10.1109/TSE.2016.2622264). An observational study of 24 open-source projects: more complete traceability was associated with a lower expected defect rate. | associational support for traceability in general; does not test HOS's requirement-to-PR-claim chain | no |
+| | Gotel & Finkelstein, "An analysis of the requirements traceability problem", ICRE 1994; Ramesh & Jarke, "Toward reference models for requirements traceability", IEEE TSE 2001 | background | yes (`FUIU35NM`, `32FJP5WQ`) |
+| **Design rationale** | Tang et al., "A Survey of the Use and Documentation of Architecture Design Rationale", WICSA 2005 (doi:10.1109/wicsa.2005.7). Practitioners valued design rationale but often did not document it. | qualifies, on adoption cost | no |
+| | Burge, "Software Engineering Using Design Rationale" (PhD dissertation, WPI 2005). Built SEURAT, which checks captured rationale for completeness and consistency, to make capture worth its cost; short-task evaluation showed overhead. | design inference only: favours checked tables over free prose | no |
+| **Author explanations can be unfaithful** | Turpin et al., "Language Models Don't Always Say What They Think: Unfaithful Explanations in Chain-of-Thought Prompting", NeurIPS 2023 (arXiv:2305.04388). Chain-of-thought explanations can misrepresent what actually drove the model's answer. | supports treating author claims as inputs to verify, not as evidence | no |
+| **Independent judgment before seeing the AI's** | Buçinca et al., "To Trust or to Think: Cognitive Forcing Functions Can Reduce Overreliance on AI in AI-assisted Decision-making", PACM HCI 5(CSCW1), 2021 (doi:10.1145/3449287). Three cognitive forcing designs (on-demand, update, wait) reduced, but did not eliminate, overreliance compared with simple explainable-AI designs. | analogous support for "independent pass first" | yes (`UTTJ5N93`) |
+| | Vasconcelos et al., "Explanations Can Reduce Overreliance on AI Systems During Decision-Making", PACM HCI 2023 (doi:10.1145/3579605). Five studies of a maze task: people engaged with explanations, and overreliance fell, under conditions where the task was hard and the explanation made verifying the AI cheaper. | hypothesis: source-tied, checkable claims may lower verification cost | no |
+| **Author framing biases LLM reviewers** | Mitropoulos et al., "Measuring and exploiting contextual bias in LLM-assisted security code review", arXiv 2026 (arXiv:2603.18740). Adversarially framed PR titles, descriptions and commit messages led LLM reviewers to accept changes that reintroduced patched vulnerabilities; redacting that metadata and instructing the reviewer to treat it as untrusted restored detection. | direct evidence that author-supplied text can anchor an LLM reviewer (adversarial case); see `adversarial-framing-attack-on-reviewer-agents.md` | yes (`X7EN6DXZ`) |
+| **Existing comments in code review** | Spadini et al., "Primers or Reminders? The Effects of Existing Review Comments on Code Review", ICSE 2020 (doi:10.1145/3377811.3380385). Visible, valid comments from other reviewers acted as reminders for bug types reviewers don't usually consider. Misleading comments were not tested. | qualifies; concerns other reviewers' comments, not the author's rationale | no |
+| **Anchoring, outside code review** | Rosbach et al., "Stuck on suggestions: Automation bias, the anchoring effect, and the factors that shape them in computational pathology", 2026 (doi:10.59275/j.melba.2026-87b1): human experts working with AI assistance. Lou & Sun, "Anchoring bias in large language models: an experimental study", Journal of Computational Social Science (doi:10.1007/s42001-025-00435-2): LLMs as the anchored party. | background; separates the human and LLM anchoring cases | yes (`D62FTR38`, `TMSMG2G9`) |
+| **Failure framing** | Klein, "Performing a Project Premortem", Harvard Business Review 2007 (IEEE EMR reprint 2008, doi:10.1109/EMR.2008.4534313). A practitioner essay; the method rests on prospective-hindsight research (Mitchell, Russo & Pennington 1989). | practitioner precedent in human planning; untested in LLM review | no |
 
-**A research gap.** No study was found of anchoring on an *author's own* justification in code review. That is exactly the risk of asking authors for justification artifacts. Spadini et al. study comments from other reviewers, not the author. HOS's design (#2482: reviewers read the author's claims only after their own independent pass) is an untested mitigation for an unmeasured effect.
+**A narrower gap.** Mitropoulos et al. show that *adversarial* author framing anchors LLM reviewers, and that withholding it helps. This lookup found no study of *benign*, structured author justification (for example, a table of claims each citing its source) anchoring a reviewer, human or LLM, in code review. That is the case #2482 creates. Its mitigation, reading the author's claims only after an independent pass, protects the first pass. Whether the claims still anchor the verification round after it is unmeasured.
 
 ## The response
 
-1. **Confirm-or-refute round on disagreement** (#1471's Phase 2, now with field evidence). When reviewers disagree, each is given the other's specific claims and must confirm or refute them with evidence. The human-proxy applies this now in its own pre-reviews. #1471 carries the design.
-2. **A clean verdict must carry its coverage map** (#2481). It lists the files, the requirements and the failure classes checked. A clean verdict without one is recorded as `unverified`, never as a pass.
-3. **Every artifact traces to its source** (#2482). The chain runs requirement → design → code → test → PR claims. The claims are falsifiable and cite their source, and why-comments appear only where a choice isn't obvious. Reviewers verify the claims **after** an independent pass, so the author's justification cannot anchor them.
-4. **Failure framing in review prompts.** Ask "assume this breaks; where?", not "is this OK?".
+Status as of 2026-11-27. Only item 1 is in use, and only in the human-proxy's own pre-reviews; the rest are proposed.
+
+1. **Confirm-or-refute round on disagreement** (#1471's Phase 2). When reviewers disagree, each is given the other's specific claims and must confirm or refute them with evidence. This incident is its first field use.
+2. **A clean verdict must carry its coverage map** (#2481, proposed). It would list the files, the requirements and the failure classes checked, and a clean verdict without one would be recorded as `unverified`, not as a pass.
+3. **Every artifact traces to its source** (#2482, proposed). The chain runs requirement → design → code → test → PR claims. The claims are falsifiable and cite their source, and why-comments appear only where a choice isn't obvious. Reviewers would read the claims only **after** an independent pass, so the first pass is not anchored by them.
+4. **Failure framing in review prompts.** Ask "assume this breaks; where?", not "is this OK?". Untested here.
 5. **Review uses a different model family from the author** (#2372, v0.7.2). This addresses a related but separate cause: shared blind spots, rather than shallow passes.
 
 ## Implications for research
 
-1. **The question is an oversight variable.** The same reviewer gives different coverage under an open question and under targeted ones. Report the prompt shape alongside reviewer outcomes; a "reviewer found nothing" result means little without it.
-2. **A clean verdict is a weak signal.** In this case it was the weakest signal of the run. Treat a clean verdict without evidence of coverage as missing data, not as a pass.
-3. **Justification helps when it is checkable and read late.** Traceability is empirically linked to fewer defects (Rempel & Mäder). Explanations reduce overreliance when they make verification cheaper (Vasconcelos et al.). Fluent, unverified explanations can raise overreliance (Buçinca et al.; Turpin et al. on unfaithfulness). Read together, these favour short, source-tied claims, verified after an independent pass.
-4. **Measure it.** Compare the findings from open versus targeted questions, and from clean verdicts with and without coverage maps, once #2481 and #1471 land. The open gap (anchoring on author rationale) is a candidate study.
-5. **People too.** Every mechanism here has a human counterpart: self-explanation, checklists, pre-mortems, cognitive forcing. This is `hos-ports-human-software-engineering-best-practices.md` applied to the depth of a single review.
+1. **The prompt is a candidate oversight variable.** In this case the same reviewer returned nothing to an open question and three confirmed defects to a targeted, evidence-carrying one. Reporting the prompt shape, and what information the prompt carried, alongside reviewer outcomes would let later work separate the two.
+2. **A clean verdict is a weak signal.** In this run it was the least informative output. A clean verdict without evidence of coverage is better treated as missing data than as a pass.
+3. **Checkable justification, read late, is a hypothesis.** Traceability completeness is associated with fewer defects (Rempel & Mäder). Explanations reduced overreliance where they lowered the cost of verifying (Vasconcelos et al.). Model explanations can be unfaithful (Turpin et al.), and author framing can anchor LLM reviewers (Mitropoulos et al.). Together these suggest, without establishing, that short, source-tied claims verified after an independent pass are the safer form.
+4. **Measure it.** Once #2481 and #1471 land, compare findings from open versus targeted prompts, with and without supplied claims, and include false claims so that agreement with a wrong claim can be detected. Compare clean verdicts with and without coverage maps. Anchoring on benign author justification is a candidate study.
+5. **People too, as an analogy.** Self-explanation, pre-mortems and cognitive forcing are human practices aimed at the same problem. This is `hos-ports-human-software-engineering-best-practices.md` applied to the depth of a single review; the incident does not show that people and models share the mechanism.
 
 ## Related findings
 
+- `adversarial-framing-attack-on-reviewer-agents.md`: author framing anchors LLM reviewers (Mitropoulos et al.)
 - `richer-ai-explanations-may-increase-overreliance-not-reduce-it.md`: explanations can raise overreliance
 - `wrong-rationale-outlives-wrong-conclusions.md`: a recorded rationale is inherited without re-checking
 - `corroboration-ranked-review-reduces-noise-without-losing-coverage.md`: detector-then-validator
