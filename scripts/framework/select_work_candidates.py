@@ -109,7 +109,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Collection, Optional, Sequence
+from typing import Any, Callable, Collection, Mapping, Optional, Sequence
 
 from scripts.framework.requester_trust import (
     COLLABORATOR_PAGE_BOUND,
@@ -146,6 +146,7 @@ NATIVE_EXCLUSION_REASONS = (
     "untracked-parent",
 )
 UNEVALUATED_EDGE_SUMMARY = "edge-summary-unreadable"  # the unevaluated sub-reason token
+CLOSED_BLOCKER_QUERY_FAILED = "closed-blocker-query-failed"  # aggregate WARN token (#2403)
 _EXCLUDED_LIST_BOUND = 20  # same bound as the ALL-CANDIDATES-GATED issue list
 
 _DEFAULT_MAX_CANDIDATES = 5
@@ -582,6 +583,30 @@ def _sanitize_title(title: str) -> str:
     return _CONTROL_CHARS_RE.sub(" ", title).strip()
 
 
+# #2403 (CWE-117): a gh/GraphQL failure reason is external text that reaches the
+# stderr WARN lines bin/hos-cron feeds to worker context. It is stripped of ANSI
+# CSI sequences, control characters, quote/backslash (so the quoted field cannot
+# close early or fabricate key=value fields) and token-shaped strings, then capped.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_TOKEN_RE = re.compile(r"gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+")
+# ASCII + C1 controls (incl. 8-bit CSI \x9b), NEL, line/paragraph separators.
+_REASON_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u0085\u2028\u2029]+")
+_FAILURE_REASON_MAX_CHARS = 160
+_REASON_TRUNCATION_MARKER = "..."
+_REASON_UNAVAILABLE = "unavailable"
+
+
+def _sanitize_failure_reason(text: str) -> str:
+    cleaned = _ANSI_CSI_RE.sub("", text)
+    cleaned = _REASON_CONTROL_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace('"', "'").replace("\\", "/")
+    cleaned = _TOKEN_RE.sub("[REDACTED]", cleaned).strip()
+    if len(cleaned) > _FAILURE_REASON_MAX_CHARS:
+        keep = _FAILURE_REASON_MAX_CHARS - len(_REASON_TRUNCATION_MARKER)
+        cleaned = cleaned[:keep].rstrip() + _REASON_TRUNCATION_MARKER
+    return cleaned
+
+
 @dataclass
 class _Candidate:
     number: int
@@ -698,6 +723,8 @@ class _WalkResult:
     gated_issue_numbers: list = field(default_factory=list)
     query_failed_issues: list = field(default_factory=list)
     closed_blocker_failed: set = field(default_factory=set)  # subset of query_failed_issues
+    closed_blocker_reasons: dict = field(default_factory=dict)  # issue -> first sanitised reason
+    closed_blocker_checked: int = 0  # candidates whose closed-blocker check ran to a verdict
     unevaluated_sufficient: int = 0
     unevaluated_cost_ceiling: int = 0
     cost_ceiling_named_issue: Optional[int] = None
@@ -783,34 +810,58 @@ def _run_graphql(owner: str, name: str, number: int) -> Any:
             check=False,
             timeout=_GH_SUBPROCESS_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise _GhFailure(str(exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        # str(exc) embeds the full argv, query text included: fixed text only (#2403).
+        raise _GhFailure(f"timed out after {_GH_SUBPROCESS_TIMEOUT_SECONDS}s") from exc
+    except OSError as exc:
+        raise _GhFailure(exc.strerror or type(exc).__name__) from exc
     if result.returncode != 0:
-        raise _GhFailure(result.stderr.strip())
+        raise _GhFailure(result.stderr.strip() or f"exit {result.returncode}, no stderr")
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise _GhFailure(str(exc)) from exc
 
 
-def _fetch_closer_node(repo: str, number: int, budget: _Budget) -> Optional[dict]:
+def _graphql_error_reason(payload: dict) -> str:
+    errors = payload.get("errors")
+    first = errors[0] if isinstance(errors, list) and errors else None
+    message = first.get("message") if isinstance(first, dict) else None
+    return f"graphql: {message if isinstance(message, str) and message else 'error'}"
+
+
+def _fetch_closer_node(
+    repo: str, number: int, budget: _Budget, failure: Optional[list] = None
+) -> Optional[dict]:
     """The last `ClosedEvent` node of issue `number`, or None (UNKNOWN) on any
     transport/shape failure. Exactly one request: the stop test runs first
     (`_BudgetRefused`), the counter increments after the call, success or not.
     UNKNOWN covers: non-zero exit, timeout, non-JSON, a non-empty `errors`, a
-    missing/non-dict `data.repository.issue`, `nodes` not a one-item list."""
+    missing/non-dict `data.repository.issue`, `nodes` not a one-item list.
+    When `failure` is given, the sanitised reason is appended to it (#2403)."""
+
+    def _fail(reason: str) -> None:
+        if failure is not None:
+            failure.append(_sanitize_failure_reason(reason))
+
     owner, sep, name = repo.partition("/")
     if not sep or not owner or not name:
+        _fail("shape: invalid repo")
         return None
     if budget.refuse():
         raise _BudgetRefused
     try:
         payload = _run_graphql(owner, name, number)
-    except _GhFailure:
+    except _GhFailure as exc:
         budget.record()
+        _fail(f"gh: {exc}")
         return None
     budget.record()
-    if not isinstance(payload, dict) or payload.get("errors"):
+    if not isinstance(payload, dict):
+        _fail("shape: unexpected response")
+        return None
+    if payload.get("errors"):
+        _fail(_graphql_error_reason(payload))
         return None
     data = payload.get("data")
     repository = data.get("repository") if isinstance(data, dict) else None
@@ -818,6 +869,7 @@ def _fetch_closer_node(repo: str, number: int, budget: _Budget) -> Optional[dict
     items = issue.get("timelineItems") if isinstance(issue, dict) else None
     nodes = items.get("nodes") if isinstance(items, dict) else None
     if not isinstance(nodes, list) or len(nodes) != 1 or not isinstance(nodes[0], dict):
+        _fail("shape: unexpected response")
         return None
     return nodes[0]
 
@@ -969,6 +1021,7 @@ class _ClosedBlockerCheck:
     state: str  # "SATISFIED" | "UNSATISFIED" | "FAILED" | "REFUSED"
     satisfied_by: list = field(default_factory=list)  # [(blocker number, "merge"|"codeowner")]
     fetched: bool = False  # at least one request was spent on this record
+    reason: Optional[str] = None  # FAILED only: first sanitised closer-lookup failure (#2403)
 
 
 def _check_closed_blockers(
@@ -979,15 +1032,21 @@ def _check_closed_blockers(
     bots: set,
     budget: _Budget,
     verdicts: dict,
+    failure_reasons: Optional[dict] = None,
 ) -> _ClosedBlockerCheck:
     """The paid check: every request counts against `budget`. REFUSED / FAILED /
     a truncated fetch are never a pass and never an exclusion. `verdicts`
     caches determined answers per (blocker number, closed_at) so a closure shared
-    by several dependents is paid for once and a re-closed blocker is re-judged."""
+    by several dependents is paid for once and a re-closed blocker is re-judged.
+    `failure_reasons` (owned by the walk) maps a failed closure key to the first
+    sanitised closer-lookup reason, so a cached FAILED verdict keeps its reason."""
     spent_before = budget.spent
+    reasons = failure_reasons if failure_reasons is not None else {}
 
-    def _result(state: str, by: Optional[list] = None) -> _ClosedBlockerCheck:
-        return _ClosedBlockerCheck(state, by or [], budget.spent > spent_before)
+    def _result(
+        state: str, by: Optional[list] = None, reason: Optional[str] = None
+    ) -> _ClosedBlockerCheck:
+        return _ClosedBlockerCheck(state, by or [], budget.spent > spent_before, reason)
 
     def _blockers_endpoint(page: int) -> str:
         return f"repos/{repo}/issues/{cand.number}/dependencies/blocked_by?per_page=100&page={page}"
@@ -1028,7 +1087,7 @@ def _check_closed_blockers(
         closed_at = blocker["closed_at"]
         key = (number, closed_at)  # one verdict per CLOSURE, not per issue number
         if verdicts.get(key) is _FAILED:
-            return _result("FAILED")  # already failed this walk: no re-fetch
+            return _result("FAILED", reason=reasons.get(key))  # failed this walk: no re-fetch
         if key not in verdicts:
 
             def _events_endpoint(page: int, num: Any = number) -> str:
@@ -1041,13 +1100,14 @@ def _check_closed_blockers(
                 # FAILED, or BOUND-REACHED (the last `closed` event may lie beyond the bound).
                 verdicts[key] = _FAILED
                 return _result("FAILED")
+            closer_failure: list = []
             try:
                 verdict = blocker_closure_satisfied(
                     fetched.records,
                     codeowners,
                     bots,
                     lambda sha: _is_default_branch_ancestor(repo_root, sha),
-                    functools.partial(_fetch_closer_node, repo, number, budget),
+                    functools.partial(_fetch_closer_node, repo, number, budget, closer_failure),
                     repo,
                     closed_at,
                 )
@@ -1055,7 +1115,9 @@ def _check_closed_blockers(
                 return _result("REFUSED")
             verdicts[key] = _FAILED if verdict == _UNKNOWN else verdict
             if verdict == _UNKNOWN:
-                return _result("FAILED")
+                if closer_failure:
+                    reasons[key] = closer_failure[0]
+                return _result("FAILED", reason=reasons.get(key))
         if verdicts[key] is None:
             return _result("UNSATISFIED")
         by.append((number, verdicts[key]))
@@ -1076,6 +1138,7 @@ def _walk(
     result = _WalkResult()
     repo_root = repo_root if repo_root is not None else str(_REPO_ROOT)
     blocker_verdicts: dict = {}
+    blocker_failure_reasons: dict = {}
     i = 0
     n = len(walk_order)
     while i < n:
@@ -1088,7 +1151,14 @@ def _walk(
             # Paid, and BEFORE the trust test: an unsatisfied record is excluded,
             # never counted as gated (#2173).
             check = _check_closed_blockers(
-                cand, repo, repo_root, codeowners, bots, budget, blocker_verdicts
+                cand,
+                repo,
+                repo_root,
+                codeowners,
+                bots,
+                budget,
+                blocker_verdicts,
+                blocker_failure_reasons,
             )
             if check.state == "REFUSED":
                 # Same cost-ceiling tail as D5's refused events fetch.
@@ -1097,9 +1167,12 @@ def _walk(
                 result.unevaluated_cost_ceiling += n - i
                 result.stopped = True
                 return result
+            result.closed_blocker_checked += 1
             if check.state == "FAILED":
                 result.query_failed_issues.append(cand.number)
                 result.closed_blocker_failed.add(cand.number)
+                if check.reason:
+                    result.closed_blocker_reasons[cand.number] = check.reason
                 i += 1
                 continue
             if check.state == "UNSATISFIED":
@@ -1196,6 +1269,8 @@ def _report_and_exit(
     edge_summary_unreadable: Sequence[tuple] = (),  # [(number, limb)]
     excluded: Sequence[tuple] = (),  # [(number, reason)]
     closed_blocker_failed: Collection[int] = (),  # subset of query_failed_issues
+    closed_blocker_reasons: Optional[Mapping[int, str]] = None,  # issue -> sanitised reason
+    closed_blocker_checked: int = 0,
 ) -> int:
     gated_count = sum(gated_reasons.values())
     evaluated = len(eligible) + gated_count
@@ -1234,8 +1309,14 @@ def _report_and_exit(
             f"unevaluated:list-truncated={'yes' if list_truncated else 'no'}",
             f"unevaluated:{UNEVALUATED_EDGE_SUMMARY}={len(edge_summary_unreadable)}",
         )
+    reasons = closed_blocker_reasons or {}
     for issue in query_failed_issues:
-        suffix = " check=closed-blocker" if issue in closed_blocker_failed else ""
+        suffix = ""
+        if issue in closed_blocker_failed:
+            suffix = " check=closed-blocker"
+            reason = reasons.get(issue)
+            if reason:
+                suffix += f' reason="{reason}"'
         _emit(f"WARN unevaluated:query-failed issue=#{issue}{suffix}")
     for issue, limb in edge_summary_unreadable[:_EXCLUDED_LIST_BOUND]:
         _emit(f"WARN unevaluated:{UNEVALUATED_EDGE_SUMMARY} issue=#{issue} limb={limb}")
@@ -1248,6 +1329,17 @@ def _report_and_exit(
             "the GitHub host may not return issue dependency / sub-issue",
             "summaries on the list endpoint; selection cannot determine",
             'blocked-ness (DEGRADED, not "no work")',
+        )
+    # "Every": the closed-blocker check ran to a verdict (not ceiling-refused) for
+    # `closed_blocker_checked` candidates and FAILED for all of them (and for at
+    # least one) -- selection cannot judge closed blockers at all (#2403).
+    if closed_blocker_failed and len(closed_blocker_failed) == closed_blocker_checked:
+        first = next((reasons[i] for i in query_failed_issues if i in reasons), _REASON_UNAVAILABLE)
+        _emit(
+            f"WARN {CLOSED_BLOCKER_QUERY_FAILED}-on-every-record",
+            f'n={len(closed_blocker_failed)} reason="{first}" —',
+            "selection cannot determine closed-blocker satisfaction",
+            '(DEGRADED, not "no work")',
         )
     if cost_ceiling_named_issue is not None:
         _emit(f"unevaluated:cost-ceiling issue=#{cost_ceiling_named_issue}")
@@ -1477,6 +1569,8 @@ def main(argv: Optional[list] = None) -> int:
         edge_summary_unreadable=filtered.unreadable,
         excluded=all_excluded,
         closed_blocker_failed=walk_result.closed_blocker_failed,
+        closed_blocker_reasons=walk_result.closed_blocker_reasons,
+        closed_blocker_checked=walk_result.closed_blocker_checked,
     )
 
 

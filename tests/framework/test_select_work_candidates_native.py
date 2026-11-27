@@ -772,12 +772,16 @@ class TestZeroAddedRequests:
         functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
         # #2173 ruling: `_run_graphql` is the ONE sanctioned GraphQL transport (the
         # closer lookup); the word "graphql" may appear nowhere outside it.
+        # #2403: `_graphql_error_reason` only labels an already-failed response's
+        # reason text ("graphql: ..."); it issues no request.
         gql_fn = functions["_run_graphql"]
         gql_span = range(gql_fn.lineno, gql_fn.end_lineno + 1)
+        reason_fn = functions["_graphql_error_reason"]
+        gql_spans = [gql_span, range(reason_fn.lineno, reason_fn.end_lineno + 1)]
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 for needle in forbidden:
-                    if needle == "graphql" and node.lineno in gql_span:
+                    if needle == "graphql" and any(node.lineno in span for span in gql_spans):
                         continue
                     assert needle not in node.value, (needle, node.value[:60])
                 # #2173: the closed-blocker check is the ONE sanctioned dependencies read.
@@ -1375,7 +1379,11 @@ class TestClosedBlockerWalk:
         rc, out, err = run_gate(capsys)
         assert (out, rc) == ([], 3)
         assert "EXCLUDED" not in " ".join(err)
-        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+        assert (
+            PREFIX
+            + 'WARN unevaluated:query-failed issue=#20 check=closed-blocker reason="gh: simulated"'
+            in err
+        )
 
     def test_budget_exhausted_at_the_closer_lookup_is_refused(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
@@ -1767,3 +1775,203 @@ class TestClosedBlockerEmptyList:
         assert out == []
         assert "EXCLUDED" not in " ".join(err)
         assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+
+# ---------------------------------------------------------------------------
+# #2403: the closed-blocker failure reason reaches the WARN line
+# ---------------------------------------------------------------------------
+
+
+class TestFailureReasonSanitiser:
+    def test_strips_ansi_and_control_chars_to_one_line(self):
+        got = swc._sanitize_failure_reason("\x1b[31mExpected NAME\x1b[0m\nsecond\r\x00line")
+        assert got == "Expected NAME second line"
+
+    def test_neutralises_quote_and_backslash(self):
+        got = swc._sanitize_failure_reason('x" fake=1 \\ y')
+        assert '"' not in got and "\\" not in got
+
+    @pytest.mark.parametrize(
+        "token", ["ghp_AbC123_x", "gho_abc", "ghu_abc", "ghs_abc", "ghr_abc", "github_pat_11AB_cd"]
+    )
+    def test_redacts_token_shaped_strings(self, token):
+        got = swc._sanitize_failure_reason(f"bad credentials {token} end")
+        assert token not in got
+        assert got == "bad credentials [REDACTED] end"
+
+    def test_truncates_to_the_cap_with_a_marker(self):
+        got = swc._sanitize_failure_reason("a" * 1000)
+        assert len(got) == swc._FAILURE_REASON_MAX_CHARS
+        assert got.endswith(swc._REASON_TRUNCATION_MARKER)
+
+    def test_short_text_is_untouched(self):
+        assert swc._sanitize_failure_reason("short") == "short"
+
+    def test_token_is_redacted_before_truncation(self):
+        got = swc._sanitize_failure_reason("x" * 148 + "ghp_" + "A" * 40)
+        assert got == "x" * 148 + "[REDACTED]"
+
+    def test_reason_of_exactly_cap_length_is_not_truncated(self):
+        text = "a" * swc._FAILURE_REASON_MAX_CHARS
+        assert swc._sanitize_failure_reason(text) == text
+
+    def test_reason_one_over_the_cap_is_truncated_with_marker(self):
+        got = swc._sanitize_failure_reason("a" * (swc._FAILURE_REASON_MAX_CHARS + 1))
+        assert len(got) == swc._FAILURE_REASON_MAX_CHARS
+        assert got.endswith(swc._REASON_TRUNCATION_MARKER)
+
+
+class TestClosedBlockerFailureReason:
+    @pytest.fixture(autouse=True)
+    def _gh(self, monkeypatch):
+        import subprocess
+
+        self.proc = (1, "", "boom")  # (returncode, stdout, stderr) of `gh api graphql`
+
+        def _run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, *self.proc)
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+
+    def _setup(self, stub, numbers=(20,)):
+        stub.issue_pages[1] = [_issue(n, deps=_CLOSED_BLOCKER) for n in numbers]
+        for k, n in enumerate(numbers):
+            stub.blockers[n] = [_blocker(900 + k)]
+            stub.events_pages[900 + k] = {1: [_closed_event(_BOT)]}
+
+    def _reason_lines(self, err):
+        return [ln for ln in err if "WARN unevaluated:query-failed" in ln]
+
+    def test_gh_stderr_with_ansi_and_newline_is_one_clean_line(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (1, "", "\x1b[31mExpected NAME\x1b[0m\nsecond line")
+        rc, out, err = run_gate(capsys)
+        assert rc == 3
+        (line,) = self._reason_lines(err)
+        assert 'reason="gh: Expected NAME second line"' in line
+        assert "\x1b" not in line and "\n" not in line
+
+    def test_graphql_errors_payload_reason(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (0, '{"errors":[{"message":"Expected NAME, actual: (none)"}]}', "")
+        rc, out, err = run_gate(capsys)
+        assert rc == 3
+        (line,) = self._reason_lines(err)
+        assert 'reason="graphql: Expected NAME, actual: (none)"' in line
+
+    def test_graphql_errors_without_string_message_uses_placeholder(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (0, '{"errors":[{"message":5}]}', "")
+        rc, out, err = run_gate(capsys)
+        (line,) = self._reason_lines(err)
+        assert 'reason="graphql: error"' in line
+
+    def test_shape_failure_uses_fixed_text_never_the_payload(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (0, '{"data":{"extra":"PAYLOAD-LEAK"}}', "")
+        rc, out, err = run_gate(capsys)
+        (line,) = self._reason_lines(err)
+        assert 'reason="shape: unexpected response"' in line
+        assert "PAYLOAD-LEAK" not in " ".join(err)
+
+    def test_quote_neutralised_and_token_redacted_end_to_end(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (1, "", 'oops" issue=#99 token=ghp_SECRET123')
+        rc, out, err = run_gate(capsys)
+        (line,) = self._reason_lines(err)
+        assert "ghp_SECRET123" not in " ".join(err)
+        assert line.count('"') == 2  # only the field's own opening and closing quotes
+        assert "[REDACTED]" in line
+
+    def test_over_long_reason_is_truncated(self, gate_repo, stub, capsys):
+        self._setup(stub)
+        self.proc = (1, "", "z" * 5000)
+        rc, out, err = run_gate(capsys)
+        (line,) = self._reason_lines(err)
+        reason = line.split('reason="', 1)[1].rsplit('"', 1)[0]
+        assert len(reason) == swc._FAILURE_REASON_MAX_CHARS
+
+    def test_every_candidate_failing_emits_one_aggregate_and_still_exits_3(
+        self, gate_repo, stub, capsys
+    ):
+        self._setup(stub, numbers=(20, 21))
+        self.proc = (1, "", "Expected NAME")
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        agg = [ln for ln in err if "closed-blocker-query-failed-on-every-record" in ln]
+        assert len(agg) == 1
+        assert 'n=2 reason="gh: Expected NAME"' in agg[0]
+        assert "DEGRADED" in agg[0]
+
+    def test_cached_failed_blocker_keeps_its_reason_for_a_second_dependent(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        for n in (20, 21):
+            stub.blockers[n] = [_blocker(900)]
+        stub.events_pages[900] = {1: [_closed_event(_BOT)]}
+        self.proc = (1, "", "Expected NAME")
+        rc, out, err = run_gate(capsys)
+        lines = self._reason_lines(err)
+        assert len(lines) == 2
+        assert all('reason="gh: Expected NAME"' in ln for ln in lines)
+
+    def test_mixed_pass_and_fail_emits_no_aggregate(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.blockers[21] = [_blocker(901)]
+        stub.events_pages[900] = {1: [_closed_event(_CODEOWNER)]}  # passes without a closer call
+        stub.events_pages[901] = {1: [_closed_event(_BOT)]}  # needs the failing closer lookup
+        self.proc = (1, "", "Expected NAME")
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+        assert not any("closed-blocker-query-failed-on-every-record" in ln for ln in err)
+        assert len(self._reason_lines(err)) == 1
+
+
+class TestClosedBlockerFailureReasonRound1:
+    """Code-review round 1: no argv in the reason, empty-stderr placeholder, C1/LS/PS."""
+
+    @pytest.fixture(autouse=True)
+    def _gh(self, monkeypatch):
+        import subprocess
+
+        self.exc = None
+        self.proc = (1, "", "boom")
+
+        def _run(argv, **kwargs):
+            if self.exc is not None:
+                raise self.exc(argv)
+            return subprocess.CompletedProcess(argv, *self.proc)
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+
+    def _line(self, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.events_pages[900] = {1: [_closed_event(_BOT)]}
+        rc, out, err = run_gate(capsys)
+        assert rc == 3
+        (line,) = [ln for ln in err if "WARN unevaluated:query-failed" in ln]
+        return line
+
+    def test_timeout_reason_has_no_argv_or_query_text(self, gate_repo, stub, capsys):
+        import subprocess
+
+        self.exc = lambda argv: subprocess.TimeoutExpired(argv, 30)
+        line = self._line(stub, capsys)
+        assert 'reason="gh: timed out after 30s"' in line
+        for leak in ("query=", "graphql -f", "Command"):
+            assert leak not in line
+
+    def test_oserror_reason_is_strerror(self, gate_repo, stub, capsys):
+        self.exc = lambda argv: OSError(2, "No such file or directory")
+        assert 'reason="gh: No such file or directory"' in self._line(stub, capsys)
+
+    def test_empty_stderr_gets_a_placeholder(self, gate_repo, stub, capsys):
+        self.proc = (4, "", "  \n")
+        assert 'reason="gh: exit 4, no stderr"' in self._line(stub, capsys)
+
+    def test_sanitiser_collapses_c1_nel_ls_ps_controls(self):
+        got = swc._sanitize_failure_reason("a\x9b31mb\x85c\u2028d\u2029e\x80f")
+        assert got == "a 31mb c d e f"
