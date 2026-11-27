@@ -62,6 +62,7 @@ from scripts.automation.lib.github import (
     list_check_runs_for_ref,
     post_comment,
 )
+from scripts.framework.requester_trust import parse_codeowners_humans
 
 logger = logging.getLogger(__name__)
 
@@ -3126,20 +3127,16 @@ def fetch_codeowners_text(owner: str, repo: str, ref: str) -> Optional[str]:
 
 
 def _codeowners_humans_from_text(text: Optional[str]) -> set[str]:
-    """Byte-equivalent to requester_trust.codeowners_humans over `text`."""
-    humans: set[str] = set()
+    """requester_trust.codeowners_humans over `text`: delegates to its one
+    shared text parser (R-A7, strict `@login` tokens only) rather than keeping
+    a second copy that can drift. Since R-A7b the set is a subset of the old
+    truncate-at-`#` parser's for every input (TD-2101 §10.5.1), so delegation
+    can only shrink the guard's set. A malformed owner token (bare word,
+    `@a#x`, invalid or over-long handle) makes `check_resolution_consistent`
+    raise CodeownersDriftError: a deliberate fail-closed escalation (TD-2101 10.3)."""
     if text is None:
-        return humans
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        for owner in line.split()[1:]:
-            owner = owner.lstrip("@")
-            if "/" in owner:
-                continue
-            humans.add(owner.lower())
-    return humans
+        return set()
+    return parse_codeowners_humans(text)
 
 
 def resolve_reviewer_from_text(

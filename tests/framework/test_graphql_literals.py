@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from scripts.automation.lib import github as gh_lib
+from scripts.framework import human_authorization as ha_lib
 from scripts.framework import select_work_candidates as swc
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -139,6 +140,8 @@ def _literals() -> dict[str, str]:
         "_REVIEW_THREADS_QUERY": gh_lib._REVIEW_THREADS_QUERY,
         "merge_authority mutation": _merge_authority_mutation(),
         "post_review_thread.sh mutation": _bash_query_literal(),
+        "human_authorization DELETIONS_QUERY": ha_lib.DELETIONS_QUERY,
+        "human_authorization EDITS_QUERY": ha_lib.EDITS_QUERY,
     }
 
 
@@ -160,6 +163,7 @@ _COVERED_FILES = {
     "scripts/automation/lib/github.py",
     "scripts/automation/lib/merge_authority.py",
     "bootstrap/post_review_thread.sh",
+    "scripts/framework/human_authorization.py",
 }
 
 
