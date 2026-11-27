@@ -3520,16 +3520,16 @@ def test_make_git_first_error_ignores_warning_only_stderr(repo: Path, tmp_path: 
 
 def _failing_archive_git(repo: Path, fail_branch: str, cause: str = "fatal: boom"):
     """Real git runner whose archive-ref ``update-ref`` (create-only, 4 args) fails for
-    ``fail_branch`` and records ``cause`` as ``first_error``."""
+    ``fail_branch`` and records ``cause`` as ``window_error``."""
     real = readopt.make_git(repo)
 
     def run(args):
         if args[0] == "update-ref" and len(args) == 4 and f"/{fail_branch}@" in args[1]:
-            run.first_error = cause  # type: ignore[attr-defined]
+            run.window_error = cause  # type: ignore[attr-defined]
             return 128, ""
         return real(args)
 
-    run.first_error = ""  # type: ignore[attr-defined]
+    run.window_error = ""  # type: ignore[attr-defined]
     return run
 
 
@@ -3991,3 +3991,105 @@ def test_reap_remote_local_copy_written_prints_no_warn(repo, capsys):
     assert deleted == [("worker-30-x", tip)]
     assert git(repo, "rev-parse", f"refs/archive/reap/worker-30-x@{tip[:12]}") == tip
     assert not any(ln.startswith("WARN: local archive ref not written") for ln in out)
+
+
+# --- #2401: per-branch archive cause, dry-run guard, shallow count --------------------------
+
+
+def test_make_git_window_error_records_first_in_window_and_resets(repo):
+    run = readopt.make_git(repo)
+    assert run.window_error == ""  # type: ignore[attr-defined]
+    run(["rev-parse", "--verify", "refs/heads/nope-one"])
+    run(["cat-file", "-p", "0" * 40])
+    run(["update-ref", "-d", "refs/heads/x", "bad"])
+    first = run.window_error  # type: ignore[attr-defined]
+    assert first
+    run(["cat-file", "-p", "1" * 40])
+    assert run.window_error == first  # type: ignore[attr-defined]
+    run.window_error = ""  # type: ignore[attr-defined]
+    run(["cat-file", "-p", "2" * 40])
+    assert run.window_error  # type: ignore[attr-defined]  # window re-armed, not left empty
+    assert run.window_error != first  # type: ignore[attr-defined]
+    assert "2" * 40 in run.window_error  # type: ignore[attr-defined]  # the NEW failure's text
+    assert run.first_error == first  # type: ignore[attr-defined]  # sticky, unlike the window
+
+
+def test_make_git_window_error_captures_error_only_stderr(repo, monkeypatch):
+    stderr = "hint: something benign\nerror: cannot lock ref 'refs/heads/x'\n"
+    monkeypatch.setattr(
+        readopt.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr=stderr),
+    )
+    run = readopt.make_git(repo)
+    assert run(["update-ref", "refs/heads/x", "bad"])[0] == 1
+    assert run.window_error == "error: cannot lock ref 'refs/heads/x'"  # type: ignore[attr-defined]
+    assert run.first_error == run.window_error  # type: ignore[attr-defined]
+
+
+def test_make_git_reset_of_window_error_leaves_first_error(repo):
+    run = readopt.make_git(repo)
+    run(["cat-file", "-p", "0" * 40])
+    first = run.first_error  # type: ignore[attr-defined]
+    assert first
+    run.window_error = ""  # type: ignore[attr-defined]
+    assert run.first_error == first  # type: ignore[attr-defined]
+
+
+def test_prune_archive_warn_names_its_own_cause_not_an_earlier_one(attempts, capsys):
+    real = readopt.make_git(attempts)
+
+    def run(args):
+        if args[0] == "update-ref" and len(args) == 4 and "/worker-20-mid@" in args[1]:
+            if not run.window_error:  # type: ignore[attr-defined]  # make_git's capture rule
+                run.window_error = "fatal: later cause"  # type: ignore[attr-defined]
+            return 128, ""
+        return real(args)
+
+    # An earlier, unrelated failure already filled the window on this same runner.
+    run.window_error = "fatal: earlier cause"  # type: ignore[attr-defined]
+    readopt.prune_attempts(attempts, 20, git=run)
+    out = capsys.readouterr().out
+    assert "WARN: archive of 'worker-20-mid' failed: fatal: later cause" in out
+    assert "earlier cause" not in out
+
+
+def test_prune_dry_run_tip_on_base_exception_warns_and_previews_all(attempts, capsys):
+    run = _raising_git(attempts, lambda a: a[:2] == ["merge-base", "--is-ancestor"])
+    deleted = readopt.prune_attempts(attempts, 20, git=run, dry_run=True)
+    out = capsys.readouterr().out
+    assert sorted(deleted) == ["worker-20-mid", "worker-20-old"]
+    assert out.count("WARN: archive check of") == 2
+    assert "WARN: archive check of 'worker-20-old' raised:" in out
+    assert out.count("WOULD-DELETE") == 2
+    assert out.count(" archive=") == 2
+
+
+def test_prune_shallow_current_only_doomed_is_not_counted(repo, capsys, monkeypatch):
+    make_dated_branch(repo, "worker-50-old", "2026-01-01T00:00:00Z")
+    make_dated_branch(repo, "worker-50-new", "2026-03-01T00:00:00Z")
+    git(repo, "checkout", "-q", "worker-50-old")
+    run = _shallow_git(repo)
+    failed: list = []
+    readopt.prune_attempts(repo, 50, git=run, archive_failed=failed)
+    out = capsys.readouterr().out
+    assert "WARN: 'worker-50-old' is checked out — not deleting" in out
+    assert "shallow" not in out
+    assert failed == []
+    monkeypatch.setattr(readopt, "make_git", lambda r: run)
+    assert readopt.main(["--repo", str(repo), "prune-attempts", "--issue", "50"]) == 0
+
+
+def test_prune_shallow_count_excludes_current_when_others_doomed(repo, capsys, monkeypatch):
+    make_dated_branch(repo, "worker-51-a", "2026-01-01T00:00:00Z")
+    make_dated_branch(repo, "worker-51-b", "2026-02-01T00:00:00Z")
+    make_dated_branch(repo, "worker-51-new", "2026-03-01T00:00:00Z")
+    git(repo, "checkout", "-q", "worker-51-a")
+    run = _shallow_git(repo)
+    failed: list = []
+    readopt.prune_attempts(repo, 51, git=run, archive_failed=failed)
+    out = capsys.readouterr().out
+    assert "keeping all 1 attempt(s)" in out
+    assert failed == ["worker-51-b"]
+    monkeypatch.setattr(readopt, "make_git", lambda r: run)
+    assert readopt.main(["--repo", str(repo), "prune-attempts", "--issue", "51"]) == 3

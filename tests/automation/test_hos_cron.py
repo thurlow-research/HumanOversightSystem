@@ -4417,6 +4417,21 @@ class TestOverseerBranchHygiene:
         (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
         assert (fail["branch"], fail["where"], fail["tip"]) == ("worker-6-y", "local", SHA7)
 
+    def test_h6_percent_encoded_names_are_audited_verbatim(self, cron):
+        ref = f"refs/archive/reap/worker-5-a%20b@{SHA7[:12]}"
+        self._stubs(
+            cron,
+            out=(
+                f"ARCHIVED branch=worker-5-a%20b where=local ref={ref} tip={SHA7}\n"
+                f"KEEP branch=worker-6-c%0Ad reason=archive-failed where=local tip={SHA7}\n"
+            ),
+        )
+        self._run(cron, HOS_OVERSEER_BRANCH_REAP="on")
+        (arch,) = cron.audit_records("cycle-branch-reap-archived")
+        assert (arch["branch"], arch["ref"]) == ("worker-5-a%20b", ref)
+        (fail,) = cron.audit_records("cycle-branch-reap-archive-failed")
+        assert fail["branch"] == "worker-6-c%0Ad"
+
     def test_h6_archive_failed_with_pr_remote_and_malformed_archived(self, cron):
         self._stubs(
             cron,
