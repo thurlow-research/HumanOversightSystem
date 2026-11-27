@@ -151,7 +151,10 @@ def make_git(repo: Path) -> GitRunner:
     """Runner returning ``(rc, stdout)``. ``run.first_error`` keeps the first ``fatal:``/``error:``
     stderr line (case-insensitive; ``warning:`` and other noise from benign probes are
     ignored) of a failing call (raw; sanitize with ``_one_line`` before printing) so
-    reap-orphans can name the cause when many decisions end in ``git-error`` (#2313)."""
+    reap-orphans can name the cause when many decisions end in ``git-error`` (#2313).
+    ``run.window_error`` captures by the same rule but is a resettable window: it records
+    only while empty and callers re-arm it by assigning ``""``, so a caller can attribute
+    a failure to its own step rather than to an earlier unrelated call (#2401)."""
 
     def run(args: Sequence[str]) -> "tuple[int, str]":
         proc = subprocess.run(
@@ -165,9 +168,15 @@ def make_git(repo: Path) -> GitRunner:
                 if line.strip().lower().startswith(("fatal:", "error:")):
                     run.first_error = line.strip()  # type: ignore[attr-defined]
                     break
+        if proc.returncode != 0 and not getattr(run, "window_error", ""):
+            for line in proc.stderr.splitlines():
+                if line.strip().lower().startswith(("fatal:", "error:")):
+                    run.window_error = line.strip()  # type: ignore[attr-defined]
+                    break
         return proc.returncode, proc.stdout.strip()
 
     run.first_error = ""  # type: ignore[attr-defined]
+    run.window_error = ""  # type: ignore[attr-defined]
     return run
 
 
@@ -551,12 +560,16 @@ def prune_attempts(
     so it is covered by the same archive. Branches kept for a failed archive are appended
     to ``archive_failed`` (the CLI then exits 3). A dry run prints ``archive=<ref>`` only
     for a tip not on ``base``. An exception from the archive step (``_tip_on_base`` or
-    ``_write_local_archive``) is treated as the same failure, with a one-line WARN.
+    ``_write_local_archive``) is treated as the same failure, with a one-line WARN. The
+    WARN for a failed write names that write's own ``git.window_error`` (reset just before
+    it), never an earlier unrelated failure (#2401). In a dry run an exception from
+    ``_tip_on_base`` prints a one-line WARN and the tip counts as not on base.
 
     Shallow clone (``_is_shallow``; an unknown answer counts as shallow): ancestry is
     unreliable, so a real run deletes nothing, prints a WARN and a
     ``KEEP ... reason=shallow-clone`` line per doomed branch, and appends each to
-    ``archive_failed`` (exit 3). A dry run prints the WARN and previews as usual."""
+    ``archive_failed`` (exit 3). A dry run prints the WARN and previews as usual. The
+    checked-out branch is excluded from that decision and count (it is never deleted)."""
     git = git or make_git(repo)
     if issue_closed:
         try:
@@ -602,11 +615,11 @@ def prune_attempts(
     records = read_records(store)
     deleted: "list[str]" = []
     remote = _PruneRemote(git, repo, issue, remote_heads, remote_delete, slug, open_pr)
-    shallow = bool(doomed) and _is_shallow(git)
+    shallow = any(n != current for n in doomed) and _is_shallow(git)
     if shallow:
         print(
             "WARN: shallow clone — prune-attempts refuses to delete; "
-            f"keeping all {len(doomed)} attempt(s)"
+            f"keeping all {sum(1 for n in doomed if n != current)} attempt(s)"
             if not dry_run
             else "WARN: shallow clone — ancestry checks are unreliable; dry run continues"
         )
@@ -625,7 +638,14 @@ def prune_attempts(
             continue
         if dry_run:
             line = f"WOULD-DELETE branch={branch}"
-            if not _tip_on_base(git, tips[branch], base):
+            try:
+                on_base = _tip_on_base(git, tips[branch], base)
+            except Exception as exc:  # preview must survive; archiving is the safe answer
+                print(
+                    f"WARN: archive check of '{_printable_name(branch)}' raised: {_one_line(exc)}"
+                )
+                on_base = False
+            if not on_base:
                 line += f" archive={_printable_name(_archive_ref(branch, tips[branch]))}"
             print(line)
             deleted.append(branch)
@@ -636,7 +656,7 @@ def prune_attempts(
                 f" where=local tip={tips[branch]}"
             )
             if archived is False:  # None = raised: its WARN already names the cause
-                cause = _one_line(getattr(git, "first_error", "") or "")
+                cause = _one_line(getattr(git, "window_error", "") or "")
                 if cause:
                     print(f"WARN: archive of '{_printable_name(branch)}' failed: {cause}")
             if archive_failed is not None:
@@ -672,6 +692,8 @@ def _archive_unlanded(git: GitRunner, branch: str, tip: str, base: str) -> bool:
     An unreadable ancestry check is treated as not landed: archiving is always safe."""
     if _tip_on_base(git, tip, base):
         return True
+    if hasattr(git, "window_error"):
+        git.window_error = ""  # type: ignore[attr-defined]
     if not _write_local_archive(git, branch, tip):
         return False
     print(_archived_text(branch, "local", tip))

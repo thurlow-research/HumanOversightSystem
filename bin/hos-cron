@@ -1846,8 +1846,8 @@ if [[ "$ROLE" == "overseer" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]];
     _RB_WOULD_RE='^WOULD-REAP branch=([A-Za-z0-9._/@+-]+) reason=([a-z-]+) where=(local|remote) pr=(#[0-9]+|-) tip=([0-9a-f]{40})( archive=[A-Za-z0-9._/@+-]+)?$'
     # #2314: archive-before-delete lines. ARCHIVED carries the recovery ref; KEEP is audited
     # only for reason=archive-failed so a run whose archive writes all fail is visible.
-    _RB_ARCHIVED_RE='^ARCHIVED branch=([A-Za-z0-9._/@+-]+) where=(local|remote) ref=([A-Za-z0-9._/@+-]+) tip=([0-9a-f]{40})$'
-    _RB_ARCHFAIL_RE='^KEEP branch=([A-Za-z0-9._/@+-]+) reason=archive-failed where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
+    _RB_ARCHIVED_RE='^ARCHIVED branch=([A-Za-z0-9._/@%+-]+) where=(local|remote) ref=([A-Za-z0-9._/@%+-]+) tip=([0-9a-f]{40})$'
+    _RB_ARCHFAIL_RE='^KEEP branch=([A-Za-z0-9._/@%+-]+) reason=archive-failed where=(local|remote)( pr=(#[0-9]+|-))? tip=([0-9a-f]{40})$'
     _RB_SUMMARY_RE='^SUMMARY reaped_local=([0-9]+) reaped_remote=([0-9]+) kept=([0-9]+) failed=([0-9]+) deferred=[0-9]+ api_calls=[0-9]+ aborted=([01])( [a-z_]+=[A-Za-z0-9_-]+)*$'
     # #2405: trailing fields of an already-validated SUMMARY line (appended by readopt).
     _RB_SHALLOW_RE=' shallow=([01-])( |$)'
