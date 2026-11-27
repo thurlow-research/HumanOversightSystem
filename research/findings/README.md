@@ -109,6 +109,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | File | Role | One-line description |
 |---|---|---|
 | `a-blocked-gate-redirects-autonomous-work-instead-of-stopping-it.md` | oversight-mechanism | An environment-scoped gate red on every code PR did not stop the worker; it substituted design work (12 of 13 merged PRs were documents, ~45 code branches parked) and raised human escalation load while merged code was zero. |
+| `a-clean-first-pass-is-the-cheapest-answer.md` | oversight-mechanism | On Seriatim #119, codex answered "no blockers" to an open question, then confirmed all three of agy's defects when asked to confirm or refute each with evidence. A clean verdict is the cheapest answer; targeted, source-tied questions make a reviewer dig. Response: a confirm-or-refute round (#1471), clean verdicts carry a coverage map (#2481), artifacts trace to their source with claims read after an independent pass (#2482). External evidence: traceability lowers defects (Rempel & Mäder); unaided self-correction is unreliable (Huang et al.); explanations help when they cut verification cost (Vasconcelos et al.). |
 | `a-confidently-wrong-error-message-costs-more-than-no-message.md` | diagnostic-surface | A Confidently Wrong Error Message Costs More Than No Message |
 | `a-decision-records-intent-not-enforcement.md` | oversight-mechanism | A Decision Records Intent, Not Enforcement |
 | `a-gate-must-not-confuse-unreadable-with-unsafe.md` | oversight-mechanism | A gate has four outcomes (approve/request-changes/unparseable/error); collapsing "unparseable" into "fail-closed" discards real independent judgment (a Postgres NULL-sort bug). |
@@ -222,8 +223,9 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-63 of 104 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+64 of 109 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
+- `a-clean-first-pass-is-the-cheapest-answer.md` (candidate: O1, since a reviewer's clean verdict is not self-certifying, or O3, since the deeper check happens only when forced)
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
 - `a-guard-that-doesnt-halt-is-not-a-guard.md`
