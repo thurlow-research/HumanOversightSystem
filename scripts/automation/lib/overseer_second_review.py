@@ -1854,7 +1854,7 @@ def marker_record(
     A tiered record never matches when the base cannot be pinned."""
     base = pinned_base(repo_root, base_tip, head_sha)
     for rec in find_records(repo_root, repo=repo, pr=pr, head_sha=head_sha):
-        if rec["tier"] is None or (base is not None and rec["base_sha"] == base):
+        if rec.get("tier") is None or (base is not None and rec.get("base_sha") == base):
             return rec
     return None
 

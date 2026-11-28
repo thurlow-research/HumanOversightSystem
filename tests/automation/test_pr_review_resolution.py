@@ -1284,8 +1284,14 @@ def test_mk_08b_check_marker_refuses_a_record_value_outside_the_one_grammar(kit,
 
 
 @pytest.mark.parametrize(
-    "pr, valid", [(0, False), (1, True), (osr.MAX_PR_NUMBER - 1, True), (osr.MAX_PR_NUMBER, True),
-                  (osr.MAX_PR_NUMBER + 1, False)]
+    "pr, valid",
+    [
+        (0, False),
+        (1, True),
+        (osr.MAX_PR_NUMBER - 1, True),
+        (osr.MAX_PR_NUMBER, True),
+        (osr.MAX_PR_NUMBER + 1, False),
+    ],
 )
 def test_mk_08c_check_marker_accepts_exactly_the_pr_numbers_the_grammar_allows(kit, pr, valid):
     if valid:

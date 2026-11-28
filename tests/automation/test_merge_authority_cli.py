@@ -2213,7 +2213,10 @@ def test_s1c_lb_09_detail_is_cut_to_the_truncated_length_and_a_body_at_the_cap_s
     assert f". {'d' * limit}...\n" in body
     # A detail of exactly `limit` characters is left alone in the second pass (no ellipsis).
     mixed = _fits_body(
-        [_llm_finding(slug="a", detail="e" * limit), _llm_finding(slug="b", detail="f" * (cap + 10))],
+        [
+            _llm_finding(slug="a", detail="e" * limit),
+            _llm_finding(slug="b", detail="f" * (cap + 10)),
+        ],
         "s",
     )
     assert f". {'e' * limit}\n" in mixed
@@ -2560,3 +2563,21 @@ def test_s1c_doc_02_overseer_prose_matches_s1c():
         "or `reason=phase-error`:**",
     ):
         assert gone not in text, gone
+
+
+def test_s1c_rh_16_tiered_record_without_a_base_sha_key_is_skipped_not_fatal(
+    world, monkeypatch, capsys
+):
+    osr = _osr()
+    rec = _osr_record(world, monkeypatch, "approve", "agy")
+    del rec["base_sha"]
+    osr._atomic_write_json(osr._record_path(world.root, 42, _HEAD, "agy"), rec)
+    assert osr.load_record(world.root, repo="o/r", pr=42, head_sha=_HEAD, vendorset="agy")
+    _write_route_file(world, [_MERITS])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    assert _final_line(world).endswith("tier=- vendors=- verdict=none bounced=false -->")
+    _require_failing_check(monkeypatch)
+    world.pr["head"]["sha"] = _HEAD
+    rc, record = _run_mut(world, "bounce", capsys)
+    assert rc == 0 and record["error_code"] is None
