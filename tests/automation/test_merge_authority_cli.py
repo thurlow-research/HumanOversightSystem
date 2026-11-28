@@ -2113,6 +2113,148 @@ def test_s1c_lb_04_truncated_body_still_ends_with_the_check_marker(world):
     assert len(body) <= merge_authority.BOUNCE_BODY_MAX_CHARS
 
 
+@pytest.mark.parametrize(
+    "check_marker, head_sha, message",
+    [
+        (_marker(), None, "check_marker requires head_sha"),
+        (None, _HEAD, "check_marker must be a str"),
+        ("not a marker", _HEAD, "check_marker does not match the check marker grammar"),
+        (_marker(pr=43), _HEAD, "check_marker names a different PR"),
+        (_marker(head="d" * 40), _HEAD, "check_marker names a different head"),
+    ],
+)
+def test_s1c_lb_05_check_marker_refusal_names_the_failed_condition(check_marker, head_sha, message):
+    # The message is what the CLI reports as the check_marker_unavailable detail.
+    with pytest.raises(merge_authority.CheckMarkerError) as raised:
+        merge_authority._validate_check_marker(check_marker, 42, head_sha)
+    assert str(raised.value) == message
+
+
+def test_s1c_lb_06_findings_body_is_exactly_the_documented_rendering():
+    f = _llm_finding(summary="two  words", detail="the detail")
+    body = merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F1", f)],
+        "MERITS_FINDING",
+        "sum",
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        marker="<!-- hos-bounce v=1 id=m -->",
+        check_marker=_marker(),
+    )
+    assert body == (
+        f"## PR bounced to the worker: 1 finding(s) on {_HEAD[:12]}\n"
+        "\n"
+        "### Specific failures\n"
+        f"- [{_HEAD[:12]}-F1] (MERITS) two words. the detail\n"
+        "\n"
+        "### How to respond\n"
+        "Fix each finding, or dispute one: post a comment whose first line is "
+        "`/hos dispute <finding-id>`, followed by your reason.\n"
+        "\n"
+        "**Reason category:** MERITS_FINDING\n"
+        "**Summary:** sum\n"
+        "\n"
+        f"_Bounce #1 for issue-9 (cap: {merge_authority.BOUNCE_CAP} before human escalation)._\n"
+        "<!-- hos-bounce v=1 id=m -->\n" + _marker() + "\n"
+    )
+
+
+def test_s1c_lb_07_legacy_body_is_exactly_the_documented_rendering():
+    body = merge_authority._bounce_comment_body(
+        ["some  free text"], "CHECK_FAILURE", "sum", 2, check_marker=_marker()
+    )
+    assert body == (
+        "## PR bounced to the worker: 1 finding(s) on unknown\n"
+        "\n"
+        "### Specific failures\n"
+        "- [item-1] some free text\n"
+        "\n"
+        "**Reason category:** CHECK_FAILURE\n"
+        "**Summary:** sum\n"
+        "\n"
+        f"_Bounce #2 for this correlation id (cap: {merge_authority.BOUNCE_CAP} "
+        "before human escalation)._\n" + _marker() + "\n"
+    )
+    full = merge_authority._bounce_comment_body(["x"], "CHECK_FAILURE", "s", 1, head_sha=_HEAD)
+    assert full.splitlines()[0].endswith(f" on {_HEAD[:12]}")
+
+
+def _fits_body(findings, summary, **kw):
+    return merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F{i}", f) for i, f in enumerate(findings, 1)],
+        "MERITS_FINDING",
+        summary,
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        **kw,
+    )
+
+
+def test_s1c_lb_08_a_body_of_exactly_the_cap_is_not_truncated():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    base = len(_fits_body([_llm_finding(detail="")], ""))
+    # Grow the detail until the whole body is exactly the cap.
+    detail = "d" * (cap - base - len(". "))
+    body = _fits_body([_llm_finding(detail=detail)], "")
+    assert len(body) == cap
+    assert detail in body and "..." not in body
+
+
+def test_s1c_lb_09_detail_is_cut_to_the_truncated_length_and_a_body_at_the_cap_survives():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    limit = merge_authority._TRUNCATED_DETAIL_CHARS
+    # The second pass renders the detail as `limit` characters plus an ellipsis.
+    second_len = len(_fits_body([_llm_finding(detail="d" * (limit + 3))], ""))
+    pad = "s" * (cap - second_len)
+    body = _fits_body([_llm_finding(detail="d" * (cap + 10))], pad)
+    assert len(body) == cap
+    assert f". {'d' * limit}...\n" in body
+    # A detail of exactly `limit` characters is left alone in the second pass (no ellipsis).
+    mixed = _fits_body(
+        [_llm_finding(slug="a", detail="e" * limit), _llm_finding(slug="b", detail="f" * (cap + 10))],
+        "s",
+    )
+    assert f". {'e' * limit}\n" in mixed
+    assert f". {'f' * limit}...\n" in mixed
+
+
+def test_s1c_lb_10_id_only_rows_keep_their_ids_and_drop_whole_rows_by_count():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    findings = [
+        _llm_finding(slug=f"t{i}", summary="m" * 40, detail="x" * 20000) for i in range(1, 6)
+    ]
+    bare = [_llm_finding(slug=f"t{i}", summary="m" * 40) for i in range(1, 6)]
+    # Pad the shared summary so exactly two id-only rows plus the note fill the body.
+    two = _fits_body(bare[:2], "")
+    note = "- 3 findings truncated; see audit event"
+    body = _fits_body(findings, "p" * (cap - (len(two) + len(note) + 1)))
+    assert len(body) == cap
+    assert f"- [{_HEAD[:12]}-F1] (MERITS) {'m' * 40}\n" in body
+    assert f"- [{_HEAD[:12]}-F2] (MERITS) {'m' * 40}\n{note}\n" in body
+    assert f"{_HEAD[:12]}-F3" not in body and "x" * 10 not in body
+    # With no room for even one row, every finding is dropped and counted.
+    none_fit = _fits_body(findings[:3], "q" * cap)
+    assert "- 3 findings truncated; see audit event" in none_fit
+    assert f"{_HEAD[:12]}-F1" not in none_fit
+    # With room for the note but not one row, the single finding is dropped, not kept.
+    zero = len(_fits_body([], ""))
+    one = _fits_body(findings[:1], "q" * (cap - zero - 60))
+    assert "- 1 findings truncated; see audit event" in one
+    assert f"{_HEAD[:12]}-F1" not in one
+
+
+def test_s1c_lb_11_id_only_body_that_fits_whole_carries_no_truncation_note():
+    # Long details push past both detail passes, but every id-only row fits: nothing is dropped.
+    findings = [_llm_finding(slug=f"t{i}", detail="x" * 2000) for i in range(1, 400)]
+    body = _fits_body(findings, "s", marker=None, check_marker=_marker())
+    assert len(body) <= merge_authority.BOUNCE_BODY_MAX_CHARS
+    assert "truncated" not in body
+    assert body.count(f"- [{_HEAD[:12]}-F") == len(findings)
+    assert "x" * 10 not in body
+
+
 # --- #2357 S1c: route head-carry and the bounce marker (T-RH-01 .. T-RH-15) --------
 
 _BASE = "b" * 40

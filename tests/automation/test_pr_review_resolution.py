@@ -1267,6 +1267,49 @@ def test_mk_08_every_check_marker_fullmatches_the_one_grammar(kit, vendorset, ov
     assert osr.CHECK_MARKER_RE is ma.CHECK_MARKER_RE
 
 
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"verdict": "maybe"},
+        {"tier": "SEVERE"},
+        {"vendors_required": ["agy", "grok"]},
+    ],
+)
+def test_mk_08b_check_marker_refuses_a_record_value_outside_the_one_grammar(kit, over):
+    # The marker is checked against CHECK_MARKER_RE before it is returned, so a record
+    # field the grammar does not allow can never produce a marker the parser would reject.
+    rec = {**kit.record("agy"), **over}
+    with pytest.raises(ValueError, match="^check marker does not match the marker grammar$"):
+        osr.check_marker(pr=42, head_sha=kit.head, record=rec)
+
+
+@pytest.mark.parametrize(
+    "pr, valid", [(0, False), (1, True), (osr.MAX_PR_NUMBER - 1, True), (osr.MAX_PR_NUMBER, True),
+                  (osr.MAX_PR_NUMBER + 1, False)]
+)
+def test_mk_08c_check_marker_accepts_exactly_the_pr_numbers_the_grammar_allows(kit, pr, valid):
+    if valid:
+        out = osr.check_marker(pr=pr, head_sha=kit.head, record=None)
+        assert osr.parse_check_marker(out)["pr"] == str(pr)
+    else:
+        with pytest.raises(ValueError, match="^pr, head_sha or bounced is not valid$"):
+            osr.check_marker(pr=pr, head_sha=kit.head, record=None)
+
+
+@pytest.mark.parametrize(
+    "body, refused",
+    [
+        ("<!-- hos:overseer-interim-signoff v=1 -->\nbody\n", True),
+        ("ok\n   <!-- hos:overseer-interim-signoff v=1 -->\n", True),
+        ("see <!-- hos:overseer-interim-signoff mid-line\n", False),
+        ("no marker here\n", False),
+    ],
+)
+def test_mk_10b_body_has_marker_refuses_a_line_that_opens_the_interim_marker(body, refused):
+    roa = cli._load_require_overseer_approval()
+    assert cli._body_has_marker(body, roa, osr) is refused
+
+
 def _marker_line(**over):
     fields = {"pr": 7, "head": "a" * 40, "tier": "HIGH", "vendors": "agy+codex"}
     fields.update({"verdict": "request_changes", "bounced": "true"})
