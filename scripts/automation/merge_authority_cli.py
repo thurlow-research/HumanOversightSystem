@@ -1130,10 +1130,84 @@ def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> li
         raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
 
 
+_SHA40_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _pop_reviewed_head(raw: object) -> tuple[Optional[str], object]:
+    """Split the runner's `reviewed_head` off a findings file (#2357 AD-10).
+
+    Returns (head or None, the file without that key). A non-dict, or a file with no such key,
+    comes back unchanged. The caller's object is never mutated.
+    """
+    if not isinstance(raw, dict) or "reviewed_head" not in raw:
+        return None, raw
+    value = raw["reviewed_head"]
+    if not (isinstance(value, str) and _SHA40_RE.fullmatch(value)):
+        raise _Fail(
+            "findings_file_invalid",
+            "reviewed_head must be a 40-hex lowercase commit id",
+            "deterministic",
+        )
+    return value, {k: v for k, v in raw.items() if k != "reviewed_head"}
+
+
+def _has_sr_entry(raw: object) -> bool:
+    """True when any raw findings entry, of any class, carries a slug starting `sr-`."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("findings"), list):
+        return False
+    return any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("slug"), str)
+        and entry["slug"].startswith("sr-")
+        for entry in raw["findings"]
+    )
+
+
+def _is_sr(f: merge_authority.Finding) -> bool:
+    """True for a canonical LLM finding whose slug starts `sr-` (a CHECK key ends in a path)."""
+    return f.origin == "llm" and f.cls != "CHECK" and f.key.rsplit(":", 1)[-1].startswith("sr-")
+
+
+def _load_osr():
+    """The overseer second-review module, imported at call time so this CLI's import stays free
+    of the runner's vendor-report parsers."""
+    from scripts.automation.lib import overseer_second_review
+
+    return overseer_second_review
+
+
+def _check_marker_for(owner: str, repo_name: str, pr: dict, ctx: _Context, findings) -> str:
+    """The #2358 check marker for a bounce comment on this PR head, or a fail-closed _Fail."""
+    try:
+        osr = _load_osr()
+        head_sha = pr["head"]["sha"]
+        record = osr.marker_record(
+            Path(ctx.repo_root),
+            repo=f"{owner}/{repo_name}",
+            pr=pr["number"],
+            head_sha=head_sha,
+            base_tip=(pr.get("base") or {}).get("sha"),
+        )
+        return osr.check_marker(
+            pr=pr["number"],
+            head_sha=head_sha,
+            record=record,
+            bounced=any(_is_sr(f) for f in findings),
+        )
+    except Exception as exc:
+        raise _Fail(
+            "check_marker_unavailable",
+            exc.__class__.__name__,
+            "deterministic",
+            {"comment_posted": False},
+        ) from exc
+
+
 def _write_bounce(
     owner: str, repo_name: str, pr: dict, cid: str, ctx: _Context, to_bounce, epoch: Optional[str]
 ) -> merge_authority.BounceResult:
     """Call record_pr_bounce and classify its failures (TD §3.16)."""
+    check_marker = _check_marker_for(owner, repo_name, pr, ctx, to_bounce)
     try:
         return merge_authority.record_pr_bounce(
             owner,
@@ -1147,7 +1221,12 @@ def _write_bounce(
             findings=list(to_bounce),
             epoch_since=epoch,
             cap=merge_authority.BOUNCE_CAP,
+            check_marker=check_marker,
         )
+    except merge_authority.CheckMarkerError as exc:
+        raise _Fail(
+            "check_marker_unavailable", str(exc), "deterministic", {"comment_posted": False}
+        ) from exc
     except merge_authority.RepairReadError as exc:
         raise _repair_read_fail(exc) from exc
     except merge_authority.BounceLockTimeout as exc:
@@ -1202,9 +1281,20 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
         findings_raw = merge_authority.parse_findings_bytes(findings_bytes)
     except merge_authority.FindingsFileError as exc:
         raise _Fail("findings_file_invalid", str(exc), "deterministic") from exc
+    reviewed_head, findings_raw = _pop_reviewed_head(findings_raw)
+    if reviewed_head is None and _has_sr_entry(findings_raw):
+        raise _Fail(
+            "findings_file_invalid", "an sr- finding requires reviewed_head", "deterministic"
+        )
 
     pr = _fetch_open_pr(owner, repo_name, args.pr)
     head_sha = pr["head"]["sha"]
+    if reviewed_head is not None and reviewed_head != head_sha:
+        raise _Fail(
+            "head_moved",
+            "the findings file was reviewed at a different head; nothing was written",
+            "transient",
+        )
     base_sha = (pr.get("base") or {}).get("sha")
     if not base_sha:
         raise _Fail("pr_not_found", f"PR #{args.pr} has no usable base.sha", "deterministic")
@@ -1217,6 +1307,7 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
         "cid": cid,
         "cid_source": resolution.source,
         "head_sha": head_sha,
+        "reviewed_head": reviewed_head,
         "base_sha": base_sha,
         "worker_authored": worker_authored,
         "bounce_cap": merge_authority.BOUNCE_CAP,

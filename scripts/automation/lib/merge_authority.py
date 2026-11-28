@@ -2107,6 +2107,35 @@ def _legacy_gloss(token: str) -> str:
 _BOUNCE_MARKER_PREFIX = "<!-- hos-bounce v=1 id="
 _BOUNCE_COMMENTS_MAX_PAGES = 10
 
+# The one grammar for the #2358 check marker, used only with fullmatch (it has no anchors).
+# It lives here because overseer_second_review imports this module, not the reverse.
+CHECK_MARKER_RE = re.compile(
+    r"<!-- hos-overseer-check v=1 check=(?P<check>second-review) pr=(?P<pr>[1-9][0-9]{0,6}) "
+    r"head=(?P<head>[0-9a-f]{40}) tier=(?P<tier>LOW|MEDIUM|HIGH|CRITICAL|-) "
+    r"vendors=(?P<vendors>none|agy|agy\+codex|-) "
+    r"verdict=(?P<verdict>approve|request_changes|not-required|hold|none) "
+    r"bounced=(?P<bounced>true|false) -->"
+)
+
+
+class CheckMarkerError(ValueError):
+    """The check marker passed to record_pr_bounce is malformed or names another PR or head."""
+
+
+def _validate_check_marker(check_marker: object, pr_number: int, head_sha: Optional[str]) -> None:
+    """Raise CheckMarkerError unless `check_marker` is one well-formed marker for this PR and head."""
+    if head_sha is None:
+        raise CheckMarkerError("check_marker requires head_sha")
+    if not isinstance(check_marker, str):
+        raise CheckMarkerError("check_marker must be a str")
+    m = CHECK_MARKER_RE.fullmatch(check_marker)
+    if m is None:
+        raise CheckMarkerError("check_marker does not match the check marker grammar")
+    if int(m["pr"]) != pr_number:
+        raise CheckMarkerError("check_marker names a different PR")
+    if m["head"] != head_sha:
+        raise CheckMarkerError("check_marker names a different head")
+
 
 def _bounce_marker(cid: str, head_sha: str, new_keys: Sequence[str], bounce_number: int) -> str:
     """The hidden, deterministic line that identifies one bounce comment (#2263).
@@ -2162,6 +2191,7 @@ def _bounce_comment_body(
     *,
     head_sha: Optional[str] = None,
     marker: Optional[str] = None,
+    check_marker: Optional[str] = None,
 ) -> str:
     """The legacy rendering (AD-4): the findings heading and section, no
     dispute text, for callers that still pass `failures=`."""
@@ -2187,6 +2217,8 @@ def _bounce_comment_body(
     ]
     if marker:
         lines.append(marker)
+    if check_marker:
+        lines.append(check_marker)
     return "\n".join(lines) + "\n"
 
 
@@ -2216,6 +2248,7 @@ def _bounce_comment_body_findings(
     cid: str,
     head_sha: str,
     marker: Optional[str] = None,
+    check_marker: Optional[str] = None,
 ) -> str:
     """The findings rendering (AD-4): one `[id] (CLASS)` line per finding and
     the dispute instruction the worker re-entry text parses.
@@ -2248,6 +2281,8 @@ def _bounce_comment_body_findings(
         ]
         if marker:
             lines.append(marker)
+        if check_marker:
+            lines.append(check_marker)
         return "\n".join(lines) + "\n"
 
     def row(finding_id: str, f: Finding, detail_chars: Optional[int]) -> str:
@@ -2620,6 +2655,7 @@ def record_pr_bounce(
     findings: Optional[Sequence[Finding]] = None,
     epoch_since: Optional[str] = None,
     cap: Optional[int] = _CAP_DEFAULT,
+    check_marker: Optional[str] = None,
 ) -> BounceResult:
     """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
 
@@ -2648,6 +2684,11 @@ def record_pr_bounce(
     bool or negative `cap` raises ValueError before any GitHub call or lock.
     BounceLockTimeout is raised before any write. The label/draft finalize steps
     run after the lock is released and are idempotent via repair.
+
+    `check_marker`, when given, is the #2358 check marker line. It must fullmatch
+    CHECK_MARKER_RE and name this PR and `head_sha`, else CheckMarkerError is raised
+    before any GitHub call or lock. It is appended as the comment's final line, after
+    the hos-bounce marker. `None` leaves the body byte-identical to before.
     """
     if cap is _CAP_DEFAULT:
         cap = BOUNCE_CAP
@@ -2663,6 +2704,8 @@ def record_pr_bounce(
             raise ValueError("findings and failures are mutually exclusive")
         if head_sha is None:
             raise ValueError("findings requires head_sha")
+    if check_marker is not None:
+        _validate_check_marker(check_marker, pr_number, head_sha)
 
     if head_sha is None:
         pr_obj = _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
@@ -2714,7 +2757,7 @@ def record_pr_bounce(
                 at_cap=True,
             )
         bounce_number = prior_count + 1
-        marker = _bounce_marker(cid, head_sha, new_keys, bounce_number)
+        bounce_marker = _bounce_marker(cid, head_sha, new_keys, bounce_number)
         finding_ids: list[str] = []
         if findings is not None:
             start = next_finding_index(prior)
@@ -2726,7 +2769,8 @@ def record_pr_bounce(
                 bounce_number,
                 cid=cid,
                 head_sha=head_sha,
-                marker=marker,
+                marker=bounce_marker,
+                check_marker=check_marker,
             )
         else:
             body = _bounce_comment_body(
@@ -2735,7 +2779,8 @@ def record_pr_bounce(
                 summary,
                 bounce_number,
                 head_sha=head_sha,
-                marker=marker,
+                marker=bounce_marker,
+                check_marker=check_marker,
             )
 
         # A prior attempt may have posted and then failed its audit write. No event
@@ -2746,7 +2791,7 @@ def record_pr_bounce(
             for e in bounce_events(cid, repo_root=repo_root)
             if e.get("comment_id") is not None
         }
-        orphan = _find_posted_bounce(owner, repo, pr_number, marker, recorded_ids)
+        orphan = _find_posted_bounce(owner, repo, pr_number, bounce_marker, recorded_ids)
         adopted = orphan is not None
         if orphan is not None:
             comment = orphan

@@ -40,6 +40,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -709,14 +710,19 @@ def _base_tip(pre: _Preamble) -> str | None:
 
 
 def _marker_record(osr, ctx: _Context, pre: _Preamble, pr: int) -> dict | None:
-    """The record the AD-4 marker describes when G1c did not accept one (TD 10.2): the newest
-    valid record for this head on the base G1c would pin, or a hold written before the tier was
-    known (it carries no base)."""
-    base = osr.pinned_base(ctx.repo_root, _base_tip(pre), pre.head_sha)
-    for rec in osr.find_records(ctx.repo_root, repo=pre.repo, pr=pr, head_sha=pre.head_sha):
-        if rec["tier"] is None or rec["base_sha"] == base:
-            return rec
-    return None
+    """The record the AD-4 marker describes when G1c did not accept one (TD 10.2)."""
+    return osr.marker_record(
+        ctx.repo_root, repo=pre.repo, pr=pr, head_sha=pre.head_sha, base_tip=_base_tip(pre)
+    )
+
+
+def _body_has_marker(body_text: str, roa, osr) -> bool:
+    """True when the body opens the interim sign-off marker on a line, or names the check marker
+    anywhere (NFKC-normalized, case-folded)."""
+    if any(line.lstrip().startswith(roa.MARKER_PREFIX) for line in body_text.splitlines()):
+        return True
+    needle = osr.CHECK_MARKER_PREFIX.removeprefix("<!-- ")
+    return needle in unicodedata.normalize("NFKC", body_text).casefold()
 
 
 def _record_signoff(
@@ -988,18 +994,16 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             pr=args.pr,
         )
 
-    # D-4 — defence in depth: the agent never writes the sign-off marker; this
-    # wrapper appends it. A line that opens the marker comment is refused on
-    # every disposition (a mere mention mid-line is fine).
+    # D-4 — defence in depth: the agent never writes a marker; this wrapper appends them. A line
+    # that opens the interim sign-off marker is refused on every disposition (a mere mention of
+    # it mid-line is fine). Any mention of the check marker's name is refused, anywhere in the
+    # body, after NFKC normalization and case-folding (#2357 AR27).
     roa = _load_require_overseer_approval()
-    if any(
-        line.lstrip().startswith((roa.MARKER_PREFIX, osr.CHECK_MARKER_PREFIX))
-        for line in body_text.splitlines()
-    ):
+    if _body_has_marker(body_text, roa, osr):
         return _Outcome(
             payload={},
             exit_code=2,
-            error="body_contains_marker: the body must not contain the interim sign-off marker",
+            error="body_contains_marker: the body must not contain a sign-off or check marker",
             not_verified=pre.not_verified,
             repo=pre.repo,
             pr=args.pr,
@@ -1038,7 +1042,10 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             return _Outcome(
                 payload={},
                 exit_code=1,
-                error="PR head is not a 40-hex commit id; refusing to post an unmarked verdict",
+                error=(
+                    "check_marker_unavailable: could not build the check marker; "
+                    "refusing to post an unmarked verdict"
+                ),
                 not_verified=pre.not_verified,
                 repo=pre.repo,
                 pr=args.pr,
