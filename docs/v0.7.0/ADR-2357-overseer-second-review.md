@@ -333,6 +333,19 @@ These notes record how TD-2357-S1b (approved with changes, iteration 1) carries 
 - **AD-3 and AD-10 (`pending`).** AD-10's last sentence, "G1c guarantees it can never become an approval", is replaced by: "`pending`, like every OSR result other than `approve` or `not-required`, ends the PR's handling for the cycle. No step 4d, matrix or step 6 runs, so it cannot become an approval or an approval request (TD AR28). G1c covers the `approve` event. Prose covers the approval request until S1d (#2428)." The AD-3 table's "Do not approve" row is read the same way.
 - **AD-9 (Not covered).** The step 1a exclusion stands: a designated human's approval of a head is a human decision. That holds only if the overseer never asks the human to approve a head that lacks a covering record. So the overseer posts Expected action APPROVE, on any disposition, only when this cycle's OSR line for that exact head is `approve` or `not-required` and covers the vendors for the PR's tier (TD AR29). In S1b this is prose. **S1d (#2428) makes it mechanical before S2.** `pr_review_cli.py` applies G1c's record test to a `comment` event with Expected action `APPROVE`, and to `request-reviewer` on PROPOSE_ONLY (TD AR30).
 
+## Correction note (TD-2357-S1c review, architect 2026-11-28)
+
+These notes record how TD-2357-S1c (approved with changes, iteration 1, AC1-AC13) carries AD-4, AD-10, AD-11 and AD-12. They clarify and narrow. None of them loosens a decision above.
+
+- **AD-11 S1c file set.** S1c covers the four files the contingency named plus the S1b carry list that the S1b review assigned to it (AR23, AR27, and the #2357 comments of 2026-11-21 and 2026-11-24): `overseer_second_review.py`, `pr_review_cli.py`, `test_pr_review_resolution.py`, `overseer.md`, `overseer-cron-prompt.md`, the S1b TD, the S1c TD and this note. That is 12 files. S1c still lands before S2.
+- **AD-4 argument name.** The optional `record_pr_bounce` argument is the keyword-only `check_marker`, because `marker` already names the hos-bounce marker. `None` leaves the body byte-identical. When it is given, it must fullmatch the one grammar `merge_authority.CHECK_MARKER_RE`, name the call's PR and `head_sha`, and be the body's final line.
+- **AD-4 forgery refusal is stricter.** D-4 now refuses any verdict body that contains `hos-overseer-check` anywhere, after NFKC normalization and case-folding, not only a line that opens with it (AR27). `overseer.md` lets the model rewrite the body once and re-run the command.
+- **AD-4 reader.** `overseer_second_review.parse_check_marker` is the single reader. It accepts only the exact final line of a comment or review body. #2358 must count through it, still restricted to the overseer App login.
+- **AD-4 fail closed.** If the marker cannot be built, `route` and `bounce` fail with `check_marker_unavailable` (deterministic, nothing posted). They never post an unmarked bounce. The model escalates and applies `needs-human`.
+- **AD-10 scope.** The `reviewed_head` comparison runs before the non-worker early return, so it applies to every PR. The `sr-`-without-`reviewed_head` refusal runs before any GitHub call.
+- **AD-3 combined route file.** Until S2, the REVIEW_CHAIN entries combined with the runner's entries are those due under any of conditions (a)-(d). The "(c)/(d)" in the AD-3 table describes the state after S2.
+- **AD-12 residual (until #2431).** If `osr_phase.py ingest` fails after an uncached runner execution, `_uncached` stays 0. The next PR's `budget` call then returns `RUN` regardless of elapsed time. Repeated `ingest` failures can therefore run every remaining PR uncached in that cycle, up to N × `_OSR_PER_PR_MAX`, beyond the "Worst-case cycle" bound above. This grants no authority. It lasts one cycle, because each affected PR gets a labelled `hold phase-error` and is `skipped-held` from then on. It also needs a helper defect on each PR. The fix is #2431's.
+
 ## Amendment traceability
 
 | Item | Satisfied by |

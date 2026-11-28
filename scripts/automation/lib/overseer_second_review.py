@@ -66,6 +66,7 @@ VENDORSETS = ("none", "agy", "agy+codex")
 MAX_PR_NUMBER = 9_999_999
 COUNTER_LOCK_TIMEOUT_SECONDS = 10.0
 CHECK_MARKER_PREFIX = "<!-- hos-overseer-check"
+CHECK_MARKER_RE = merge_authority.CHECK_MARKER_RE
 FINAL_REASON_FOR_VERDICT = {
     "approve": "ok",
     "request_changes": "findings",
@@ -1684,7 +1685,7 @@ _DIAG_RECORD_FIELDS = (
 )
 
 
-def pinned_base(repo_root: Path, base_tip: str, head: str) -> Optional[str]:
+def pinned_base(repo_root: Path, base_tip: Optional[str], head: str) -> Optional[str]:
     """`git merge-base <base_tip> <head>`, or None when an input is not a SHA or git fails."""
     if not (isinstance(base_tip, str) and _HEX40.match(base_tip)):
         return None
@@ -1815,21 +1816,57 @@ def _gate_refusal(found: dict, needed: str, rec: Optional[dict]) -> Optional[str
     return None
 
 
-def check_marker(*, pr: int, head_sha: str, record: Optional[dict]) -> str:
+def check_marker(*, pr: int, head_sha: str, record: Optional[dict], bounced: bool = False) -> str:
     """The AD-4 marker line. A record with no tier (a hold written before the tier was known)
-    renders `tier=- vendors=-`: its vendor set is a placeholder, not a requirement."""
-    if not (_is_int(pr) and 1 <= pr <= MAX_PR_NUMBER and _HEX40.match(head_sha)):
-        raise ValueError("pr or head_sha is not valid")
+    renders `tier=- vendors=-`: its vendor set is a placeholder, not a requirement. `bounced` is
+    true when the bounce comment this marker ends carries a second-review (`sr-`) finding.
+
+    Every marker must fullmatch merge_authority.CHECK_MARKER_RE, so one grammar covers all writers.
+    """
+    if not (
+        _is_int(pr)
+        and 1 <= pr <= MAX_PR_NUMBER
+        and isinstance(head_sha, str)
+        and _HEX40.fullmatch(head_sha)
+        and type(bounced) is bool
+    ):
+        raise ValueError("pr, head_sha or bounced is not valid")
     tier, vendors, verdict = "-", "-", "none"
     if record is not None:
         verdict = record["verdict"]
         if record.get("tier") is not None:
             tier = record["tier"]
             vendors = _vendorset_of(record["vendors_required"])
-    return (
+    out = (
         f"{CHECK_MARKER_PREFIX} v=1 check={CHECK} pr={pr} head={head_sha} tier={tier} "
-        f"vendors={vendors} verdict={verdict} bounced=false -->"
+        f"vendors={vendors} verdict={verdict} bounced={'true' if bounced else 'false'} -->"
     )
+    if CHECK_MARKER_RE.fullmatch(out) is None:
+        raise ValueError("check marker does not match the marker grammar")
+    return out
+
+
+def marker_record(
+    repo_root: Path, *, repo: str, pr: int, head_sha: str, base_tip: Optional[str]
+) -> Optional[dict]:
+    """The record the AD-4 marker describes (TD 10.2): the newest valid record for this head on
+    the base G1c would pin, or a hold written before the tier was known (it carries no base).
+    A tiered record never matches when the base cannot be pinned."""
+    base = pinned_base(repo_root, base_tip, head_sha)
+    for rec in find_records(repo_root, repo=repo, pr=pr, head_sha=head_sha):
+        if rec.get("tier") is None or (base is not None and rec.get("base_sha") == base):
+            return rec
+    return None
+
+
+def parse_check_marker(body: object) -> Optional[dict]:
+    """The single reader of the check marker (#2358): the fields of the body's exact final line,
+    or None. Only that line counts, so text that merely names the marker is ignored."""
+    if not isinstance(body, str):
+        return None
+    last = body.replace("\r\n", "\n").rstrip("\n").split("\n")[-1]
+    m = CHECK_MARKER_RE.fullmatch(last)
+    return m.groupdict() if m else None
 
 
 # --------------------------------------------------------------------------- #

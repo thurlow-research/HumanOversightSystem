@@ -1981,3 +1981,606 @@ def test_t_cli_2263_bounce_payload_surfaces_adopted(adopted):
         comment_url="u", audit_relpath="a", bounce_number=1, adopted=adopted
     )
     assert cli._bounce_payload(result)["adopted"] is adopted
+
+
+# --- #2357 S1c: the check marker in record_pr_bounce (T-LB-01 .. T-LB-04) ----------
+
+
+def _marker(pr=42, head=_HEAD, verdict="none", bounced="false", tier="-", vendors="-"):
+    return (
+        f"<!-- hos-overseer-check v=1 check=second-review pr={pr} head={head} "
+        f"tier={tier} vendors={vendors} verdict={verdict} bounced={bounced} -->"
+    )
+
+
+def _llm_finding(slug="bad-thing", summary="bad", detail=""):
+    return merge_authority.Finding(
+        cls="MERITS",
+        key=f"MERITS:a.py:{slug}",
+        identity=("MERITS", "a.py", slug),
+        origin="llm",
+        path="a.py",
+        summary=summary,
+        detail=detail,
+    )
+
+
+def _bounce_call(world, **kw):
+    args = dict(
+        cid="issue-9",
+        reason_category="MERITS_FINDING",
+        summary="s",
+        repo_root=str(world.root),
+        head_sha=_HEAD,
+        findings=[_llm_finding()],
+    )
+    args.update(kw)
+    return merge_authority.record_pr_bounce("o", "r", 42, **args)
+
+
+@pytest.mark.parametrize(
+    "check_marker, head_sha",
+    [
+        ("<!-- hos-overseer-check v=2 -->", _HEAD),
+        (_marker(pr=43), _HEAD),
+        (_marker(head="d" * 40), _HEAD),
+        (_marker() + "\n", _HEAD),
+        (123, _HEAD),
+        (_marker(), None),
+    ],
+)
+def test_s1c_lb_01_record_pr_bounce_rejects_a_bad_check_marker_before_any_call(
+    check_marker, head_sha, world, monkeypatch
+):
+    def boom(*a, **k):
+        raise AssertionError("reached a GitHub call or the lock")
+
+    monkeypatch.setattr(merge_authority, "_bounce_lock", boom)
+    monkeypatch.setattr(merge_authority, "_run_gh", boom)
+    monkeypatch.setattr(merge_authority, "post_comment", boom)
+    kw = {"check_marker": check_marker, "head_sha": head_sha}
+    if head_sha is None:
+        kw["findings"] = None
+        kw["failures"] = ["check-failing:tests"]
+    with pytest.raises(merge_authority.CheckMarkerError):
+        _bounce_call(world, **kw)
+
+
+def test_s1c_lb_02_no_check_marker_keeps_the_body_byte_identical(world):
+    _bounce_call(world)
+    f = _llm_finding()
+    kept = merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F1", f)],
+        "MERITS_FINDING",
+        "s",
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        marker=merge_authority._bounce_marker("issue-9", _HEAD, [f.key], 1),
+    )
+    assert world.posts == [kept]
+    assert "hos-overseer-check" not in world.posts[0]
+
+
+def test_s1c_lb_03_check_marker_is_the_final_line_in_both_renderings(world):
+    cm = _marker()
+    _bounce_call(world, check_marker=cm)
+    lines = world.posts[0].splitlines()
+    assert lines[-1] == cm
+    assert lines[-2].startswith(merge_authority._BOUNCE_MARKER_PREFIX)
+
+    legacy = merge_authority._bounce_comment_body(
+        ["check-failing:tests"],
+        "CHECK_FAILURE",
+        "s",
+        1,
+        head_sha=_HEAD,
+        marker="<!-- hos-bounce v=1 id=x -->",
+        check_marker=cm,
+    ).splitlines()
+    assert legacy[-1] == cm and legacy[-2] == "<!-- hos-bounce v=1 id=x -->"
+
+
+def test_s1c_lb_04_truncated_body_still_ends_with_the_check_marker(world):
+    cm = _marker()
+    many = [_llm_finding(slug=f"thing-{i}", detail="x" * 2000) for i in range(50)]
+    bounce_marker = "<!-- hos-bounce v=1 id=y -->"
+    body = merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F{i}", f) for i, f in enumerate(many, 1)],
+        "MERITS_FINDING",
+        "s",
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        marker=bounce_marker,
+        check_marker=cm,
+    )
+    assert body.splitlines()[-1] == cm and body.splitlines()[-2] == bounce_marker
+    assert len(body) <= merge_authority.BOUNCE_BODY_MAX_CHARS
+    huge = [_llm_finding(slug=f"thing-{i}", summary="s" * 900) for i in range(200)]
+    body = merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F{i}", f) for i, f in enumerate(huge, 1)],
+        "MERITS_FINDING",
+        "s",
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        marker=bounce_marker,
+        check_marker=cm,
+    )
+    assert "findings truncated" in body
+    assert body.splitlines()[-1] == cm
+    assert len(body) <= merge_authority.BOUNCE_BODY_MAX_CHARS
+
+
+@pytest.mark.parametrize(
+    "check_marker, head_sha, message",
+    [
+        (_marker(), None, "check_marker requires head_sha"),
+        (None, _HEAD, "check_marker must be a str"),
+        ("not a marker", _HEAD, "check_marker does not match the check marker grammar"),
+        (_marker(pr=43), _HEAD, "check_marker names a different PR"),
+        (_marker(head="d" * 40), _HEAD, "check_marker names a different head"),
+    ],
+)
+def test_s1c_lb_05_check_marker_refusal_names_the_failed_condition(check_marker, head_sha, message):
+    # The message is what the CLI reports as the check_marker_unavailable detail.
+    with pytest.raises(merge_authority.CheckMarkerError) as raised:
+        merge_authority._validate_check_marker(check_marker, 42, head_sha)
+    assert str(raised.value) == message
+
+
+def test_s1c_lb_06_findings_body_is_exactly_the_documented_rendering():
+    f = _llm_finding(summary="two  words", detail="the detail")
+    body = merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F1", f)],
+        "MERITS_FINDING",
+        "sum",
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        marker="<!-- hos-bounce v=1 id=m -->",
+        check_marker=_marker(),
+    )
+    assert body == (
+        f"## PR bounced to the worker: 1 finding(s) on {_HEAD[:12]}\n"
+        "\n"
+        "### Specific failures\n"
+        f"- [{_HEAD[:12]}-F1] (MERITS) two words. the detail\n"
+        "\n"
+        "### How to respond\n"
+        "Fix each finding, or dispute one: post a comment whose first line is "
+        "`/hos dispute <finding-id>`, followed by your reason.\n"
+        "\n"
+        "**Reason category:** MERITS_FINDING\n"
+        "**Summary:** sum\n"
+        "\n"
+        f"_Bounce #1 for issue-9 (cap: {merge_authority.BOUNCE_CAP} before human escalation)._\n"
+        "<!-- hos-bounce v=1 id=m -->\n" + _marker() + "\n"
+    )
+
+
+def test_s1c_lb_07_legacy_body_is_exactly_the_documented_rendering():
+    body = merge_authority._bounce_comment_body(
+        ["some  free text"], "CHECK_FAILURE", "sum", 2, check_marker=_marker()
+    )
+    assert body == (
+        "## PR bounced to the worker: 1 finding(s) on unknown\n"
+        "\n"
+        "### Specific failures\n"
+        "- [item-1] some free text\n"
+        "\n"
+        "**Reason category:** CHECK_FAILURE\n"
+        "**Summary:** sum\n"
+        "\n"
+        f"_Bounce #2 for this correlation id (cap: {merge_authority.BOUNCE_CAP} "
+        "before human escalation)._\n" + _marker() + "\n"
+    )
+    full = merge_authority._bounce_comment_body(["x"], "CHECK_FAILURE", "s", 1, head_sha=_HEAD)
+    assert full.splitlines()[0].endswith(f" on {_HEAD[:12]}")
+
+
+def _fits_body(findings, summary, **kw):
+    return merge_authority._bounce_comment_body_findings(
+        [(f"{_HEAD[:12]}-F{i}", f) for i, f in enumerate(findings, 1)],
+        "MERITS_FINDING",
+        summary,
+        1,
+        cid="issue-9",
+        head_sha=_HEAD,
+        **kw,
+    )
+
+
+def test_s1c_lb_08_a_body_of_exactly_the_cap_is_not_truncated():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    base = len(_fits_body([_llm_finding(detail="")], ""))
+    # Grow the detail until the whole body is exactly the cap.
+    detail = "d" * (cap - base - len(". "))
+    body = _fits_body([_llm_finding(detail=detail)], "")
+    assert len(body) == cap
+    assert detail in body and "..." not in body
+
+
+def test_s1c_lb_09_detail_is_cut_to_the_truncated_length_and_a_body_at_the_cap_survives():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    limit = merge_authority._TRUNCATED_DETAIL_CHARS
+    # The second pass renders the detail as `limit` characters plus an ellipsis.
+    second_len = len(_fits_body([_llm_finding(detail="d" * (limit + 3))], ""))
+    pad = "s" * (cap - second_len)
+    body = _fits_body([_llm_finding(detail="d" * (cap + 10))], pad)
+    assert len(body) == cap
+    assert f". {'d' * limit}...\n" in body
+    # A detail of exactly `limit` characters is left alone in the second pass (no ellipsis).
+    mixed = _fits_body(
+        [
+            _llm_finding(slug="a", detail="e" * limit),
+            _llm_finding(slug="b", detail="f" * (cap + 10)),
+        ],
+        "s",
+    )
+    assert f". {'e' * limit}\n" in mixed
+    assert f". {'f' * limit}...\n" in mixed
+
+
+def test_s1c_lb_10_id_only_rows_keep_their_ids_and_drop_whole_rows_by_count():
+    cap = merge_authority.BOUNCE_BODY_MAX_CHARS
+    findings = [
+        _llm_finding(slug=f"t{i}", summary="m" * 40, detail="x" * 20000) for i in range(1, 6)
+    ]
+    bare = [_llm_finding(slug=f"t{i}", summary="m" * 40) for i in range(1, 6)]
+    # Pad the shared summary so exactly two id-only rows plus the note fill the body.
+    two = _fits_body(bare[:2], "")
+    note = "- 3 findings truncated; see audit event"
+    body = _fits_body(findings, "p" * (cap - (len(two) + len(note) + 1)))
+    assert len(body) == cap
+    assert f"- [{_HEAD[:12]}-F1] (MERITS) {'m' * 40}\n" in body
+    assert f"- [{_HEAD[:12]}-F2] (MERITS) {'m' * 40}\n{note}\n" in body
+    assert f"{_HEAD[:12]}-F3" not in body and "x" * 10 not in body
+    # With no room for even one row, every finding is dropped and counted.
+    none_fit = _fits_body(findings[:3], "q" * cap)
+    assert "- 3 findings truncated; see audit event" in none_fit
+    assert f"{_HEAD[:12]}-F1" not in none_fit
+    # With room for the note but not one row, the single finding is dropped, not kept.
+    zero = len(_fits_body([], ""))
+    one = _fits_body(findings[:1], "q" * (cap - zero - 60))
+    assert "- 1 findings truncated; see audit event" in one
+    assert f"{_HEAD[:12]}-F1" not in one
+
+
+def test_s1c_lb_11_id_only_body_that_fits_whole_carries_no_truncation_note():
+    # Long details push past both detail passes, but every id-only row fits: nothing is dropped.
+    findings = [_llm_finding(slug=f"t{i}", detail="x" * 2000) for i in range(1, 400)]
+    body = _fits_body(findings, "s", marker=None, check_marker=_marker())
+    assert len(body) <= merge_authority.BOUNCE_BODY_MAX_CHARS
+    assert "truncated" not in body
+    assert body.count(f"- [{_HEAD[:12]}-F") == len(findings)
+    assert "x" * 10 not in body
+
+
+# --- #2357 S1c: route head-carry and the bounce marker (T-RH-01 .. T-RH-15) --------
+
+_BASE = "b" * 40
+_SR = {
+    "class": "REVIEW_FINDING",
+    "slug": "sr-agy-aaaaaaaa",
+    "summary": "vendor says no",
+    "detail": "d",
+    "path": "a.py",
+}
+_MERITS = {"class": "MERITS", "summary": "bad", "path": "a.py", "slug": "bad-thing"}
+_CHAIN = {"class": "REVIEW_CHAIN", "slug": "security-reviewer", "summary": "missing"}
+_TIER_FOR_VENDORS = {"none": "LOW", "agy": "MEDIUM", "agy+codex": "HIGH"}
+
+
+def _osr():
+    from scripts.automation.lib import overseer_second_review
+
+    return overseer_second_review
+
+
+def _osr_record(world, monkeypatch, verdict, vendorset, base=_BASE):
+    """Write one overseer record for `_HEAD` and make the base pin answer only for the exact
+    arguments the CLI should pass (a lenient patch would let argument mutants survive)."""
+    osr = _osr()
+    required = osr.vendors_list(vendorset)
+    runs = osr.runs_dir(world.root)
+    findings_file = None
+    if verdict == "request_changes":
+        osr._ensure_private_dir(runs)
+        findings_file = str(runs / "pr42" / "findings.json")
+        osr._atomic_write_json(Path(findings_file), {"findings": [_SR], "reviewed_head": _HEAD})
+    rec = {
+        "schema": 1,
+        "check": osr.CHECK,
+        "repo": "o/r",
+        "pr": 42,
+        "head_sha": _HEAD,
+        "base_sha": base,
+        "range": f"{base}..{_HEAD}",
+        "tier": _TIER_FOR_VENDORS[vendorset],
+        "tier_sources": None,
+        "vendors_required": required,
+        "vendors_run": [] if vendorset == "none" else list(required),
+        "status": "final",
+        "verdict": verdict,
+        "reason": osr.FINAL_REASON_FOR_VERDICT[verdict],
+        "unresolved_findings": 1 if verdict == "request_changes" else 0,
+        "findings_file": findings_file,
+        "outfile": f"{world.root}/out/steppr42.md",
+        "files_reviewed": None if vendorset == "none" else 5,
+        "binary_files": None if vendorset == "none" else 0,
+        "hold_label_applied": None,
+        "vendor_failures": [],
+        "created_at": "2026-11-18T01:02:03Z",
+    }
+    osr._ensure_private_dir(osr.records_dir(world.root))
+    osr._atomic_write_json(osr._record_path(world.root, 42, _HEAD, vendorset), rec)
+
+    def pinned(repo_root, base_tip, head):
+        if (Path(repo_root), base_tip, head) == (Path(world.root), _BASE, _HEAD):
+            return _BASE
+        return None
+
+    monkeypatch.setattr(osr, "pinned_base", pinned)
+    return rec
+
+
+def _write_route_file(world, entries, **top):
+    world.findings.write_text(json.dumps({"findings": entries, **top}))
+
+
+def _final_line(world, index=0):
+    return world.posts[index].splitlines()[-1]
+
+
+def test_s1c_rh_01_matching_reviewed_head_bounces_with_bounced_true(world, monkeypatch, capsys):
+    rec = _osr_record(world, monkeypatch, "request_changes", "agy+codex")
+    _write_route_file(world, [_SR], reviewed_head=_HEAD)
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0, record
+    assert record["disposition"] == "BOUNCE" and record["reviewed_head"] == _HEAD
+    osr = _osr()
+    assert _final_line(world) == osr.check_marker(pr=42, head_sha=_HEAD, record=rec, bounced=True)
+    assert osr.parse_check_marker(world.posts[0])["bounced"] == "true"
+    assert osr.parse_check_marker(world.posts[0])["verdict"] == "request_changes"
+
+
+def test_s1c_rh_02_mismatched_reviewed_head_is_head_moved_and_writes_nothing(
+    world, monkeypatch, capsys
+):
+    def boom(*a, **k):
+        raise AssertionError("fetched past the head check")
+
+    monkeypatch.setattr(gh, "list_pull_files", boom)
+    _write_route_file(world, [_SR], reviewed_head="d" * 40)
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (1, "head_moved", "transient")
+    assert world.posts == [] and world.calls == []
+    assert not (world.root / "audit" / "log").exists()
+
+
+def test_s1c_rh_03_sr_entry_without_reviewed_head_is_invalid_before_any_fetch(
+    world, monkeypatch, capsys
+):
+    def boom(*a, **k):
+        raise AssertionError("fetched before the findings file was checked")
+
+    monkeypatch.setattr(gh, "get_pull", boom)
+    _write_route_file(world, [_CHAIN, _SR])
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (
+        1,
+        "findings_file_invalid",
+        "deterministic",
+    )
+
+
+@pytest.mark.parametrize("value", [None, "C" * 40, "c" * 39, "c" * 41, "c" * 40 + "\n", 123, []])
+def test_s1c_rh_04_invalid_reviewed_head_values(value, world, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise AssertionError("fetched before the findings file was checked")
+
+    monkeypatch.setattr(gh, "get_pull", boom)
+    _write_route_file(world, [_MERITS], reviewed_head=value)
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (
+        1,
+        "findings_file_invalid",
+        "deterministic",
+    )
+
+
+def test_s1c_rh_05_reviewed_head_is_popped_before_canonicalization(world, capsys):
+    _write_route_file(world, [_MERITS], reviewed_head=_HEAD)
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0, record
+    assert record["disposition"] == "BOUNCE" and len(world.posts) == 1
+
+
+def test_s1c_rh_06_review_chain_only_bounce_with_a_record_is_bounced_false(
+    world, monkeypatch, capsys
+):
+    _osr_record(world, monkeypatch, "approve", "agy")
+    _write_route_file(world, [_CHAIN])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    assert _final_line(world).endswith("tier=MEDIUM vendors=agy verdict=approve bounced=false -->")
+    assert f"pr=42 head={_HEAD} " in _final_line(world)
+
+
+def test_s1c_rh_07_legacy_file_unchanged_but_for_the_final_marker_line(world, capsys):
+    _write_route_file(world, [_MERITS])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    lines = world.posts[0].splitlines()
+    assert lines[-2].startswith(merge_authority._BOUNCE_MARKER_PREFIX)
+    assert lines[-1].endswith("tier=- vendors=- verdict=none bounced=false -->")
+    assert record["bounce"]["finding_ids"] == [f"{_HEAD[:12]}-F1"]
+    assert record["findings"][0]["key"] == "MERITS:a.py:bad-thing"
+
+
+def test_s1c_rh_08_non_worker_pr_refuses_a_stale_reviewed_head(world, capsys):
+    world.pr["user"] = {"login": "scott", "type": "User"}
+    _write_route_file(world, [_MERITS], reviewed_head="d" * 40)
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (1, "head_moved", "transient")
+    assert world.posts == []
+
+
+def test_s1c_rh_09_head_moves_after_the_check_is_still_head_moved(world, monkeypatch, capsys):
+    _f_head_moved(world, monkeypatch, capsys)
+    _write_route_file(world, [_MERITS], reviewed_head=_HEAD)
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"]) == (1, "head_moved")
+    assert world.posts == [] and world.calls == []
+
+
+def test_s1c_rh_10_bounce_subcommand_carries_bounced_false(world, monkeypatch, capsys):
+    _require_failing_check(monkeypatch)
+    rc, record = _run_mut(world, "bounce", capsys)
+    assert rc == 0 and record["bounced"] is True, record
+    assert _final_line(world).endswith("tier=- vendors=- verdict=none bounced=false -->")
+
+
+@pytest.mark.parametrize(
+    "entry, top, bounced",
+    [
+        ({**_MERITS, "slug": "sr-x-12345678"}, {}, "invalid"),
+        ({**_MERITS, "slug": "src-thing"}, {}, "false"),
+        ({**_MERITS, "slug": "xsr-thing"}, {}, "false"),
+        ({**_MERITS, "slug": "sr-x-12345678"}, {"reviewed_head": _HEAD}, "true"),
+        (
+            {"class": "CHECK", "check_run": "tests", "summary": "red", "path": "sr-x.py"},
+            {"reviewed_head": _HEAD},
+            "false",
+        ),
+    ],
+)
+def test_s1c_rh_11_sr_detection_is_prefix_on_slug_any_class(entry, top, bounced, world, capsys):
+    world.files = [{"filename": "a.py"}, {"filename": "sr-x.py"}]
+    world.pr["changed_files"] = 2
+    _write_route_file(world, [entry], **top)
+    rc, record = _run_mut(world, "route", capsys)
+    if bounced == "invalid":
+        assert (rc, record["error_code"]) == (1, "findings_file_invalid")
+        return
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    assert _osr().parse_check_marker(world.posts[0])["bounced"] == bounced
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [[1], [{"class": "MERITS", "summary": "x", "path": "a.py", "slug": 123}]],
+)
+def test_s1c_rh_12_non_dict_entry_without_sr_keeps_findings_schema(entries, world, capsys):
+    _write_route_file(world, entries)
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (
+        1,
+        "findings_schema",
+        "deterministic",
+    )
+
+
+@pytest.mark.parametrize("variant", ["check_marker", "record_pr_bounce"])
+def test_s1c_rh_13_marker_build_failure_is_check_marker_unavailable(
+    variant, world, monkeypatch, capsys
+):
+    def bad_marker(*a, **k):
+        raise ValueError("no marker")
+
+    def bad_bounce(*a, **k):
+        raise merge_authority.CheckMarkerError("rejected")
+
+    if variant == "check_marker":
+        monkeypatch.setattr(_osr(), "check_marker", bad_marker)
+    else:
+        monkeypatch.setattr(merge_authority, "record_pr_bounce", bad_bounce)
+    _write_route_file(world, [_MERITS])
+    rc, record = _run_mut(world, "route", capsys)
+    assert (rc, record["error_code"], record["error_class"]) == (
+        1,
+        "check_marker_unavailable",
+        "deterministic",
+    )
+    assert record["comment_posted"] is False and world.posts == []
+
+
+def test_s1c_rh_14_render_neutralizes_finding_text_and_never_renders_path(world, capsys):
+    world.files = [{"filename": "docs/@alice.md"}]
+    entry = {
+        **_SR,
+        "path": "docs/@alice.md",
+        "detail": "@bob ![i](http://x) [l](http://y)",
+    }
+    _write_route_file(world, [entry], reviewed_head=_HEAD)
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    post = world.posts[0]
+    assert "@bob" not in post and "@alice" not in post
+    assert "](" not in post and "![" not in post
+
+
+def test_s1c_rh_15_reviewed_head_is_null_in_the_payload_when_absent(world, capsys):
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0
+    assert "reviewed_head" in record and record["reviewed_head"] is None
+
+
+def test_s1c_doc_01_cron_prompt_drops_the_interim_worktree_exception():
+    text = (
+        Path(__file__).resolve().parents[2] / "bootstrap" / "overseer-cron-prompt.md"
+    ).read_text(encoding="utf-8")
+    assert "On the second-review `request_changes` route" not in text
+    assert "Two exceptions." not in text
+    assert "One exception: wherever step 4d applies," in text
+
+
+def test_s1c_doc_02_overseer_prose_matches_s1c():
+    text = (Path(__file__).resolve().parents[2] / ".claude" / "agents" / "overseer.md").read_text(
+        encoding="utf-8"
+    )
+    for needle in (
+        "head_moved",
+        "reviewed_head",
+        "any of conditions (a)-(d)",
+        "Copy findings only where the `request_changes` step 1",
+        "verdict=pending reason=phase-error",
+        "--expected-action OTHER",
+        "This is the one exception to step 6",
+        "every overseer approval, at any tier",
+        "One exception: in step 4d",
+        "**`body_contains_marker` (exit 2).**",
+        "**`check_marker_unavailable`** (exit 1",
+    ):
+        assert needle in text, needle
+    assert text.count("beginning `second_review_`") >= 3
+    for gone in (
+        "interim, until #2357 S1c",
+        "--expect-sha <OSR head>",
+        "MEDIUM+ head",
+        "or `reason=phase-error`:**",
+    ):
+        assert gone not in text, gone
+
+
+def test_s1c_rh_16_tiered_record_without_a_base_sha_key_is_skipped_not_fatal(
+    world, monkeypatch, capsys
+):
+    osr = _osr()
+    rec = _osr_record(world, monkeypatch, "approve", "agy")
+    del rec["base_sha"]
+    osr._atomic_write_json(osr._record_path(world.root, 42, _HEAD, "agy"), rec)
+    assert osr.load_record(world.root, repo="o/r", pr=42, head_sha=_HEAD, vendorset="agy")
+    _write_route_file(world, [_MERITS])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["disposition"] == "BOUNCE", record
+    assert _final_line(world).endswith("tier=- vendors=- verdict=none bounced=false -->")
+    posted = len(world.posts)
+    _require_failing_check(monkeypatch)
+    world.pr["head"]["sha"] = _HEAD
+    rc, record = _run_mut(world, "bounce", capsys)
+    assert rc == 0 and record["error_code"] is None
+    assert len(world.posts) == posted + 1
+    assert _final_line(world, posted).endswith("tier=- vendors=- verdict=none bounced=false -->")

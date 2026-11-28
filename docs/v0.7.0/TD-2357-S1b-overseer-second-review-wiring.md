@@ -361,7 +361,7 @@ Then:
 | runner result `pending` with `budget`, `head-moved`, `pr-not-found` or `pr-not-open`, or `skipped-held` | neutral: no strike and no reset. `budget` is bounded by ordering, `head-moved` by the new head, and the other two mean the PR has left the actionable set. |
 | helper `ingest` failure | `hold phase-error`, label, persisted=false |
 | strike write failure | `hold state-write-failed`, label |
-| `render` failure / regex failure | `hold phase-error` for all PRs, label |
+| `render` failure / regex failure | bash-rendered `verdict=pending reason=phase-error` for all PRs; `needs-human` on every non-held PR not already labelled in the phase (AR23; corrected by TD-2357-S1c, carry item 4) |
 | state dir / config invalid | `hold config-error` for all PRs, label |
 | phase subshell aborts (§6.8) | bash-rendered `pending phase-error` for all PRs; at the 3rd consecutive abort, `needs-human` on every actionable PR |
 | no timeout binary | strike `runner-unbounded` |
@@ -462,7 +462,7 @@ The required-check map `REQUIRED_OVERSEER_CHECKS = {"second-review": "MEDIUM"}` 
    - e. With no valid record at V: refuse `second_review_tier_raise` if a valid **final** record exists at a lower vendorset, otherwise refuse `second_review_record_missing`.
    - f. If the record at V is a hold or has `verdict == request_changes`, refuse `second_review_not_approved`.
    - g. If `V == none`, accept only `verdict == not-required`. Anything else is `not_approved`.
-   - h. If `verdict == approve`, also require `unresolved_findings == 0`, `binary_files == 0` and `vendors_run == V` (defence in depth). Anything else is `not_approved`.
+   - h. If `V != none`, require `verdict == approve`; any other verdict (`request_changes`, `not-required`) is `not_approved`. Then also require `unresolved_findings == 0`, `binary_files == 0` and `vendors_run == V` (defence in depth). Anything else is `not_approved`. *(Text corrected by TD-2357-S1c, carry item 6; `_gate_refusal` always enforced this.)*
 3. A lock timeout, lock-unavailable or `OSError` refuses with `second_review_record_unverifiable` (Q4).
 4. After releasing the lock, if `required_vendorset(argv)` outranks `required_vendorset(max(rz, record tiers))`, call `write_raise(argv)`, which takes `head_lock` itself. That condition implies step 2e has already refused with `second_review_tier_raise`, so the raise is written only on a refusal. `raise_written` records whether it did. A `write_raise` failure leaves the refusal unchanged and is reported in diag (`raise_written=false`, `raise_error` = exception type name only) (AR11).
 
@@ -501,13 +501,13 @@ Every record field listed is read here. Diag is the real S1b reader for the evid
 - Any `sr-`-prefixed entry without `reviewed_head` makes the result `findings_file_invalid`.
 - `record_pr_bounce` (line 2607) gains a keyword-only `marker: str | None = None`. `_write_bounce` (1133–1176) passes the AD-4 marker with `bounced=true` when any `sr-` entry is present. `_bounce_marker` (2110) is unchanged.
 - At render time, neutralize mentions in finding text and paths (§5.4 rule).
-- S1c's PR runs the scoped mutation run for the Q1 21 mutants.
+- *(Superseded: Q1 = C killed all 21 in S1b, §11.4. S1c's mutation run covers S1c's own code, TD-2357-S1c §8.)*
 
 ### 9.2 Why S1b is safe without S1c
 
 G1c stops any approval without a matching approve or not-required record. Without head-carry, a `request_changes` route can at worst bounce against a newer head with findings reviewed at an older head. That is a stale bounce, not a wrongful merge, and the interim prose below prevents it.
 
-### 9.3 Interim prose (overseer.md step 4a, S1b only; removed by S1c)
+### 9.3 Interim prose (overseer.md step 4a, S1b only; removed by S1c) — **superseded by TD-2357-S1c §4.1**
 
 On `verdict=request_changes`:
 

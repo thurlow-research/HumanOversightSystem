@@ -1069,10 +1069,7 @@ def test_g1c_14_a_held_head_lock_makes_the_record_unverifiable(kit, monkeypatch)
 def test_g1c_15_a_non_sha_head_or_base_is_missing(kit, which):
     kit.write("agy")
     kit.pull[which] = {"sha": "not-a-sha"}
-    outcome = kit.submit(tier="MEDIUM")
-    assert outcome.exit_code in (3, 1)
-    if outcome.exit_code == 3:
-        assert outcome.payload["refusal_reason"] == "second_review_record_missing"
+    _refused(kit.submit(tier="MEDIUM"), "second_review_record_missing")
     assert kit.posted == []
 
 
@@ -1134,6 +1131,7 @@ def test_g1c_17b_diag_values_are_sanitized(kit):
     kit.write("agy", outfile="/o/@alice [x](http://e)\x00.md")
     diag = kit.submit(tier="MEDIUM").payload["second_review"]
     assert "@‍alice" in diag["outfile"] and "](" not in diag["outfile"]
+    assert "\x00" not in diag["outfile"]
 
 
 def test_g1c_18_the_diag_is_present_on_a_refusal_too(kit):
@@ -1147,7 +1145,15 @@ def test_g1c_18_the_diag_is_present_on_a_refusal_too(kit):
     assert diag["base_sha"] == kit.base
 
 
-def test_g1c_a_refusal_posts_nothing_and_is_exit_3_before_the_already_approved_check(kit):
+def test_g1c_a_refusal_posts_nothing_and_is_exit_3_before_the_already_approved_check(
+    kit, monkeypatch
+):
+    already = {
+        "state": "APPROVED",
+        "user": {"login": DEFAULT_OVERSEER_HANDLE},
+        "commit_id": kit.head,
+    }
+    monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [already])
     outcome = kit.submit(tier="HIGH")
     _refused(outcome, "second_review_record_missing")
     assert outcome.payload["second_review"]["raise_written"] is True
@@ -1178,12 +1184,15 @@ def test_mk_03_a_tier_null_hold_renders_dashes(kit):
 
 
 def test_mk_03b_a_comment_marker_reports_the_newest_record_for_the_pinned_base(kit):
+    comment = {"event": "comment", "disposition": "PROPOSE_ONLY", "expected_action": "APPROVE"}
     kit.write("agy", base_sha="9" * 40)
-    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    outcome = kit.submit(**comment)
     assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "none")
-    kit.write("agy")
-    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
-    assert outcome.payload["check_marker"] == kit.expected_marker("MEDIUM", "agy", "approve")
+    kit.write("agy", created_at="2026-11-18T01:00:00Z")
+    kit.write("agy+codex", created_at="2026-11-18T02:00:00Z")
+    kit.write("none", created_at="2026-11-18T03:00:00Z", base_sha="9" * 40)
+    outcome = kit.submit(**comment)
+    assert outcome.payload["check_marker"] == kit.expected_marker("HIGH", "agy+codex", "approve")
 
 
 def test_mk_04_the_interim_signoff_marker_still_parses(kit):
@@ -1217,3 +1226,208 @@ def test_check_marker_rejects_a_bad_pr_or_head():
         osr.check_marker(pr=0, head_sha="1" * 40, record=None)
     with pytest.raises(ValueError):
         osr.check_marker(pr=7, head_sha="short", record=None)
+
+
+def test_mk_06_check_marker_renders_bounced_and_rejects_non_bool():
+    head = "1" * 40
+    assert osr.check_marker(pr=7, head_sha=head, record=None, bounced=True).endswith(
+        "verdict=none bounced=true -->"
+    )
+    assert osr.check_marker(pr=7, head_sha=head, record=None).endswith("bounced=false -->")
+    for bad in (1, "true", None):
+        with pytest.raises(ValueError):
+            osr.check_marker(pr=7, head_sha=head, record=None, bounced=bad)
+
+
+@pytest.mark.parametrize("head", [None, 123, b"1" * 40, "1" * 40 + "\n"])
+def test_mk_07_check_marker_non_str_or_newline_head_is_value_error(head):
+    with pytest.raises(ValueError):
+        osr.check_marker(pr=7, head_sha=head, record=None)
+
+
+@pytest.mark.parametrize("bounced", [False, True])
+@pytest.mark.parametrize(
+    "vendorset, over, tier, vendors, verdict",
+    [
+        (None, {}, "-", "-", "none"),  # record=None
+        ("agy+codex", {"tier": None, "verdict": "hold"}, "-", "-", "hold"),
+        ("agy", {"verdict": "approve"}, "MEDIUM", "agy", "approve"),
+        ("agy+codex", {"verdict": "request_changes"}, "HIGH", "agy+codex", "request_changes"),
+        ("none", {"verdict": "not-required"}, "LOW", "none", "not-required"),
+    ],
+)
+def test_mk_08_every_check_marker_fullmatches_the_one_grammar(
+    kit, vendorset, over, tier, vendors, verdict, bounced
+):
+    rec = None if vendorset is None else kit.record(vendorset, **over)
+    out = osr.check_marker(pr=42, head_sha=kit.head, record=rec, bounced=bounced)
+    assert ma.CHECK_MARKER_RE.fullmatch(out) is not None
+    assert out.startswith(osr.CHECK_MARKER_PREFIX)
+    fields = osr.parse_check_marker(out)
+    assert fields["tier"] == tier
+    assert fields["vendors"] == vendors
+    assert fields["verdict"] == verdict
+    assert fields["bounced"] == ("true" if bounced else "false")
+    assert osr.CHECK_MARKER_RE is ma.CHECK_MARKER_RE
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"verdict": "maybe"},
+        {"tier": "SEVERE"},
+        {"vendors_required": ["agy", "grok"]},
+    ],
+)
+def test_mk_08b_check_marker_refuses_a_record_value_outside_the_one_grammar(kit, over):
+    # The marker is checked against CHECK_MARKER_RE before it is returned, so a record
+    # field the grammar does not allow can never produce a marker the parser would reject.
+    rec = {**kit.record("agy"), **over}
+    with pytest.raises(ValueError, match="^check marker does not match the marker grammar$"):
+        osr.check_marker(pr=42, head_sha=kit.head, record=rec)
+
+
+@pytest.mark.parametrize(
+    "pr, valid",
+    [
+        (0, False),
+        (1, True),
+        (osr.MAX_PR_NUMBER - 1, True),
+        (osr.MAX_PR_NUMBER, True),
+        (osr.MAX_PR_NUMBER + 1, False),
+    ],
+)
+def test_mk_08c_check_marker_accepts_exactly_the_pr_numbers_the_grammar_allows(kit, pr, valid):
+    if valid:
+        out = osr.check_marker(pr=pr, head_sha=kit.head, record=None)
+        assert osr.parse_check_marker(out)["pr"] == str(pr)
+    else:
+        with pytest.raises(ValueError, match="^pr, head_sha or bounced is not valid$"):
+            osr.check_marker(pr=pr, head_sha=kit.head, record=None)
+
+
+@pytest.mark.parametrize(
+    "body, refused",
+    [
+        ("<!-- hos:overseer-interim-signoff v=1 -->\nbody\n", True),
+        ("ok\n   <!-- hos:overseer-interim-signoff v=1 -->\n", True),
+        ("see <!-- hos:overseer-interim-signoff mid-line\n", False),
+        ("no marker here\n", False),
+    ],
+)
+def test_mk_10b_body_has_marker_refuses_a_line_that_opens_the_interim_marker(body, refused):
+    roa = cli._load_require_overseer_approval()
+    assert cli._body_has_marker(body, roa, osr) is refused
+
+
+def _marker_line(**over):
+    fields = {"pr": 7, "head": "a" * 40, "tier": "HIGH", "vendors": "agy+codex"}
+    fields.update({"verdict": "request_changes", "bounced": "true"})
+    fields.update(over)
+    return (
+        f"{osr.CHECK_MARKER_PREFIX} v=1 check=second-review pr={fields['pr']} "
+        f"head={fields['head']} tier={fields['tier']} vendors={fields['vendors']} "
+        f"verdict={fields['verdict']} bounced={fields['bounced']} -->"
+    )
+
+
+@pytest.mark.parametrize(
+    "body, accepted",
+    [
+        ("text\n" + _marker_line(), True),
+        ("text\n" + _marker_line() + "\n", True),
+        ("text\r\n" + _marker_line() + "\r\n", True),
+        (_marker_line() + "\ntext", False),
+        (_marker_line() + " trailing", False),
+        (" " + _marker_line(), False),
+        (_marker_line().replace("hos-overseer", "ｈｏｓ-overseer"), False),
+        (_marker_line().replace("hos-overseer", "HOS-OVERSEER"), False),
+        (_marker_line(), True),
+        (None, False),
+        (b"x", False),
+    ],
+)
+def test_mk_09_parse_check_marker_accepts_only_the_exact_final_line(body, accepted):
+    got = osr.parse_check_marker(body)
+    assert (got is not None) == accepted
+    if accepted:
+        assert got["pr"] == "7" and got["head"] == "a" * 40 and got["bounced"] == "true"
+
+
+@pytest.mark.parametrize("tail", ["  ", " \n", "\n\n  ", "\nX", "\nXX\n", "X"])
+def test_mk_09c_only_newlines_are_stripped_before_the_final_line_is_read(tail):
+    # Trailing spaces, or any other character after the marker, make the final line not the marker.
+    assert osr.parse_check_marker("body\n" + _marker_line() + tail) is None
+    assert osr.parse_check_marker("body\n" + _marker_line() + "\n\n")["pr"] == "7"
+
+
+def test_mk_09b_with_two_markers_the_last_line_wins():
+    body = _marker_line(bounced="false") + "\n" + _marker_line(bounced="true", tier="-")
+    got = osr.parse_check_marker(body)
+    assert (got["bounced"], got["tier"]) == ("true", "-")
+
+
+def test_mk_11_marker_record_ignores_a_tiered_record_when_the_base_cannot_be_pinned(
+    kit, monkeypatch
+):
+    kit.write("agy", base_sha=None)
+    monkeypatch.setattr(osr, "pinned_base", lambda *a, **k: None)
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.payload["check_marker"] == kit.expected_marker("-", "-", "none")
+    rec = osr.marker_record(
+        kit.root, repo=SLUG, pr=42, head_sha=kit.head, base_tip=kit.pull["base"]["sha"]
+    )
+    assert rec is None
+
+
+@pytest.mark.parametrize(
+    "body, posts",
+    [
+        ("see hos-overseer-check here\n", False),
+        ("see ｈｏｓ-overseer-check here\n", False),
+        ("see HOS-OVERSEER-CHECK here\n", False),
+        ("see hos overseer check here\n", True),
+    ],
+)
+@pytest.mark.parametrize("app", ["overseer", "worker"])
+def test_mk_10_d4_refuses_any_check_marker_mention_after_nfkc(kit, body, posts, app):
+    ctx = kit.ctx
+    kwargs = {"event": "comment", "disposition": "PROPOSE_ONLY", "expected_action": "APPROVE"}
+    if app == "worker":
+        ctx = dataclasses.replace(ctx, app_role="worker")
+        kwargs = {"event": "comment", "app": "worker", "disposition": None}
+    else:
+        body += "Expected action: **APPROVE**\n"
+    kit.body_file.write_text(body)
+    outcome = cli._cmd_submit_verdict(_make_submit_args(kit.body_file, **kwargs), ctx)
+    if posts:
+        assert outcome.exit_code == 0, outcome.error
+        assert len(kit.posted) == 1
+    else:
+        assert outcome.exit_code == 2
+        assert outcome.error.startswith("body_contains_marker")
+        assert kit.posted == []
+
+
+def test_mk_10b_d4_still_refuses_an_interim_signoff_line_but_allows_a_mid_line_mention(kit):
+    roa = cli._load_require_overseer_approval()
+    kit.body_file.write_text(f"  {roa.MARKER_PREFIX} x\n")
+    kwargs = {"event": "comment", "disposition": "PROPOSE_ONLY", "expected_action": "APPROVE"}
+    outcome = cli._cmd_submit_verdict(_make_submit_args(kit.body_file, **kwargs), kit.ctx)
+    assert outcome.exit_code == 2 and kit.posted == []
+    kit.body_file.write_text(
+        f"it said {roa.MARKER_PREFIX} earlier\n\nExpected action: **APPROVE**\n"
+    )
+    outcome = cli._cmd_submit_verdict(_make_submit_args(kit.body_file, **kwargs), kit.ctx)
+    assert outcome.exit_code == 0, outcome.error
+
+
+def test_mk_12_a_check_marker_failure_refuses_with_check_marker_unavailable(kit, monkeypatch):
+    def bad(*a, **k):
+        raise ValueError("no")
+
+    monkeypatch.setattr(osr, "check_marker", bad)
+    outcome = kit.submit(event="comment", disposition="PROPOSE_ONLY", expected_action="APPROVE")
+    assert outcome.exit_code == 1
+    assert outcome.error.startswith("check_marker_unavailable:")
+    assert kit.posted == []
