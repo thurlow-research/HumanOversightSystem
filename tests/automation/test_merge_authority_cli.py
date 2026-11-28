@@ -2577,7 +2577,10 @@ def test_s1c_rh_16_tiered_record_without_a_base_sha_key_is_skipped_not_fatal(
     rc, record = _run_mut(world, "route", capsys)
     assert rc == 0 and record["disposition"] == "BOUNCE", record
     assert _final_line(world).endswith("tier=- vendors=- verdict=none bounced=false -->")
+    posted = len(world.posts)
     _require_failing_check(monkeypatch)
     world.pr["head"]["sha"] = _HEAD
     rc, record = _run_mut(world, "bounce", capsys)
     assert rc == 0 and record["error_code"] is None
+    assert len(world.posts) == posted + 1
+    assert _final_line(world, posted).endswith("tier=- vendors=- verdict=none bounced=false -->")

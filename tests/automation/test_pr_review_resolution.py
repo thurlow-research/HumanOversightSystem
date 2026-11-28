@@ -1247,22 +1247,26 @@ def test_mk_07_check_marker_non_str_or_newline_head_is_value_error(head):
 
 @pytest.mark.parametrize("bounced", [False, True])
 @pytest.mark.parametrize(
-    "vendorset, over",
+    "vendorset, over, tier, vendors, verdict",
     [
-        ("none", {}),
-        ("agy+codex", {"tier": None}),
-        ("agy", {}),
-        ("agy+codex", {"verdict": "request_changes"}),
-        ("none", {"verdict": "not-required"}),
+        (None, {}, "-", "-", "none"),  # record=None
+        ("agy+codex", {"tier": None, "verdict": "hold"}, "-", "-", "hold"),
+        ("agy", {"verdict": "approve"}, "MEDIUM", "agy", "approve"),
+        ("agy+codex", {"verdict": "request_changes"}, "HIGH", "agy+codex", "request_changes"),
+        ("none", {"verdict": "not-required"}, "LOW", "none", "not-required"),
     ],
 )
-def test_mk_08_every_check_marker_fullmatches_the_one_grammar(kit, vendorset, over, bounced):
-    rec = kit.record(vendorset, **over)
+def test_mk_08_every_check_marker_fullmatches_the_one_grammar(
+    kit, vendorset, over, tier, vendors, verdict, bounced
+):
+    rec = None if vendorset is None else kit.record(vendorset, **over)
     out = osr.check_marker(pr=42, head_sha=kit.head, record=rec, bounced=bounced)
     assert ma.CHECK_MARKER_RE.fullmatch(out) is not None
     assert out.startswith(osr.CHECK_MARKER_PREFIX)
     fields = osr.parse_check_marker(out)
-    assert fields["vendors"] == ("-" if rec["tier"] is None else vendorset)
+    assert fields["tier"] == tier
+    assert fields["vendors"] == vendors
+    assert fields["verdict"] == verdict
     assert fields["bounced"] == ("true" if bounced else "false")
     assert osr.CHECK_MARKER_RE is ma.CHECK_MARKER_RE
 
