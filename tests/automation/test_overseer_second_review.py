@@ -1290,7 +1290,30 @@ def test_t31a_control_without_the_hook_the_cached_record_is_reused(h):
     assert h.n("review") == 0
 
 
-@pytest.mark.parametrize("kind", ["schema", "symlink"])
+class _FifoHang(BaseException):
+    """BaseException, not OSError/TimeoutError: the code under test swallows OSError
+    and would turn the guard's own timeout into a spurious 'invalid' pass."""
+
+
+@contextlib.contextmanager
+def _alarm_guard(seconds=10):
+    """Fail (not hang) if the body blocks: SIGALRM interrupts a blocked open() in
+    the main thread, which a daemon thread could not do while holding head_lock."""
+    import signal
+
+    def _boom(signum, frame):
+        raise _FifoHang("a planted FIFO hung the state-file read")
+
+    old = signal.signal(signal.SIGALRM, _boom)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+@pytest.mark.parametrize("kind", ["schema", "symlink", "fifo"])
 def test_t31b_an_invalid_raise_that_appears_counts_as_high(h, monkeypatch, kind):
     h.set_tier("MEDIUM")
     assert h.run()["vendors"] == "agy"
@@ -1300,6 +1323,10 @@ def test_t31b_an_invalid_raise_that_appears_counts_as_high(h, monkeypatch, kind)
     def hook():
         if kind == "schema":
             _write_raise_file(h, "HIGH", schema=2)
+        elif kind == "fifo":
+            path = osr._raise_path(h.root, PR, HEAD)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.mkfifo(path)
         else:
             target = h.tmp_path / "elsewhere.json"
             target.write_text("{}")
@@ -1308,7 +1335,8 @@ def test_t31b_an_invalid_raise_that_appears_counts_as_high(h, monkeypatch, kind)
             path.symlink_to(target)
 
     _race(monkeypatch, hook)
-    result = h.run()
+    with _alarm_guard():
+        result = h.run()
     assert (result["tier"], result["vendors"], result["reused"]) == ("HIGH", "agy+codex", False)
     assert _review_tiers(h) == ["HIGH"]
     sources = h.record("agy+codex")["tier_sources"]
@@ -2456,6 +2484,26 @@ def test_read_json_dict_refuses_a_non_regular_file_even_when_small(tmp_path):
         with contextlib.suppress(OSError):
             os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
         writer.join(timeout=5)
+
+
+def test_read_json_dict_refuses_a_fifo_with_no_writer_without_blocking(tmp_path):
+    fifo = tmp_path / "fifo.json"
+    os.mkfifo(fifo)
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(osr._read_json_dict(fifo, 1024)), daemon=True
+    )
+    worker.start()
+    try:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "open() blocked on a FIFO with no writer"
+        assert result == [None]
+    finally:
+        # release a blocked opener so the daemon thread does not linger
+        if worker.is_alive():
+            with contextlib.suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            worker.join(timeout=5)
 
 
 def _classify(tmp_path, report_text, *, vendorset="agy", rc=0, name="r.md", link=False):

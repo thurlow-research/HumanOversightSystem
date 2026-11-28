@@ -317,10 +317,13 @@ _ABSENT = object()
 def _read_json_dict(path: Path, max_bytes: int, *, private: bool = False) -> Any:
     """The parsed dict, `_ABSENT` when the file does not exist, else None (invalid).
 
-    Refuses symlinks, non-regular files and anything over `max_bytes`. With `private`, also
-    refuses a file this uid does not own or that grants group or other access (TD 7.1)."""
+    Refuses symlinks, non-regular files and anything over `max_bytes`. A FIFO is
+    refused without blocking: O_NONBLOCK makes the open return at once with no writer.
+    With `private`, also refuses a file this uid does not own or that grants group or
+    other access (TD 7.1)."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # O_NONBLOCK is left set: reads of a regular file ignore it (POSIX).
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return _ABSENT
     except OSError:
