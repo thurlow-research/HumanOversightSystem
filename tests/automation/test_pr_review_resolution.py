@@ -1350,6 +1350,13 @@ def test_mk_09_parse_check_marker_accepts_only_the_exact_final_line(body, accept
         assert got["pr"] == "7" and got["head"] == "a" * 40 and got["bounced"] == "true"
 
 
+@pytest.mark.parametrize("tail", ["  ", " \n", "\n\n  ", "\nX", "\nXX\n", "X"])
+def test_mk_09c_only_newlines_are_stripped_before_the_final_line_is_read(tail):
+    # Trailing spaces, or any other character after the marker, make the final line not the marker.
+    assert osr.parse_check_marker("body\n" + _marker_line() + tail) is None
+    assert osr.parse_check_marker("body\n" + _marker_line() + "\n\n")["pr"] == "7"
+
+
 def test_mk_09b_with_two_markers_the_last_line_wins():
     body = _marker_line(bounced="false") + "\n" + _marker_line(bounced="true", tier="-")
     got = osr.parse_check_marker(body)
