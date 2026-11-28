@@ -235,7 +235,7 @@ They differ only in the comment's extra final line. The hos-bounce marker digest
 
 **`marker_record(repo_root, *, repo, pr, head_sha, base_tip) -> Optional[dict]` (new).** This is the selection logic moved from `pr_review_cli._marker_record`, with carry item 3 fixed:
 - `base = pinned_base(repo_root, base_tip, head_sha)`;
-- return the first `rec` from `find_records(...)` (newest first) where `rec["tier"] is None or (base is not None and rec["base_sha"] == base)`;
+- return the first `rec` from `find_records(...)` (newest first) where `rec.get("tier") is None or (base is not None and rec.get("base_sha") == base)`. *(Built-code review, architect ruling D3, 2026-11-28: `.get`, not indexing. `load_record` does not guarantee either key, and a `KeyError` here would fail every bounce on the head with `check_marker_unavailable`. A tiered record with no `base_sha` is skipped; test `test_s1c_rh_16`.)*;
 - otherwise return `None`.
 
 **`parse_check_marker(body: object) -> Optional[dict]` (new, carry item 1, AR27).** This is the single reader for #2358:
